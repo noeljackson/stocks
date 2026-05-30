@@ -39,6 +39,7 @@ const (
 	StreamThesis    = "THESIS"    // thesis.*
 	StreamMarket    = "MARKET"    // regime.*, discovery.*
 	StreamDecisions = "DECISIONS" // risk.*, decision.*
+	StreamTicker    = "TICKER"    // route.ticker.* (per-symbol fan-out)
 )
 
 // TickerRoute is the per-ticker routed subject (event router → context maintainer).

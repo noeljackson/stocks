@@ -14,7 +14,8 @@ spec:
     spec:
       containers:
         - name: ingest
-          image: ghcr.io/noeljackson/stocks-ingest:dev
+          image: ghcr.io/noeljackson/stocks:dev
+          command: ["/ingest"]
           envFrom:
             - configMapRef: { name: stocks-config }
             - secretRef: { name: stocks-secrets }

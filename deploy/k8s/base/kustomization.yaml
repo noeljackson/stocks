@@ -11,6 +11,8 @@ resources:
   - gateway.yaml
   - ingest.yaml
   - regime.yaml
+  - router.yaml
+  - risk.yaml
   - context-maintainer.yaml
 
 labels:
@@ -18,13 +20,10 @@ labels:
       app.kubernetes.io/part-of: stocks
     includeSelectors: false
 
-# Override image tags per environment, e.g. newTag: 2026.05.30
+# Override image tags per environment, e.g. newTag: 2026.05.30.
+# One Go image for all services; one Python image for the LLM/research side.
 images:
-  - name: ghcr.io/noeljackson/stocks-gateway
+  - name: ghcr.io/noeljackson/stocks
     newTag: dev
-  - name: ghcr.io/noeljackson/stocks-ingest
-    newTag: dev
-  - name: ghcr.io/noeljackson/stocks-regime
-    newTag: dev
-  - name: ghcr.io/noeljackson/stocks-context
+  - name: ghcr.io/noeljackson/stocks-py
     newTag: dev

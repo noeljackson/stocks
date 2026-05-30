@@ -89,13 +89,19 @@ make py-check # ruff
 ## Production (Kubernetes)
 
 ```bash
-make images                              # build gateway / ingest / context images
+make images                              # build TWO images: stocks (Go, all services) + stocks-py (Python)
 # install the CloudNativePG operator (see deploy/k8s/base/postgres.yaml header)
 make k8s-apply                           # kubectl apply -k deploy/k8s/base
 ```
-Set real image tags via the `images:` block in `deploy/k8s/base/kustomization.yaml`,
-manage `stocks-secrets` with sealed-secrets/external-secrets, and point
-`DATABASE_URL` at the CloudNativePG `stocks-pg-rw` service.
+
+**Image strategy.** One `ghcr.io/noeljackson/stocks` image contains every Go
+binary (gateway, ingest, regime, router, risk) plus the embedded SPA; each pod
+selects its entrypoint via `command:` (`["/gateway"]`, `["/ingest"]`, …). Same
+supply-chain surface, one pull per node, single SBOM. The Python services
+(context maintainer, future thesis engine) ship as `stocks-py`. Override tags
+via the `images:` block in `deploy/k8s/base/kustomization.yaml`; manage
+`stocks-secrets` with sealed-secrets/external-secrets; point `DATABASE_URL` at
+the CloudNativePG `stocks-pg-rw` service.
 
 ## JavaScript supply-chain policy (enforced)
 

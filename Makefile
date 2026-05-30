@@ -64,7 +64,7 @@ web-dev: ## Vite dev server
 	cd web && npm run dev
 
 # ---- run ----
-.PHONY: run-gateway run-ingest run-regime
+.PHONY: run-gateway run-ingest run-regime run-router run-risk
 run-gateway: ## Run the decision/alert + UI gateway
 	go run ./cmd/gateway
 
@@ -73,6 +73,12 @@ run-ingest: ## Run the ingestion runner (EDGAR + FRED)
 
 run-regime: ## Run the deterministic macro regime classifier
 	go run ./cmd/regime
+
+run-router: ## Run the event router (ingest.* → route.ticker.*)
+	go run ./cmd/router
+
+run-risk: ## Run the risk overlay (thesis.actionable → risk.veto/warning)
+	go run ./cmd/risk
 
 # ---- Python ----
 .PHONY: py-setup py-check run-context
@@ -87,11 +93,9 @@ run-context: ## Run the Python context-maintainer
 
 # ---- docker images ----
 .PHONY: images
-images: ## Build all container images
-	docker build -f Dockerfile.gateway -t ghcr.io/noeljackson/stocks-gateway:dev .
-	docker build -f Dockerfile.service --build-arg SERVICE=ingest -t ghcr.io/noeljackson/stocks-ingest:dev .
-	docker build -f Dockerfile.service --build-arg SERVICE=regime -t ghcr.io/noeljackson/stocks-regime:dev .
-	docker build -f Dockerfile.py -t ghcr.io/noeljackson/stocks-context:dev .
+images: ## Build container images: one Go image for all services, one Python image
+	docker build -t ghcr.io/noeljackson/stocks:dev .
+	docker build -f Dockerfile.py -t ghcr.io/noeljackson/stocks-py:dev .
 
 # ---- k8s (production) ----
 .PHONY: k8s-render k8s-apply

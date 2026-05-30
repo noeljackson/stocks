@@ -14,7 +14,8 @@ spec:
     spec:
       containers:
         - name: gateway
-          image: ghcr.io/noeljackson/stocks-gateway:dev
+          image: ghcr.io/noeljackson/stocks:dev
+          command: ["/gateway"]
           ports:
             - { containerPort: 8080 }
           envFrom:

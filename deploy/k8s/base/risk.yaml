@@ -1,23 +1,24 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: context-maintainer
+  name: risk
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: context-maintainer
+      app: risk
   template:
     metadata:
       labels:
-        app: context-maintainer
+        app: risk
     spec:
       containers:
-        - name: context-maintainer
-          image: ghcr.io/noeljackson/stocks-py:dev
+        - name: risk
+          image: ghcr.io/noeljackson/stocks:dev
+          command: ["/risk"]
           envFrom:
             - configMapRef: { name: stocks-config }
             - secretRef: { name: stocks-secrets }
           resources:
-            requests: { cpu: 50m, memory: 96Mi }
-            limits: { memory: 512Mi }
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { memory: 128Mi }

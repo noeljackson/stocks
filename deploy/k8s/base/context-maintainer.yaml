@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: context-maintainer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: context-maintainer
+  template:
+    metadata:
+      labels:
+        app: context-maintainer
+    spec:
+      containers:
+        - name: context-maintainer
+          image: ghcr.io/noeljackson/stocks-context:dev
+          envFrom:
+            - configMapRef: { name: stocks-config }
+            - secretRef: { name: stocks-secrets }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { memory: 512Mi }

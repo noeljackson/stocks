@@ -1,0 +1,41 @@
+# Local development only. Production runs on Kubernetes (see deploy/k8s).
+# Image tags are pinned; bump deliberately. For prod, pin by digest.
+name: stocks-local
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-stocks}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stocks_dev_only}
+      POSTGRES_DB: ${POSTGRES_DB:-stocks}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Auto-applied in alphabetical order on a FRESH volume only.
+      # For re-runnable migrations use `make migrate`.
+      - ../../db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-stocks} -d ${POSTGRES_DB:-stocks}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  nats:
+    image: nats:2.11-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports:
+      - "4222:4222"   # client
+      - "8222:8222"   # monitoring
+    volumes:
+      - natsdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:
+  natsdata:

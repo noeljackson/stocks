@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: regime
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: regime
+  template:
+    metadata:
+      labels:
+        app: regime
+    spec:
+      containers:
+        - name: regime
+          image: ghcr.io/noeljackson/stocks-regime:dev
+          envFrom:
+            - configMapRef: { name: stocks-config }
+            - secretRef: { name: stocks-secrets }
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { memory: 128Mi }

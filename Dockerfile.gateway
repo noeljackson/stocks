@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1
+# Gateway = Go binary with the Svelte SPA embedded (SPEC §11).
+
+FROM node:26-alpine AS web
+WORKDIR /app/web
+COPY web/package.json web/package-lock.json web/.npmrc ./
+RUN npm ci --ignore-scripts
+COPY web/ ./
+RUN npm run build            # → /app/internal/web/dist (vite outDir)
+
+FROM golang:1.26 AS build
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+COPY --from=web /app/internal/web/dist ./internal/web/dist
+RUN CGO_ENABLED=0 go build -trimpath -o /out/gateway ./cmd/gateway
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/gateway /gateway
+USER nonroot
+EXPOSE 8080
+ENTRYPOINT ["/gateway"]

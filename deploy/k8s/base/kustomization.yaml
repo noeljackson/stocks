@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: stocks
+
+resources:
+  - namespace.yaml
+  - config.yaml
+  - postgres.yaml      # requires the CloudNativePG operator
+  - nats.yaml
+  - gateway.yaml
+  - ingest.yaml
+  - regime.yaml
+  - context-maintainer.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: stocks
+    includeSelectors: false
+
+# Override image tags per environment, e.g. newTag: 2026.05.30
+images:
+  - name: ghcr.io/noeljackson/stocks-gateway
+    newTag: dev
+  - name: ghcr.io/noeljackson/stocks-ingest
+    newTag: dev
+  - name: ghcr.io/noeljackson/stocks-regime
+    newTag: dev
+  - name: ghcr.io/noeljackson/stocks-context
+    newTag: dev

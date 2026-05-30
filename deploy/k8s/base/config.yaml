@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stocks-config
+data:
+  NATS_URL: "nats://nats:4222"
+  GATEWAY_ADDR: ":8080"
+  LLM_PROVIDER: "subscription"
+  LLM_MODEL_DEEP: "claude-opus-4-8"
+  LLM_MODEL_ROUTINE: "claude-sonnet-4-6"
+  LLM_MODEL_TRIAGE: "claude-haiku-4-5"
+  SEC_EDGAR_UA: "stocks-research n@noeljackson.com"
+---
+# Template only. In the cluster, manage this with sealed-secrets / external-secrets
+# and align DATABASE_URL with the CloudNativePG-generated credentials.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: stocks-secrets
+type: Opaque
+stringData:
+  DATABASE_URL: "postgres://stocks:CHANGE_ME@stocks-pg-rw:5432/stocks?sslmode=require"
+  # ANTHROPIC_API_KEY: ""   # only if LLM_PROVIDER=anthropic

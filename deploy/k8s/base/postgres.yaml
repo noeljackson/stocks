@@ -1,0 +1,19 @@
+# Requires the CloudNativePG operator:
+#   kubectl apply --server-side -f \
+#     https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.24/releases/cnpg-1.24.0.yaml
+# CNPG creates a `stocks-pg-rw` Service and a `stocks-pg-app` Secret with creds.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: stocks-pg
+spec:
+  instances: 1                 # raise to 3 for HA when capital grows
+  storage:
+    size: 10Gi
+  bootstrap:
+    initdb:
+      database: stocks
+      owner: stocks
+  postgresql:
+    parameters:
+      max_connections: "100"

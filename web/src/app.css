@@ -1,0 +1,14 @@
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  background: #0b0e14;
+  color: #cdd6f4;
+}
+#app { max-width: 980px; margin: 0 auto; padding: 1.25rem; }
+h1 { font-size: 1.25rem; margin: 0; }
+h2 { font-size: .95rem; margin: 1.25rem 0 .5rem; color: #b4befe; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #94e2d5; }
+.muted { color: #6c7693; }
+.error { color: #f38ba8; }

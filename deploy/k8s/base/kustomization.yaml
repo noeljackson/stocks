@@ -15,6 +15,7 @@ resources:
   - risk.yaml
   - goalpost.yaml
   - staler.yaml
+  - evaluator.yaml
   - context-maintainer.yaml
 
 labels:

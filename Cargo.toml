@@ -46,6 +46,10 @@ name = "staler"
 path = "src/bin/staler.rs"
 
 [[bin]]
+name = "evaluator"
+path = "src/bin/evaluator.rs"
+
+[[bin]]
 name = "llmsmoke"
 path = "src/bin/llmsmoke.rs"
 

@@ -305,6 +305,51 @@ impl Store {
         Ok(out)
     }
 
+    /// Upsert a batch of XBRL facts. Idempotent via the unique index on
+    /// (symbol, taxonomy, concept, period_end, accession). Returns number
+    /// of rows actually inserted (vs already-present).
+    pub async fn upsert_company_facts(
+        &self,
+        rows: &[crate::ingest::xbrl::FactRow],
+    ) -> Result<usize> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        let mut inserted = 0;
+        let mut tx = self.pool.begin().await.context("begin tx")?;
+        for r in rows {
+            let res = sqlx::query(
+                r#"INSERT INTO company_fact
+                     (symbol, cik, taxonomy, concept, period_end, period_start,
+                      value, unit, form, fiscal_year, fiscal_period,
+                      accession, filed_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                   ON CONFLICT DO NOTHING"#,
+            )
+            .bind(&r.symbol)
+            .bind(&r.cik)
+            .bind(&r.taxonomy)
+            .bind(&r.concept)
+            .bind(r.period_end)
+            .bind(r.period_start)
+            .bind(r.value)
+            .bind(&r.unit)
+            .bind(r.form.as_deref())
+            .bind(r.fiscal_year)
+            .bind(r.fiscal_period.as_deref())
+            .bind(r.accession.as_deref())
+            .bind(r.filed_at)
+            .execute(&mut *tx)
+            .await
+            .context("upsert_company_facts")?;
+            if res.rows_affected() > 0 {
+                inserted += 1;
+            }
+        }
+        tx.commit().await.context("commit tx")?;
+        Ok(inserted)
+    }
+
     /// Records a single LLM call to the audit table (#6). Pair with
     /// `llm::prompts::invoke` — the recorder is wired via the trait impl
     /// below.

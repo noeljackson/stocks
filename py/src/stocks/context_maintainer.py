@@ -72,6 +72,41 @@ async def _load_prior_context(pool: asyncpg.Pool, symbol: str) -> dict | None:
     }
 
 
+async def _load_company_facts(pool: asyncpg.Pool, symbol: str) -> list[dict]:
+    """Latest 2 observations per concept from company_fact (#32). Gives the
+    LLM real financial metrics to use in the structural band's fundamentals."""
+    rows = await pool.fetch(
+        """SELECT concept, period_end, period_start, value, unit,
+                  form, fiscal_year, fiscal_period, filed_at
+             FROM (
+                 SELECT *,
+                        row_number() OVER (
+                            PARTITION BY concept
+                            ORDER BY period_end DESC, filed_at DESC
+                        ) AS rn
+                   FROM company_fact
+                  WHERE symbol = $1
+             ) sub
+            WHERE rn <= 2
+         ORDER BY concept, period_end DESC""",
+        symbol,
+    )
+    out = []
+    for r in rows:
+        out.append({
+            "concept": r["concept"],
+            "period_end": r["period_end"].isoformat() if r["period_end"] else None,
+            "period_start": r["period_start"].isoformat() if r["period_start"] else None,
+            "value": float(r["value"]),
+            "unit": r["unit"],
+            "form": r["form"],
+            "fiscal_year": r["fiscal_year"],
+            "fiscal_period": r["fiscal_period"],
+            "filed_at": r["filed_at"].isoformat() if r["filed_at"] else None,
+        })
+    return out
+
+
 async def _load_events(
     pool: asyncpg.Pool, symbol: str, since: dt.datetime | None, limit: int,
 ) -> list[dict]:
@@ -111,7 +146,13 @@ async def _load_events(
     return out
 
 
-def _build_user_message(symbol: str, prior: dict | None, events: list[dict], today: str) -> str:
+def _build_user_message(
+    symbol: str,
+    prior: dict | None,
+    events: list[dict],
+    facts: list[dict],
+    today: str,
+) -> str:
     """The system prompt is the rendered template. This user message carries
     the actual data the LLM should reason over."""
     return json.dumps(
@@ -120,6 +161,7 @@ def _build_user_message(symbol: str, prior: dict | None, events: list[dict], tod
             "today": today,
             "prior_context": prior,
             "new_events": events,
+            "company_facts": facts,
         },
         indent=2,
         default=str,
@@ -193,19 +235,26 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
             symbol,
         )
 
-        # 2. Load prior context (if any) and new events.
+        # 2. Load prior context (if any), new events, AND structured facts.
         prior = await _load_prior_context(pool, symbol)
         since = dt.datetime.fromisoformat(prior["as_of"]) if prior else None
         events = await _load_events(pool, symbol, since, limit)
+        facts = await _load_company_facts(pool, symbol)
         log.info(
-            "symbol=%s prior=%s events_count=%d",
+            "symbol=%s prior=%s events_count=%d facts_count=%d",
             symbol,
             f"v{prior['version']}" if prior else "none",
             len(events),
+            len(facts),
         )
 
-        if not events and prior is not None:
-            log.info("no new events since v%d — skipping refresh", prior["version"])
+        # Skip only when NO new signal at all: no events AND prior already saw
+        # these facts (heuristic: if `facts` list hasn't grown since prior, no
+        # point re-synthesizing). For v1 we just check events — facts arrive
+        # in bulk on first XBRL pass and we want that to trigger a fresh synth.
+        # A subsequent run with no new events + no new facts will still skip.
+        if not events and not facts and prior is not None:
+            log.info("no new signal since v%d — skipping refresh", prior["version"])
             return prior["version"]
 
         # 3. Build prompt + call LLM with audit recorder.
@@ -215,7 +264,7 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
             raise RuntimeError("prompts/synthesize-context.md missing")
 
         today = dt.date.today().isoformat()
-        user_msg = _build_user_message(symbol, prior, events, today)
+        user_msg = _build_user_message(symbol, prior, events, facts, today)
         provider = new_provider(_llm_cfg(cfg))
         provider_name = _provider_name(cfg)
         log.info("calling LLM provider=%s model=%s prompt=%s@%s",

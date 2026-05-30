@@ -41,6 +41,9 @@ x-rust-common: &rust-common
     - ANTHROPIC_VERSION
     - OPENAI_BASE_URL
     - OPENAI_API_KEY
+    # Dev-mode UX (#38): gateway's SPA fallback redirects browser to vite.
+    - STOCKS_DEV_MODE=1
+    - STOCKS_DEV_UI_URL=http://localhost:5173
     - RUST_LOG=info,sqlx=warn
     # cargo-watch occasionally hits "could not find Cargo.toml" if the bind
     # mount isn't ready; small delay tolerates the race on first start.

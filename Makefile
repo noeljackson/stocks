@@ -50,8 +50,8 @@ dev: dev-warm ## Start the full dev stack (postgres + nats + 6 rust services + v
 	$(RUN) $(COMPOSE_DEV) up -d
 	@echo
 	@echo "✓ dev stack up"
-	@echo "  SPA (HMR):     http://localhost:5173"
-	@echo "  Gateway API:   http://localhost:8080"
+	@echo "  UI (HMR):      http://localhost:5173"
+	@echo "  API:           http://localhost:8080  (/ redirects to 5173 in dev mode)"
 	@echo "  NATS monitor:  http://localhost:8222"
 	@echo "  Postgres:      psql 'postgresql://stocks:stocks_dev_only@localhost:5432/stocks'"
 	@echo

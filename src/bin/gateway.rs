@@ -14,7 +14,11 @@ async fn main() -> Result<()> {
 
     let store = Store::connect(&cfg.database_url).await?;
     let bus = Bus::connect(&cfg.nats_url).await?;
-    let gw = Arc::new(Gateway::new(store, bus));
+    let dev_redirect = if cfg.dev_mode { Some(cfg.dev_ui_url.clone()) } else { None };
+    if let Some(t) = dev_redirect.as_deref() {
+        info!(target = t, "dev mode: SPA fallback will redirect to vite");
+    }
+    let gw = Arc::new(Gateway::new(store, bus, dev_redirect));
 
     let _consumers = gw.start_subscriptions().await?;
     let app = gw.clone().router();

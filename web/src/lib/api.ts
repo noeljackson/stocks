@@ -32,10 +32,16 @@ export interface Ticker {
   open_theses: number;
 }
 
-export async function fetchAlerts(): Promise<Alert[]> {
-  const r = await fetch("/api/alerts");
+export async function fetchAlerts(opts?: { unacked?: boolean }): Promise<Alert[]> {
+  const q = opts?.unacked ? "?unacked=true" : "";
+  const r = await fetch(`/api/alerts${q}`);
   if (!r.ok) throw new Error(`alerts ${r.status}`);
   return ((await r.json()) as Alert[] | null) ?? [];
+}
+
+export async function ackAlert(id: number): Promise<void> {
+  const r = await fetch(`/api/alerts/${id}/ack`, { method: "POST" });
+  if (!r.ok && r.status !== 204) throw new Error(`ack ${r.status}`);
 }
 
 export async function fetchRegime(): Promise<MarketState> {

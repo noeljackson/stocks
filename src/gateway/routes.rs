@@ -25,6 +25,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/api/alerts", get(list_alerts))
+        .route("/api/alerts/{id}/ack", post(ack_alert))
         .route("/api/regime", get(get_regime))
         .route("/api/tickers", get(list_tickers))
         .route("/api/theses", get(list_theses))
@@ -174,11 +175,36 @@ async fn get_ticker_context(
     }
 }
 
-async fn list_alerts(State(gw): State<Arc<Gateway>>) -> impl IntoResponse {
-    match gw.store.recent_alerts(100).await {
+#[derive(Debug, Deserialize, Default)]
+struct AlertsQuery {
+    /// `?unacked=true` filters to dismissable alerts (live feed default).
+    #[serde(default)]
+    unacked: Option<bool>,
+}
+
+async fn list_alerts(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<AlertsQuery>,
+) -> impl IntoResponse {
+    let only_unacked = q.unacked.unwrap_or(false);
+    match gw.store.recent_alerts_filtered(100, only_unacked).await {
         Ok(alerts) => (StatusCode::OK, Json(alerts)).into_response(),
         Err(e) => {
             warn!(error = %e, "list_alerts failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn ack_alert(
+    State(gw): State<Arc<Gateway>>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    match gw.store.acknowledge_alert(id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, format!("alert {id} not found")).into_response(),
+        Err(e) => {
+            warn!(id, error = %e, "ack_alert failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }

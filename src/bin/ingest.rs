@@ -12,6 +12,7 @@ use anyhow::Result;
 use stocks::ingest;
 use stocks::ingest::edgar::EdgarAdapter;
 use stocks::ingest::fred::FredAdapter;
+use stocks::ingest::massive::MassiveAdapter;
 use stocks::ingest::xbrl::XbrlAdapter;
 use stocks::platform::{bus::Bus, config::Config, logging, store::Store, subjects};
 use tracing::{error, info};
@@ -24,6 +25,31 @@ async fn main() -> Result<()> {
     let store = Store::connect(&cfg.database_url).await?;
     let bus = Bus::connect(&cfg.nats_url).await?;
     bus.ensure_stream(subjects::STREAM_INGEST, &["ingest.*"]).await?;
+
+    // Spawn the Massive (price) bulk loop. Daily lookback of 30 days on
+    // each poll keeps re-sync cheap; the table primary key dedups.
+    {
+        let store = store.clone();
+        let key = cfg.massive_api_key.clone();
+        let base = cfg.massive_base_url.clone();
+        tokio::spawn(async move {
+            let adapter = MassiveAdapter::new(&key, &base);
+            let interval = Duration::from_secs(6 * 3600);
+            loop {
+                match adapter.poll_all(30).await {
+                    Ok(rows) if rows.is_empty() => {
+                        // already warned if key missing; otherwise no-op
+                    }
+                    Ok(rows) => match store.upsert_price_bars(&rows).await {
+                        Ok(inserted) => info!(rows = rows.len(), inserted, "massive pass complete"),
+                        Err(e) => error!(error = %e, "massive persist failed"),
+                    },
+                    Err(e) => error!(error = %e, "massive poll failed"),
+                }
+                tokio::time::sleep(interval).await;
+            }
+        });
+    }
 
     // Spawn the XBRL bulk loop in parallel with the per-event adapter runner.
     {

@@ -18,6 +18,8 @@ pub struct Config {
     pub model_triage: String,
     pub sec_user_agent: String,
     pub fred_api_key: String,
+    pub massive_api_key: String,
+    pub massive_base_url: String,
     pub anthropic_base_url: String,
     pub anthropic_api_key: String,
     pub anthropic_version: String,
@@ -88,6 +90,10 @@ impl Config {
             model_triage: get("LLM_MODEL_TRIAGE", "glm-5-turbo"),
             sec_user_agent: get("SEC_EDGAR_UA", "stocks-research n@noeljackson.com"),
             fred_api_key: get("FRED_API_KEY", ""),
+            massive_api_key: get("MASSIVE_API_KEY", ""),
+            // Massive's API is Polygon's behind a different brand; base URL
+            // configurable so future-us can swap.
+            massive_base_url: get("MASSIVE_BASE_URL", "https://api.massive.com"),
             anthropic_base_url: get("ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic"),
             anthropic_api_key: get("ANTHROPIC_API_KEY", ""),
             anthropic_version: get("ANTHROPIC_VERSION", "2023-06-01"),

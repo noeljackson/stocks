@@ -41,6 +41,8 @@ x-rust-common: &rust-common
     - ANTHROPIC_VERSION
     - OPENAI_BASE_URL
     - OPENAI_API_KEY
+    - MASSIVE_API_KEY
+    - MASSIVE_BASE_URL
     # Dev-mode UX (#38): gateway's SPA fallback redirects browser to vite.
     - STOCKS_DEV_MODE=1
     - STOCKS_DEV_UI_URL=http://localhost:5173

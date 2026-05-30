@@ -159,6 +159,9 @@ py-check: ## Ruff lint + pytest
 refresh-context: ## Refresh ticker_context for one symbol (SYMBOL=NVDA make refresh-context)
 	cd py && $(RUN) .venv/bin/python -m stocks.context_maintainer $(SYMBOL) $(if $(LIMIT),--limit $(LIMIT))
 
+draft-thesis: ## Draft a thesis from the latest ticker_context (SYMBOL=NVDA make draft-thesis)
+	cd py && $(RUN) .venv/bin/python -m stocks.thesis_engine $(SYMBOL)
+
 # Legacy alias (will be removed when context_maintainer becomes a long-running service).
 run-context: refresh-context ## Alias of refresh-context (deprecated)
 

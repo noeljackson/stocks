@@ -173,6 +173,26 @@ pub struct TickerContextRow {
 
 /// Full thesis record + version-history audit trail for the UI detail panel.
 /// The history lets the UI render goalpost-moved markers per revision.
+/// Structural completeness check attached to ThesisDetail responses (#10).
+/// Frontend reads `substance.blocked_at` / `substance.missing` to render the
+/// SKELETON banner and per-slot ✓/✗ checklist.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThesisSubstance {
+    pub score: u8,
+    pub max_score: u8,
+    pub missing: Vec<String>,
+    pub blocked_at: Option<ThesisState>,
+    pub well_formed: WellFormedCondCounts,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct WellFormedCondCounts {
+    pub conviction: u32,
+    pub trigger: u32,
+    pub invalidation: u32,
+    pub fulfillment: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThesisDetail {
     pub thesis_id: Uuid,
@@ -196,6 +216,11 @@ pub struct ThesisDetail {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub history: Vec<ThesisVersionEvent>,
+    /// Computed at read-time via [`crate::thesis::substance::substance_report`].
+    /// Optional so callers that don't care (or older serialized rows) can
+    /// omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substance: Option<ThesisSubstance>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

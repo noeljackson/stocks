@@ -18,5 +18,6 @@ pub mod router;
 pub mod risk;
 pub mod goalpost;
 pub mod reflection;
+pub mod thesis;
 pub mod gateway;
 pub mod web;

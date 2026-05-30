@@ -104,6 +104,21 @@ pub struct TickerRow {
     pub open_theses: i64,
 }
 
+/// Per-ticker context row for the UI's drill-down panel (SPEC §5.2).
+/// The market band is intentionally raw (not LLM-synthesized) and may be `{}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TickerContextRow {
+    pub symbol: String,
+    pub version: i32,
+    pub structural: serde_json::Value,
+    pub structural_as_of: Option<DateTime<Utc>>,
+    pub narrative: serde_json::Value,
+    pub narrative_as_of: Option<DateTime<Utc>>,
+    pub market: serde_json::Value,
+    pub market_as_of: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
 /// Full thesis record + version-history audit trail for the UI detail panel.
 /// The history lets the UI render goalpost-moved markers per revision.
 #[derive(Debug, Clone, Serialize, Deserialize)]

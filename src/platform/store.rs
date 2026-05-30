@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use crate::llm::prompts::{InvocationRecorder, InvocationRow};
 use crate::platform::domain::{
-    Alert, AlertKind, MarketStateRow, ThesisDetail, ThesisVersionEvent, TickerRow,
+    Alert, AlertKind, MarketStateRow, ThesisDetail, ThesisVersionEvent, TickerContextRow, TickerRow,
 };
 
 #[derive(Clone)]
@@ -184,6 +184,40 @@ impl Store {
                 })
             })
             .collect()
+    }
+
+    /// Latest `ticker_context` row for a symbol. None if never synthesized.
+    pub async fn latest_ticker_context(&self, symbol: &str) -> Result<Option<TickerContextRow>> {
+        let row = sqlx::query(
+            r#"SELECT symbol, version,
+                      COALESCE(structural, '{}'::jsonb) AS structural,
+                      structural_as_of,
+                      COALESCE(narrative,  '{}'::jsonb) AS narrative,
+                      narrative_as_of,
+                      COALESCE(market,     '{}'::jsonb) AS market,
+                      market_as_of,
+                      created_at
+                 FROM ticker_context
+                WHERE symbol = $1
+             ORDER BY version DESC
+                LIMIT 1"#,
+        )
+        .bind(symbol)
+        .fetch_optional(&self.pool)
+        .await
+        .context("latest_ticker_context")?;
+        let Some(row) = row else { return Ok(None) };
+        Ok(Some(TickerContextRow {
+            symbol: row.try_get("symbol")?,
+            version: row.try_get("version")?,
+            structural: row.try_get("structural")?,
+            structural_as_of: row.try_get("structural_as_of")?,
+            narrative: row.try_get("narrative")?,
+            narrative_as_of: row.try_get("narrative_as_of")?,
+            market: row.try_get("market")?,
+            market_as_of: row.try_get("market_as_of")?,
+            created_at: row.try_get("created_at")?,
+        }))
     }
 
     /// Loads all theses for a symbol plus their version-history audit trail.

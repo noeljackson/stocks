@@ -28,6 +28,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/regime", get(get_regime))
         .route("/api/tickers", get(list_tickers))
         .route("/api/theses", get(list_theses))
+        .route("/api/ticker-context", get(get_ticker_context))
         .route("/api/stream", get(stream))
         .route("/api/decisions", post(record_decision))
         .fallback(spa_handler)
@@ -50,6 +51,23 @@ async fn list_theses(
         Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
         Err(e) => {
             warn!(symbol = %sym, error = %e, "list_theses failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn get_ticker_context(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<ThesesQuery>,
+) -> impl IntoResponse {
+    let Some(sym) = q.symbol else {
+        return (StatusCode::BAD_REQUEST, "symbol query param required").into_response();
+    };
+    match gw.store.latest_ticker_context(&sym).await {
+        Ok(Some(row)) => (StatusCode::OK, Json(row)).into_response(),
+        Ok(None) => (StatusCode::NO_CONTENT).into_response(),
+        Err(e) => {
+            warn!(symbol = %sym, error = %e, "get_ticker_context failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }

@@ -6,13 +6,13 @@ use std::time::Duration;
 
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{StatusCode, header},
     response::{IntoResponse, Sse, sse::Event},
     routing::{get, post},
 };
 use futures::stream::Stream;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio_stream::wrappers::BroadcastStream;
 use tracing::warn;
@@ -28,6 +28,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/regime", get(get_regime))
         .route("/api/tickers", get(list_tickers))
         .route("/api/theses", get(list_theses))
+        .route("/api/theses/{thesis_id}/transition", post(transition_thesis))
         .route("/api/ticker-context", get(get_ticker_context))
         .route("/api/stream", get(stream))
         .route("/api/decisions", post(record_decision))
@@ -54,6 +55,106 @@ async fn list_theses(
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct TransitionReq {
+    to: crate::platform::domain::ThesisState,
+    #[serde(default)]
+    rationale: String,
+}
+
+#[derive(Debug, Serialize)]
+struct TransitionErr {
+    error: String,
+    missing: Vec<String>,
+}
+
+async fn transition_thesis(
+    State(gw): State<Arc<Gateway>>,
+    Path(thesis_id): Path<uuid::Uuid>,
+    Json(req): Json<TransitionReq>,
+) -> impl IntoResponse {
+    use crate::thesis::substance;
+
+    // 1. Load the thesis (we only need it for substance + current state).
+    let theses = match gw.store.theses_for_symbol_id(thesis_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(thesis_id = %thesis_id, error = %e, "transition: load failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    };
+    let Some(t) = theses.into_iter().next() else {
+        return (StatusCode::NOT_FOUND, format!("thesis {thesis_id} not found")).into_response();
+    };
+
+    // 2. Build the SubstanceInput from the loaded thesis.
+    let parse_conds = |v: &serde_json::Value| -> Vec<crate::platform::domain::Condition> {
+        serde_json::from_value(v.clone()).unwrap_or_default()
+    };
+    let forecast_present = !t.forecast.is_null()
+        && !matches!(&t.forecast, serde_json::Value::Object(o) if o.is_empty());
+    let intended_size_present = !t.intended_size.is_null()
+        && !matches!(&t.intended_size, serde_json::Value::Object(o) if o.is_empty());
+    let sub_input = substance::Thesis {
+        forecast_present,
+        intended_size_present,
+        conviction: parse_conds(&t.conviction_conditions),
+        trigger: parse_conds(&t.trigger_conditions),
+        invalidation: parse_conds(&t.invalidation_conditions),
+        fulfillment: parse_conds(&t.fulfillment_conditions),
+    };
+
+    // 3. Check legality + substance.
+    if let Err(missing) = substance::promotion_allowed(t.state, req.to, &sub_input) {
+        let body = TransitionErr {
+            error: if missing.first().is_some_and(|s| s.starts_with("illegal transition")) {
+                missing[0].clone()
+            } else {
+                format!("blocked by missing substance: {}", missing.join(", "))
+            },
+            missing,
+        };
+        return (StatusCode::BAD_REQUEST, Json(body)).into_response();
+    }
+
+    // 4. Apply the transition + write a thesis_state_history row.
+    if let Err(e) = gw
+        .store
+        .apply_state_transition(thesis_id, t.state, req.to, &req.rationale)
+        .await
+    {
+        warn!(thesis_id = %thesis_id, error = %e, "transition: apply failed");
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+
+    // 5. Emit the matching thesis.* event so downstream services (and the
+    //    SSE feed) see it.
+    let topic = match req.to {
+        crate::platform::domain::ThesisState::Actionable => crate::platform::subjects::THESIS_ACTIONABLE,
+        crate::platform::domain::ThesisState::Disqualified => crate::platform::subjects::THESIS_INVALIDATED,
+        crate::platform::domain::ThesisState::Closed => crate::platform::subjects::THESIS_FULFILLED,
+        _ => crate::platform::subjects::THESIS_UPDATED,
+    };
+    let payload = serde_json::json!({
+        "thesis_id": thesis_id,
+        "symbol": t.symbol,
+        "from": t.state.as_str(),
+        "to": req.to.as_str(),
+        "rationale": req.rationale,
+        "at": chrono::Utc::now(),
+    });
+    if let Err(e) = gw.bus.publish(topic, payload.to_string().as_bytes()).await {
+        warn!(error = %e, "transition publish failed (best-effort)");
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({
+        "thesis_id": thesis_id,
+        "from": t.state,
+        "to": req.to,
+    })))
+        .into_response()
 }
 
 async fn get_ticker_context(

@@ -222,6 +222,55 @@ impl Store {
         }))
     }
 
+    /// Loads a single thesis by id, with the same enrichment that
+    /// `theses_for_symbol` produces (substance, history). Returns
+    /// `Vec<ThesisDetail>` (will have 0 or 1 entry) so the caller can reuse
+    /// the existing per-symbol code path.
+    pub async fn theses_for_symbol_id(&self, thesis_id: uuid::Uuid) -> Result<Vec<ThesisDetail>> {
+        let symbol: Option<String> = sqlx::query_scalar(
+            "SELECT symbol FROM thesis WHERE thesis_id = $1",
+        )
+        .bind(thesis_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("symbol lookup")?;
+        let Some(symbol) = symbol else { return Ok(vec![]) };
+        let all = self.theses_for_symbol(&symbol).await?;
+        Ok(all.into_iter().filter(|t| t.thesis_id == thesis_id).collect())
+    }
+
+    /// Apply a state transition (#15). Caller must have already validated the
+    /// edge via `thesis::substance::promotion_allowed`. Writes both the new
+    /// state on the thesis row and an append-only `thesis_state_history` row.
+    pub async fn apply_state_transition(
+        &self,
+        thesis_id: uuid::Uuid,
+        from: crate::platform::domain::ThesisState,
+        to: crate::platform::domain::ThesisState,
+        rationale: &str,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await.context("begin tx")?;
+        sqlx::query("UPDATE thesis SET state = $1, updated_at = now() WHERE thesis_id = $2")
+            .bind(to.as_str())
+            .bind(thesis_id)
+            .execute(&mut *tx)
+            .await
+            .context("update thesis state")?;
+        sqlx::query(
+            r#"INSERT INTO thesis_state_history (thesis_id, from_state, to_state, rationale)
+               VALUES ($1, $2, $3, NULLIF($4, ''))"#,
+        )
+        .bind(thesis_id)
+        .bind(from.as_str())
+        .bind(to.as_str())
+        .bind(rationale)
+        .execute(&mut *tx)
+        .await
+        .context("insert state history")?;
+        tx.commit().await.context("commit tx")?;
+        Ok(())
+    }
+
     /// Loads all theses for a symbol plus their version-history audit trail.
     /// Returns most-recently-updated first so the UI sees the latest thesis on
     /// top when there are multiple.

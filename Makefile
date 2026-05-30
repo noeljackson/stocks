@@ -5,6 +5,12 @@ SHELL := /bin/bash
 COMPOSE := docker compose -f deploy/local/docker-compose.yml --env-file .env
 PSQL_URL ?= $(shell grep -E '^DATABASE_URL=' .env 2>/dev/null | cut -d= -f2-)
 
+# Secrets injector: if `infisical` is on PATH, run commands through it so the
+# binaries pick up vars from your infisical project. Otherwise fall through to
+# the local .env via dotenvy. Override with RUN= to force a specific prefix
+# (e.g. `make RUN= run-gateway` to skip infisical even when installed).
+RUN ?= $(shell command -v infisical >/dev/null 2>&1 && echo "infisical run --")
+
 .PHONY: help
 help: ## List targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -65,24 +71,29 @@ web-dev: ## Vite dev server
 	cd web && npm run dev
 
 # ---- run (local dev; build once with `make build`, then ./target/release/<bin>) ----
-.PHONY: run-gateway run-ingest run-regime run-router run-risk run-goalpost
-run-gateway: ## Run the gateway (build first with `make build`)
-	cargo run --release --bin gateway
+# $(RUN) injects infisical when installed (see top of file). Override with
+# `make RUN= run-gateway` to bypass.
+.PHONY: run-gateway run-ingest run-regime run-router run-risk run-goalpost llmsmoke
+run-gateway: ## Run the gateway
+	$(RUN) cargo run --release --bin gateway
 
 run-ingest: ## Run the ingestion runner (EDGAR + FRED)
-	cargo run --release --bin ingest
+	$(RUN) cargo run --release --bin ingest
 
 run-regime: ## Run the macro regime classifier
-	cargo run --release --bin regime
+	$(RUN) cargo run --release --bin regime
 
 run-router: ## Run the event router (ingest.* → route.ticker.*)
-	cargo run --release --bin router
+	$(RUN) cargo run --release --bin router
 
 run-risk: ## Run the risk overlay (thesis.actionable → risk.veto/warning)
-	cargo run --release --bin risk
+	$(RUN) cargo run --release --bin risk
 
 run-goalpost: ## Run the goalpost detector (thesis.updated → integrity check)
-	cargo run --release --bin goalpost
+	$(RUN) cargo run --release --bin goalpost
+
+llmsmoke: ## One-shot LLM round-trip — picks transport from env (mock if no key)
+	$(RUN) cargo run --release --bin llmsmoke -- "$(MSG)"
 
 # ---- Python ----
 .PHONY: py-setup py-check run-context
@@ -94,7 +105,7 @@ py-check: ## Ruff lint + pytest
 	cd py && .venv/bin/pytest -q
 
 run-context: ## Run the Python context-maintainer
-	cd py && .venv/bin/python -m stocks.context_maintainer
+	cd py && $(RUN) .venv/bin/python -m stocks.context_maintainer
 
 # ---- docker images ----
 .PHONY: images

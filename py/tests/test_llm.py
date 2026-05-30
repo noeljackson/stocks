@@ -164,7 +164,7 @@ def test_factory_unknown_provider_returns_mock():
     assert isinstance(new_provider(TransportConfig(provider="???")), MockProvider)
 
 
-def test_factory_anthropic_without_token_returns_mock():
+def test_factory_anthropic_without_key_returns_mock():
     assert isinstance(new_provider(TransportConfig(provider="anthropic")), MockProvider)
 
 
@@ -180,3 +180,44 @@ def test_factory_openai_without_key_returns_mock():
         new_provider(TransportConfig(provider="openai_compat", openai_base_url="https://x")),
         MockProvider,
     )
+
+
+# ---------- auto-detect ----------
+
+
+def test_detect_anthropic_when_key_present():
+    from stocks.llm import detect
+
+    assert detect(TransportConfig(anthropic_api_key="k")) == "anthropic"
+
+
+def test_detect_openai_when_both_present():
+    from stocks.llm import detect
+
+    cfg = TransportConfig(openai_base_url="https://x", openai_api_key="k")
+    assert detect(cfg) == "openai_compat"
+
+
+def test_detect_anthropic_wins_over_openai():
+    from stocks.llm import detect
+
+    cfg = TransportConfig(
+        anthropic_api_key="ak",
+        openai_base_url="https://x",
+        openai_api_key="ok",
+    )
+    assert detect(cfg) == "anthropic"
+
+
+def test_detect_falls_back_to_mock():
+    from stocks.llm import detect
+
+    assert detect(TransportConfig()) == "mock"
+
+
+def test_factory_zero_config_uses_auto():
+    # Empty provider + anthropic key → AnthropicProvider (not mock).
+    from stocks.llm import AnthropicProvider
+
+    p = new_provider(TransportConfig(anthropic_api_key="k"))
+    assert isinstance(p, AnthropicProvider)

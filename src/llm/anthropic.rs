@@ -17,7 +17,7 @@ const DEFAULT_MAX_TOKENS: u32 = 4096;
 
 pub struct AnthropicProvider {
     base_url: String,
-    token: String,
+    api_key: String,
     version: String,
     model: String,
     client: Client,
@@ -26,8 +26,8 @@ pub struct AnthropicProvider {
 impl AnthropicProvider {
     /// Returns `None` if required config is missing (caller falls back to mock).
     pub fn try_new(cfg: &LlmTransport) -> Option<Self> {
-        if cfg.anthropic_auth_token.is_empty() {
-            warn!("llm anthropic: missing ANTHROPIC_AUTH_TOKEN, using mock");
+        if cfg.anthropic_api_key.is_empty() {
+            warn!("llm anthropic: missing ANTHROPIC_API_KEY, using mock");
             return None;
         }
         let base_url = if cfg.anthropic_base_url.is_empty() {
@@ -46,7 +46,7 @@ impl AnthropicProvider {
             .ok()?;
         Some(Self {
             base_url,
-            token: cfg.anthropic_auth_token.clone(),
+            api_key: cfg.anthropic_api_key.clone(),
             version,
             model: cfg.model.clone(),
             client,
@@ -117,7 +117,7 @@ impl Provider for AnthropicProvider {
         let resp = self
             .client
             .post(&url)
-            .header("x-api-key", &self.token)
+            .header("x-api-key", &self.api_key)
             .header("anthropic-version", &self.version)
             .json(&body)
             .send()

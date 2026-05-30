@@ -56,21 +56,55 @@ pub trait Provider: Send + Sync {
     async fn complete(&self, req: Request) -> anyhow::Result<Response>;
 }
 
-/// Returns a provider configured from `cfg`. Unknown providers and missing
-/// required config both fall back to [`MockProvider`] — never panic — so a
-/// misconfigured env var doesn't crash boot.
+/// Returns a provider configured from `cfg`.
+///
+/// **Zero-config selection:** when `cfg.provider` is empty, the transport is
+/// auto-detected from credentials —
+/// - `ANTHROPIC_API_KEY` set → Anthropic-shape (works with Anthropic, z.ai, …)
+/// - `OPENAI_BASE_URL` + `OPENAI_API_KEY` set → OpenAI-shape
+/// - neither → mock.
+///
+/// Explicit `cfg.provider` (`"anthropic"` / `"openai_compat"` / `"mock"`) wins
+/// over auto-detection. Unknown providers and missing required config both
+/// fall back to [`MockProvider`] — never panic — so a misconfigured env var
+/// doesn't crash boot.
 #[must_use]
 pub fn new(cfg: &LlmTransport) -> Box<dyn Provider> {
-    match cfg.provider.as_str() {
+    let chosen = if cfg.provider.is_empty() {
+        detect(cfg)
+    } else {
+        cfg.provider.as_str()
+    };
+    match chosen {
         "anthropic" => match AnthropicProvider::try_new(cfg) {
-            Some(p) => Box::new(p),
+            Some(p) => {
+                tracing::info!(provider = "anthropic", base_url = %cfg.anthropic_base_url, "llm provider selected");
+                Box::new(p)
+            }
             None => Box::new(MockProvider),
         },
         "openai_compat" | "openai" => match OpenAiCompatProvider::try_new(cfg) {
-            Some(p) => Box::new(p),
+            Some(p) => {
+                tracing::info!(provider = "openai_compat", base_url = %cfg.openai_base_url, "llm provider selected");
+                Box::new(p)
+            }
             None => Box::new(MockProvider),
         },
-        _ => Box::new(MockProvider),
+        _ => {
+            tracing::info!(provider = "mock", "llm provider selected (no credentials)");
+            Box::new(MockProvider)
+        }
+    }
+}
+
+/// Auto-detect logic, exposed for testing.
+pub(crate) fn detect(cfg: &LlmTransport) -> &'static str {
+    if !cfg.anthropic_api_key.is_empty() {
+        "anthropic"
+    } else if !cfg.openai_base_url.is_empty() && !cfg.openai_api_key.is_empty() {
+        "openai_compat"
+    } else {
+        "mock"
     }
 }
 

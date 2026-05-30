@@ -41,6 +41,10 @@ path = "src/bin/goalpost.rs"
 name = "devpub"
 path = "src/bin/devpub.rs"
 
+[[bin]]
+name = "llmsmoke"
+path = "src/bin/llmsmoke.rs"
+
 # All versions verified against crates.io max_stable on 2026-05-30.
 [dependencies]
 anyhow = "=1.0.102"

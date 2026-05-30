@@ -1,7 +1,9 @@
 //! Runtime configuration loaded from the environment.
 //!
-//! Same env var names as the Go version — drop-in compatible. The companion
-//! [`LlmTransport`] subset is what gets passed to [`crate::llm::new`].
+//! Zero-config LLM: just drop a key in. If `LLM_PROVIDER` is unset,
+//! [`crate::llm::new`] auto-detects the transport from the credentials
+//! present (`ANTHROPIC_API_KEY` → Anthropic-shape; `OPENAI_API_KEY` +
+//! `OPENAI_BASE_URL` → OpenAI-shape; nothing → mock).
 
 use std::env;
 
@@ -17,7 +19,7 @@ pub struct Config {
     pub sec_user_agent: String,
     pub fred_api_key: String,
     pub anthropic_base_url: String,
-    pub anthropic_auth_token: String,
+    pub anthropic_api_key: String,
     pub anthropic_version: String,
     pub openai_base_url: String,
     pub openai_api_key: String,
@@ -25,10 +27,12 @@ pub struct Config {
 
 #[derive(Debug, Clone, Default)]
 pub struct LlmTransport {
+    /// Empty string → auto-detect from credentials. Otherwise one of:
+    /// `"anthropic"`, `"openai_compat"`, `"openai"`, `"mock"`.
     pub provider: String,
     pub model: String,
     pub anthropic_base_url: String,
-    pub anthropic_auth_token: String,
+    pub anthropic_api_key: String,
     pub anthropic_version: String,
     pub openai_base_url: String,
     pub openai_api_key: String,
@@ -44,18 +48,18 @@ fn get(k: &str, default: &str) -> String {
 impl Config {
     /// Reads config from the environment, falling back to local-dev defaults.
     ///
-    /// LLM transport defaults to "mock". To use z.ai (recommended):
+    /// LLM examples:
+    ///
+    /// z.ai (auto-detected the moment `ANTHROPIC_API_KEY` is set):
     ///
     /// ```text
-    /// LLM_PROVIDER=anthropic
     /// ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
-    /// ANTHROPIC_AUTH_TOKEN=<your z.ai key>
+    /// ANTHROPIC_API_KEY=<your z.ai key>
     /// ```
     ///
-    /// For DeepSeek / OpenAI-compatible:
+    /// DeepSeek / OpenAI-compatible (auto-detected when both are set):
     ///
     /// ```text
-    /// LLM_PROVIDER=openai_compat
     /// OPENAI_BASE_URL=https://api.deepseek.com
     /// OPENAI_API_KEY=<sk-...>
     /// ```
@@ -71,14 +75,15 @@ impl Config {
             ),
             nats_url: get("NATS_URL", "nats://localhost:4222"),
             gateway_addr: get("GATEWAY_ADDR", ":8080"),
-            llm_provider: get("LLM_PROVIDER", "mock"),
-            model_deep: get("LLM_MODEL_DEEP", "claude-opus-4-8"),
+            // Empty default → auto-detect.
+            llm_provider: get("LLM_PROVIDER", ""),
+            model_deep: get("LLM_MODEL_DEEP", "glm-4.6"),
             model_routine: get("LLM_MODEL_ROUTINE", "glm-4.6"),
             model_triage: get("LLM_MODEL_TRIAGE", "glm-4.5-air"),
             sec_user_agent: get("SEC_EDGAR_UA", "stocks-research n@noeljackson.com"),
             fred_api_key: get("FRED_API_KEY", ""),
-            anthropic_base_url: get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
-            anthropic_auth_token: get("ANTHROPIC_AUTH_TOKEN", ""),
+            anthropic_base_url: get("ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic"),
+            anthropic_api_key: get("ANTHROPIC_API_KEY", ""),
             anthropic_version: get("ANTHROPIC_VERSION", "2023-06-01"),
             openai_base_url: get("OPENAI_BASE_URL", ""),
             openai_api_key: get("OPENAI_API_KEY", ""),
@@ -92,7 +97,7 @@ impl Config {
             provider: self.llm_provider.clone(),
             model: self.model_routine.clone(),
             anthropic_base_url: self.anthropic_base_url.clone(),
-            anthropic_auth_token: self.anthropic_auth_token.clone(),
+            anthropic_api_key: self.anthropic_api_key.clone(),
             anthropic_version: self.anthropic_version.clone(),
             openai_base_url: self.openai_base_url.clone(),
             openai_api_key: self.openai_api_key.clone(),

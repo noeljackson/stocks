@@ -53,10 +53,12 @@ class Response:
 
 @dataclass
 class TransportConfig:
-    provider: str = "mock"
+    """Empty `provider` triggers auto-detect from credentials present."""
+
+    provider: str = ""
     model: str = ""
-    anthropic_base_url: str = "https://api.anthropic.com"
-    anthropic_auth_token: str = ""
+    anthropic_base_url: str = "https://api.z.ai/api/anthropic"
+    anthropic_api_key: str = ""
     anthropic_version: str = "2023-06-01"
     openai_base_url: str = ""
     openai_api_key: str = ""
@@ -100,14 +102,14 @@ class AnthropicProvider:
     def __init__(
         self,
         base_url: str,
-        token: str,
+        api_key: str,
         *,
         version: str = "2023-06-01",
         model: str = "",
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._base = base_url.rstrip("/")
-        self._token = token
+        self._api_key = api_key
         self._version = version
         self._model = model
         self._client = client or httpx.AsyncClient(timeout=120.0)
@@ -125,7 +127,7 @@ class AnthropicProvider:
             f"{self._base}/v1/messages",
             json=body,
             headers={
-                "x-api-key": self._token,
+                "x-api-key": self._api_key,
                 "anthropic-version": self._version,
                 "content-type": "application/json",
             },
@@ -213,28 +215,42 @@ class OpenAICompatProvider:
 # ---------- factory ----------
 
 
+def detect(cfg: TransportConfig) -> str:
+    """Auto-detect rule (mirrors the Rust factory). Anthropic wins ties."""
+    if cfg.anthropic_api_key:
+        return "anthropic"
+    if cfg.openai_base_url and cfg.openai_api_key:
+        return "openai_compat"
+    return "mock"
+
+
 def new_provider(cfg: TransportConfig) -> Provider:
-    """Return a provider configured from cfg. Falls back to mock for missing
-    required config (never raises at construction time)."""
-    if cfg.provider == "anthropic":
-        if not cfg.anthropic_auth_token:
-            logger.warning("llm anthropic: missing ANTHROPIC_AUTH_TOKEN, using mock")
+    """Return a provider configured from cfg. Empty ``provider`` triggers
+    auto-detect; falls back to mock for missing required config (never raises
+    at construction time)."""
+    chosen = cfg.provider or detect(cfg)
+    if chosen == "anthropic":
+        if not cfg.anthropic_api_key:
+            logger.warning("llm anthropic: missing ANTHROPIC_API_KEY, using mock")
             return MockProvider()
+        logger.info("llm provider selected: anthropic (%s)", cfg.anthropic_base_url)
         return AnthropicProvider(
             cfg.anthropic_base_url,
-            cfg.anthropic_auth_token,
+            cfg.anthropic_api_key,
             version=cfg.anthropic_version or "2023-06-01",
             model=cfg.model,
         )
-    if cfg.provider in ("openai_compat", "openai"):
+    if chosen in ("openai_compat", "openai"):
         if not (cfg.openai_base_url and cfg.openai_api_key):
             logger.warning(
                 "llm openai_compat: missing OPENAI_BASE_URL or OPENAI_API_KEY, using mock"
             )
             return MockProvider()
+        logger.info("llm provider selected: openai_compat (%s)", cfg.openai_base_url)
         return OpenAICompatProvider(
             cfg.openai_base_url,
             cfg.openai_api_key,
             model=cfg.model,
         )
+    logger.info("llm provider selected: mock (no credentials)")
     return MockProvider()

@@ -35,12 +35,12 @@ fn openai_happy() -> serde_json::Value {
     })
 }
 
-fn anthropic_cfg(base_url: String, token: &str) -> LlmTransport {
+fn anthropic_cfg(base_url: String, key: &str) -> LlmTransport {
     LlmTransport {
         provider: "anthropic".into(),
         model: "glm-4.6".into(),
         anthropic_base_url: base_url,
-        anthropic_auth_token: token.into(),
+        anthropic_api_key: key.into(),
         anthropic_version: "2023-06-01".into(),
         ..Default::default()
     }
@@ -160,11 +160,81 @@ async fn anthropic_json_schema_appends_to_system() {
 }
 
 #[test]
-fn anthropic_missing_token_returns_mock() {
+fn anthropic_missing_key_returns_mock() {
     let p = super::new(&LlmTransport { provider: "anthropic".into(), ..Default::default() });
-    // Without a token we expect Mock; verify by content (Mock returns {"mock":true}).
+    // Without a key we expect Mock; verify by content (Mock returns {"mock":true}).
     let fut = p.complete(Request::default());
     let r = futures::executor::block_on(fut).unwrap();
+    assert_eq!(r.content, r#"{"mock":true}"#);
+}
+
+// ---------- auto-detect ----------
+
+#[test]
+fn detect_anthropic_when_key_present() {
+    let cfg = LlmTransport {
+        anthropic_api_key: "k".into(),
+        ..Default::default()
+    };
+    assert_eq!(super::detect(&cfg), "anthropic");
+}
+
+#[test]
+fn detect_openai_when_both_present() {
+    let cfg = LlmTransport {
+        openai_base_url: "https://x".into(),
+        openai_api_key: "k".into(),
+        ..Default::default()
+    };
+    assert_eq!(super::detect(&cfg), "openai_compat");
+}
+
+#[test]
+fn detect_anthropic_wins_over_openai() {
+    // Both creds present → anthropic wins (it's the project default).
+    let cfg = LlmTransport {
+        anthropic_api_key: "ak".into(),
+        openai_base_url: "https://x".into(),
+        openai_api_key: "ok".into(),
+        ..Default::default()
+    };
+    assert_eq!(super::detect(&cfg), "anthropic");
+}
+
+#[test]
+fn detect_openai_needs_both_base_and_key() {
+    // Only base, no key → mock (don't pretend we can call).
+    let cfg = LlmTransport {
+        openai_base_url: "https://x".into(),
+        ..Default::default()
+    };
+    assert_eq!(super::detect(&cfg), "mock");
+    // Only key, no base → mock.
+    let cfg = LlmTransport {
+        openai_api_key: "k".into(),
+        ..Default::default()
+    };
+    assert_eq!(super::detect(&cfg), "mock");
+}
+
+#[test]
+fn detect_falls_back_to_mock_with_nothing_set() {
+    assert_eq!(super::detect(&LlmTransport::default()), "mock");
+}
+
+#[test]
+fn explicit_provider_overrides_detect() {
+    // Anthropic key present but caller forces openai_compat → still goes to
+    // openai branch (which then falls back to mock for missing creds).
+    let cfg = LlmTransport {
+        provider: "openai_compat".into(),
+        anthropic_api_key: "would-have-picked-this".into(),
+        ..Default::default()
+    };
+    // The factory chooses openai_compat → tries to build it → no openai creds
+    // → returns Mock. We assert by observable behavior (Mock content).
+    let p = super::new(&cfg);
+    let r = futures::executor::block_on(p.complete(Request::default())).unwrap();
     assert_eq!(r.content, r#"{"mock":true}"#);
 }
 

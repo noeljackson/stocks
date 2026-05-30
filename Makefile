@@ -156,8 +156,11 @@ py-check: ## Ruff lint + pytest
 	cd py && .venv/bin/ruff check src tests
 	cd py && .venv/bin/pytest -q
 
-run-context: ## Run the Python context-maintainer
-	cd py && $(RUN) .venv/bin/python -m stocks.context_maintainer
+refresh-context: ## Refresh ticker_context for one symbol (SYMBOL=NVDA make refresh-context)
+	cd py && $(RUN) .venv/bin/python -m stocks.context_maintainer $(SYMBOL) $(if $(LIMIT),--limit $(LIMIT))
+
+# Legacy alias (will be removed when context_maintainer becomes a long-running service).
+run-context: refresh-context ## Alias of refresh-context (deprecated)
 
 # ---- docker images ----
 .PHONY: images

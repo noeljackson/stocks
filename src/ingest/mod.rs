@@ -6,6 +6,8 @@
 
 pub mod edgar;
 pub mod fred;
+pub mod sec;
+pub mod xbrl;
 
 use std::sync::Arc;
 use std::time::Duration;

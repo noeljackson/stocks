@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::{Duration as ChronoDuration, NaiveDate, TimeZone, Utc};
+use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::warn;

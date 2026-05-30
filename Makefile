@@ -156,6 +156,9 @@ run-goalpost: ## Run the goalpost detector (thesis.updated → integrity check)
 run-staler: ## Run the staleness service (past-deadline conditions → risk.warning)
 	$(RUN) cargo run --release --bin staler
 
+run-evaluator: ## Run the condition evaluator (resolves targets → satisfied/refuted)
+	$(RUN) cargo run --release --bin evaluator
+
 llmsmoke: ## One-shot LLM round-trip — picks transport from env (mock if no key)
 	$(RUN) cargo run --release --bin llmsmoke -- "$(MSG)"
 

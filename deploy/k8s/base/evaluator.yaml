@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: evaluator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: evaluator
+  template:
+    metadata:
+      labels:
+        app: evaluator
+    spec:
+      containers:
+        - name: evaluator
+          image: ghcr.io/noeljackson/stocks:dev
+          command: ["/evaluator"]
+          envFrom:
+            - configMapRef: { name: stocks-config }
+            - secretRef: { name: stocks-secrets }
+          env:
+            - { name: EVAL_INTERVAL_SECS, value: "60" }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 96Mi }

@@ -3,14 +3,17 @@
   import {
     fetchAlerts,
     fetchRegime,
+    fetchTheses,
     fetchTickers,
     postDecision,
     subscribe,
     type Alert,
     type MarketState,
     type StreamEvent,
+    type ThesisDetail,
     type Ticker,
   } from "./lib/api";
+  import ThesisDetails from "./lib/ThesisDetails.svelte";
 
   type View = "feed" | "tickers" | "decisions";
   let view = $state<View>("feed");
@@ -21,6 +24,37 @@
   let live = $state<StreamEvent[]>([]);
   let connected = $state(false);
   let error = $state<string | null>(null);
+
+  // Per-symbol expand state for the Tickers view (symbol → loaded theses or null while loading).
+  let expanded = $state<Record<string, ThesisDetail[] | null | undefined>>({});
+  // Per-event expand state for the Feed views (use index or alert id as key).
+  let liveOpen = $state<Record<number, boolean>>({});
+  let alertOpen = $state<Record<number, boolean>>({});
+
+  function toggleLive(i: number) {
+    liveOpen = { ...liveOpen, [i]: !liveOpen[i] };
+  }
+  function toggleAlert(id: number) {
+    alertOpen = { ...alertOpen, [id]: !alertOpen[id] };
+  }
+
+  async function toggleTicker(symbol: string) {
+    if (expanded[symbol] !== undefined) {
+      // collapse
+      const { [symbol]: _, ...rest } = expanded;
+      expanded = rest;
+      return;
+    }
+    expanded = { ...expanded, [symbol]: null }; // loading
+    try {
+      const t = await fetchTheses(symbol);
+      expanded = { ...expanded, [symbol]: t };
+    } catch (e) {
+      error = String(e);
+      const { [symbol]: _, ...rest } = expanded;
+      expanded = rest;
+    }
+  }
 
   // Decision form
   let decThesisId = $state("");
@@ -135,7 +169,8 @@
       <ul class="feed">
         {#each live as e, i (i)}
           {@const p = (e.payload ?? {}) as Record<string, unknown>}
-          <li>
+          <li class="expandable" onclick={() => toggleLive(i)}>
+            <span class="caret">{liveOpen[i] ? "▾" : "▸"}</span>
             <span class="kind" style="color:{kindColor(e.kind, p)}">{e.kind}</span>
             <code>{e.subject}</code>
             {#if p.symbol}<strong>{p.symbol as string}</strong>{/if}
@@ -147,6 +182,12 @@
               {#if p.dropped}<span class="muted">dropped: {(p.dropped as string[]).join(",")}</span>{/if}
             {:else if e.kind === "state_transition" && p.delta_notional}
               <span class="muted">Δ${Number(p.delta_notional).toLocaleString()}</span>
+            {/if}
+            {#if liveOpen[i]}
+              <div class="event-detail">
+                <h5>payload</h5>
+                <pre>{JSON.stringify(p, null, 2)}</pre>
+              </div>
             {/if}
           </li>
         {/each}
@@ -161,12 +202,24 @@
       <ul class="feed">
         {#each alerts as a (a.id)}
           {@const p = (a.payload ?? {}) as Record<string, unknown>}
-          <li>
+          <li class="expandable" onclick={() => toggleAlert(a.id)}>
+            <span class="caret">{alertOpen[a.id] ? "▾" : "▸"}</span>
             <span class="kind" style="color:{kindColor(a.kind, p)}">{a.kind}</span>
             {#if a.symbol}<strong>{a.symbol}</strong>{/if}
             {#if p.veto}<span class="badge danger">VETO</span>{/if}
             {#if p.kind === "goalpost_moved"}<span class="badge warning">GOALPOST</span>{/if}
+            {#if p.reasons}<span class="muted">{(p.reasons as string[]).join(" · ")}</span>{/if}
             <span class="muted">{shortTs(a.created_at)}</span>
+            {#if alertOpen[a.id]}
+              <div class="event-detail">
+                <h5>alert #{a.id}</h5>
+                <pre>{JSON.stringify({
+                  thesis_id: a.thesis_id,
+                  acknowledged: a.acknowledged,
+                  payload: p,
+                }, null, 2)}</pre>
+              </div>
+            {/if}
           </li>
         {/each}
       </ul>
@@ -176,16 +229,20 @@
     {#if tickers.length === 0}
       <p class="muted">No active tickers seeded. Run <code>make seed-demo</code> to populate sample data.</p>
     {/if}
+    <p class="muted">Click a row to expand the thesis details (why we're tracking it, invalidation conditions, goalpost history).</p>
     <table>
       <thead>
         <tr>
+          <th></th>
           <th>Symbol</th><th>Cluster</th><th>Tier</th>
           <th>Domain-fit</th><th>Options</th><th>Open theses</th>
         </tr>
       </thead>
       <tbody>
         {#each tickers as t (t.symbol)}
-          <tr>
+          {@const isOpen = expanded[t.symbol] !== undefined}
+          <tr class="ticker-row" class:open={isOpen} onclick={() => toggleTicker(t.symbol)}>
+            <td class="caret">{isOpen ? "▾" : "▸"}</td>
             <td><strong>{t.symbol}</strong></td>
             <td><span class="muted">{t.cluster_name ?? t.cluster_id}</span></td>
             <td>T{t.tier}</td>
@@ -193,6 +250,22 @@
             <td>{t.options_eligible ? "✓" : ""}</td>
             <td>{t.open_theses}</td>
           </tr>
+          {#if isOpen}
+            <tr class="detail-row">
+              <td colspan="7">
+                {#if expanded[t.symbol] === null}
+                  <p class="muted">Loading theses…</p>
+                {:else if expanded[t.symbol] && (expanded[t.symbol] as ThesisDetail[]).length === 0}
+                  <p class="muted">No theses recorded for <strong>{t.symbol}</strong> yet.
+                  This ticker is tracked but hasn't graduated into a written thesis.</p>
+                {:else}
+                  {#each expanded[t.symbol] as ThesisDetail[] as thesis (thesis.thesis_id)}
+                    <ThesisDetails {thesis} />
+                  {/each}
+                {/if}
+              </td>
+            </tr>
+          {/if}
         {/each}
       </tbody>
     </table>
@@ -280,6 +353,22 @@
     text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #1f2733;
   }
   th { color: #bac2de; font-weight: 500; font-size: 0.8rem; }
+  .ticker-row { cursor: pointer; transition: background 0.1s; }
+  .ticker-row:hover { background: rgba(137, 180, 250, 0.05); }
+  .ticker-row.open { background: rgba(137, 180, 250, 0.08); }
+  .caret { color: #6c7086; font-size: 0.8rem; width: 1.2rem; }
+  .detail-row td { padding: 0; border-bottom: 1px solid #1f2733; }
+  .feed li.expandable { cursor: pointer; }
+  .feed li.expandable:hover { background: rgba(137, 180, 250, 0.04); }
+  .event-detail {
+    width: 100%; margin-top: 0.4rem; padding-top: 0.4rem;
+    border-top: 1px dashed #2a3548;
+  }
+  .event-detail pre {
+    background: #0a0d14; padding: 0.5rem; border-radius: 4px;
+    font-size: 0.75rem; overflow-x: auto; color: #bac2de; margin: 0.25rem 0;
+  }
+  .event-detail h5 { margin: 0.4rem 0 0.2rem 0; font-size: 0.75rem; color: #bac2de; text-transform: uppercase; letter-spacing: 0.05em; }
 
   .decform {
     display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; max-width: 600px;

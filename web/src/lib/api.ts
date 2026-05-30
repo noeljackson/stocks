@@ -50,6 +50,55 @@ export async function fetchTickers(): Promise<Ticker[]> {
   return ((await r.json()) as Ticker[] | null) ?? [];
 }
 
+export interface Condition {
+  type: "quantitative" | "narrative";
+  name: string;
+  expr?: string;
+  assertion?: string;
+}
+
+export interface ThesisVersionEvent {
+  version: number;
+  weakens_invalidation: boolean;
+  diff: Record<string, unknown>;
+  rationale?: string | null;
+  at: string;
+}
+
+export interface ThesisDetail {
+  thesis_id: string;
+  symbol: string;
+  cluster_id?: string | null;
+  cluster_thesis?: string | null;
+  state: string;
+  edge_rationale: string;
+  bull_case?: string | null;
+  bear_case?: string | null;
+  forecast: Record<string, unknown> | null;
+  conviction_conditions: Condition[];
+  trigger_conditions: Condition[];
+  invalidation_conditions: Condition[];
+  fulfillment_conditions: Condition[];
+  conviction_tier?: string | null;
+  instrument?: string | null;
+  intended_size: Record<string, unknown> | null;
+  version: number;
+  immutable_original: {
+    edge_rationale?: string;
+    invalidation_conditions?: Condition[];
+    [key: string]: unknown;
+  };
+  created_at: string;
+  updated_at: string;
+  history: ThesisVersionEvent[];
+}
+
+export async function fetchTheses(symbol: string): Promise<ThesisDetail[]> {
+  const r = await fetch(`/api/theses?symbol=${encodeURIComponent(symbol)}`);
+  if (!r.ok) throw new Error(`theses ${r.status}`);
+  return ((await r.json()) as ThesisDetail[] | null) ?? [];
+}
+
 /** subscribe opens the SSE feed; returns a cleanup function. */
 export function subscribe(
   onEvent: (e: StreamEvent) => void,

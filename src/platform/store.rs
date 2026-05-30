@@ -13,7 +13,9 @@ use sqlx::{
 };
 use std::time::Duration;
 
-use crate::platform::domain::{Alert, AlertKind, MarketStateRow, TickerRow};
+use crate::platform::domain::{
+    Alert, AlertKind, MarketStateRow, ThesisDetail, ThesisVersionEvent, TickerRow,
+};
 
 #[derive(Clone)]
 pub struct Store {
@@ -181,6 +183,91 @@ impl Store {
                 })
             })
             .collect()
+    }
+
+    /// Loads all theses for a symbol plus their version-history audit trail.
+    /// Returns most-recently-updated first so the UI sees the latest thesis on
+    /// top when there are multiple.
+    pub async fn theses_for_symbol(&self, symbol: &str) -> Result<Vec<ThesisDetail>> {
+        let rows = sqlx::query(
+            r#"SELECT thesis_id, symbol, cluster_id, cluster_thesis, state,
+                      edge_rationale, bull_case, bear_case,
+                      COALESCE(forecast, 'null'::jsonb)               AS forecast,
+                      COALESCE(conviction_conditions, '[]'::jsonb)    AS conviction_conditions,
+                      COALESCE(trigger_conditions, '[]'::jsonb)       AS trigger_conditions,
+                      COALESCE(invalidation_conditions, '[]'::jsonb)  AS invalidation_conditions,
+                      COALESCE(fulfillment_conditions, '[]'::jsonb)   AS fulfillment_conditions,
+                      conviction_tier, instrument,
+                      COALESCE(intended_size, 'null'::jsonb)          AS intended_size,
+                      version,
+                      COALESCE(immutable_original, '{}'::jsonb)       AS immutable_original,
+                      created_at, updated_at
+                 FROM thesis
+                WHERE symbol = $1
+             ORDER BY updated_at DESC"#,
+        )
+        .bind(symbol)
+        .fetch_all(&self.pool)
+        .await
+        .context("theses_for_symbol")?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let thesis_id: uuid::Uuid = row.try_get("thesis_id")?;
+            let state_s: String = row.try_get("state")?;
+            let state = serde_json::from_value(serde_json::Value::String(state_s))
+                .map_err(|e| anyhow::anyhow!("decode ThesisState: {e}"))?;
+
+            // Version history for this thesis.
+            let hist_rows = sqlx::query(
+                r#"SELECT version, weakens_invalidation,
+                          COALESCE(diff, '{}'::jsonb) AS diff,
+                          rationale, at
+                     FROM thesis_version_history
+                    WHERE thesis_id = $1
+                 ORDER BY version DESC, at DESC"#,
+            )
+            .bind(thesis_id)
+            .fetch_all(&self.pool)
+            .await
+            .context("thesis_version_history")?;
+
+            let history: Vec<ThesisVersionEvent> = hist_rows
+                .into_iter()
+                .map(|r| ThesisVersionEvent {
+                    version: r.try_get("version").unwrap_or(0),
+                    weakens_invalidation: r.try_get("weakens_invalidation").unwrap_or(false),
+                    diff: r.try_get("diff").unwrap_or(serde_json::Value::Null),
+                    rationale: r.try_get::<Option<String>, _>("rationale").unwrap_or(None),
+                    at: r.try_get("at").unwrap_or_else(|_| chrono::Utc::now()),
+                })
+                .collect();
+
+            out.push(ThesisDetail {
+                thesis_id,
+                symbol: row.try_get("symbol")?,
+                cluster_id: row.try_get("cluster_id").ok(),
+                cluster_thesis: row.try_get("cluster_thesis").ok(),
+                state,
+                edge_rationale: row.try_get("edge_rationale")?,
+                bull_case: row.try_get("bull_case").ok(),
+                bear_case: row.try_get("bear_case").ok(),
+                forecast: row.try_get("forecast")?,
+                conviction_conditions: row.try_get("conviction_conditions")?,
+                trigger_conditions: row.try_get("trigger_conditions")?,
+                invalidation_conditions: row.try_get("invalidation_conditions")?,
+                fulfillment_conditions: row.try_get("fulfillment_conditions")?,
+                conviction_tier: row.try_get("conviction_tier").ok(),
+                instrument: row.try_get("instrument").ok(),
+                intended_size: row.try_get("intended_size")?,
+                version: row.try_get("version")?,
+                immutable_original: row.try_get("immutable_original")?,
+                created_at: row.try_get("created_at")?,
+                updated_at: row.try_get("updated_at")?,
+                history,
+            });
+        }
+        Ok(out)
     }
 
     /// Writes a regime classification row (SPEC §5.4). `as_of` is PK; conflicts

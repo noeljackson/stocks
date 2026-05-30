@@ -114,6 +114,39 @@ run-goalpost: ## Run the goalpost detector (thesis.updated → integrity check)
 llmsmoke: ## One-shot LLM round-trip — picks transport from env (mock if no key)
 	$(RUN) cargo run --release --bin llmsmoke -- "$(MSG)"
 
+# ---- watch (auto-rebuild + restart on source change) ----
+# Requires cargo-watch (`cargo install cargo-watch`). Each watch-* target
+# re-execs the binary on every relevant file change.
+.PHONY: watch-gateway watch-ingest watch-regime watch-router watch-risk watch-goalpost watch-all
+watch-gateway: ## Auto-rebuild+restart gateway on src/ + web/dist/ changes
+	$(RUN) cargo watch -w src -w web/dist -w Cargo.toml \
+	    -x 'run --release --bin gateway'
+
+watch-ingest: ## Auto-restart ingest on src/ changes
+	$(RUN) cargo watch -w src -w Cargo.toml -x 'run --release --bin ingest'
+
+watch-regime: ## Auto-restart regime on src/ changes
+	$(RUN) cargo watch -w src -w Cargo.toml -x 'run --release --bin regime'
+
+watch-router: ## Auto-restart router on src/ changes
+	$(RUN) cargo watch -w src -w Cargo.toml -x 'run --release --bin router'
+
+watch-risk: ## Auto-restart risk on src/ changes
+	$(RUN) cargo watch -w src -w Cargo.toml -x 'run --release --bin risk'
+
+watch-goalpost: ## Auto-restart goalpost on src/ changes
+	$(RUN) cargo watch -w src -w Cargo.toml -x 'run --release --bin goalpost'
+
+# Watch-all uses GNU parallel if available, else gives instructions for tmux.
+watch-all: ## Show how to run all services in watch mode
+	@echo "Run each in a separate terminal (or tmux pane):"
+	@echo "  make watch-gateway   # :8080"
+	@echo "  make watch-regime"
+	@echo "  make watch-router"
+	@echo "  make watch-risk"
+	@echo "  make watch-goalpost"
+	@echo "  make watch-ingest    # only when actively iterating on adapter code"
+
 # ---- Python ----
 .PHONY: py-setup py-check run-context
 py-setup: ## Create venv + install pinned python deps

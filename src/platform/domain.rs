@@ -104,6 +104,42 @@ pub struct TickerRow {
     pub open_theses: i64,
 }
 
+/// Full thesis record + version-history audit trail for the UI detail panel.
+/// The history lets the UI render goalpost-moved markers per revision.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThesisDetail {
+    pub thesis_id: Uuid,
+    pub symbol: String,
+    pub cluster_id: Option<String>,
+    pub cluster_thesis: Option<String>,
+    pub state: ThesisState,
+    pub edge_rationale: String,
+    pub bull_case: Option<String>,
+    pub bear_case: Option<String>,
+    pub forecast: serde_json::Value,
+    pub conviction_conditions: serde_json::Value,
+    pub trigger_conditions: serde_json::Value,
+    pub invalidation_conditions: serde_json::Value,
+    pub fulfillment_conditions: serde_json::Value,
+    pub conviction_tier: Option<String>,
+    pub instrument: Option<String>,
+    pub intended_size: serde_json::Value,
+    pub version: i32,
+    pub immutable_original: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub history: Vec<ThesisVersionEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThesisVersionEvent {
+    pub version: i32,
+    pub weakens_invalidation: bool,
+    pub diff: serde_json::Value,
+    pub rationale: Option<String>,
+    pub at: DateTime<Utc>,
+}
+
 /// Unit pushed onto the live SSE feed (SPEC §3 FR7). Mirrors the `alert`
 /// table; payload is opaque JSON until the consumer parses by `kind`.
 #[derive(Debug, Clone, Serialize, Deserialize)]

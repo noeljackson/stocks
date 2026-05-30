@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Query, State},
     http::{StatusCode, header},
     response::{IntoResponse, Sse, sse::Event},
     routing::{get, post},
@@ -27,10 +27,32 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/alerts", get(list_alerts))
         .route("/api/regime", get(get_regime))
         .route("/api/tickers", get(list_tickers))
+        .route("/api/theses", get(list_theses))
         .route("/api/stream", get(stream))
         .route("/api/decisions", post(record_decision))
         .fallback(spa_handler)
         .with_state(gw)
+}
+
+#[derive(Debug, Deserialize)]
+struct ThesesQuery {
+    symbol: Option<String>,
+}
+
+async fn list_theses(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<ThesesQuery>,
+) -> impl IntoResponse {
+    let Some(sym) = q.symbol else {
+        return (StatusCode::BAD_REQUEST, "symbol query param required").into_response();
+    };
+    match gw.store.theses_for_symbol(&sym).await {
+        Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
+        Err(e) => {
+            warn!(symbol = %sym, error = %e, "list_theses failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
 }
 
 async fn list_alerts(State(gw): State<Arc<Gateway>>) -> impl IntoResponse {

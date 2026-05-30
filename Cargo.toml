@@ -73,6 +73,7 @@ uuid = { version = "=1.23.2", features = ["v4", "serde"] }
 
 [dev-dependencies]
 pretty_assertions = "=1.4.1"
+tempfile = "=3.27.0"
 wiremock = "=0.6.5"
 
 # Performance + size tuning for the production binary (distroless image).

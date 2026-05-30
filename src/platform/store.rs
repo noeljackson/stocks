@@ -13,6 +13,7 @@ use sqlx::{
 };
 use std::time::Duration;
 
+use crate::llm::prompts::{InvocationRecorder, InvocationRow};
 use crate::platform::domain::{
     Alert, AlertKind, MarketStateRow, ThesisDetail, ThesisVersionEvent, TickerRow,
 };
@@ -270,6 +271,43 @@ impl Store {
         Ok(out)
     }
 
+    /// Records a single LLM call to the audit table (#6). Pair with
+    /// `llm::prompts::invoke` — the recorder is wired via the trait impl
+    /// below.
+    pub async fn record_llm_invocation(
+        &self,
+        prompt_name: &str,
+        prompt_hash: &str,
+        provider: &str,
+        model: &str,
+        input_tokens: i32,
+        output_tokens: i32,
+        latency_ms: i32,
+        request_summary: &str,
+        response_summary: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"INSERT INTO llm_invocation
+                 (prompt_name, prompt_hash, provider, model,
+                  input_tokens, output_tokens, latency_ms,
+                  request_summary, response_summary)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)"#,
+        )
+        .bind(prompt_name)
+        .bind(prompt_hash)
+        .bind(provider)
+        .bind(model)
+        .bind(input_tokens)
+        .bind(output_tokens)
+        .bind(latency_ms)
+        .bind(request_summary)
+        .bind(response_summary)
+        .execute(&self.pool)
+        .await
+        .context("record_llm_invocation")?;
+        Ok(())
+    }
+
     /// Writes a regime classification row (SPEC §5.4). `as_of` is PK; conflicts
     /// overwrite. `config_version` is stored as text per schema typing.
     pub async fn upsert_market_state(
@@ -298,5 +336,24 @@ impl Store {
         .await
         .context("upsert_market_state")?;
         Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl InvocationRecorder for Store {
+    async fn record(&self, row: InvocationRow<'_>) -> Result<()> {
+        // i32 cast is fine: token counts ≤ ~200k per call; latency ≤ ~10min.
+        self.record_llm_invocation(
+            row.prompt_name,
+            row.prompt_hash,
+            row.provider,
+            row.model,
+            i32::try_from(row.input_tokens).unwrap_or(i32::MAX),
+            i32::try_from(row.output_tokens).unwrap_or(i32::MAX),
+            i32::try_from(row.latency_ms).unwrap_or(i32::MAX),
+            row.request_summary,
+            row.response_summary,
+        )
+        .await
     }
 }

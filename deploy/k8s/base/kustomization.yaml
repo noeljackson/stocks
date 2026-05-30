@@ -13,6 +13,7 @@ resources:
   - regime.yaml
   - router.yaml
   - risk.yaml
+  - goalpost.yaml
   - context-maintainer.yaml
 
 labels:

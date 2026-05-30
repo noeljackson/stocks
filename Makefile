@@ -80,6 +80,9 @@ run-router: ## Run the event router (ingest.* → route.ticker.*)
 run-risk: ## Run the risk overlay (thesis.actionable → risk.veto/warning)
 	go run ./cmd/risk
 
+run-goalpost: ## Run the goalpost detector (thesis.updated → integrity check)
+	go run ./cmd/goalpost
+
 # ---- Python ----
 .PHONY: py-setup py-check run-context
 py-setup: ## Create venv + install pinned python deps

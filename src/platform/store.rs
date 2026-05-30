@@ -425,6 +425,47 @@ impl Store {
         Ok(out)
     }
 
+    /// Upsert a batch of price bars (#17). Primary key (symbol, ts) handles
+    /// dedup; same-day re-polls overwrite (a later intraday bar replaces an
+    /// earlier one with the same date).
+    pub async fn upsert_price_bars(
+        &self,
+        rows: &[crate::ingest::massive::PriceBarRow],
+    ) -> Result<usize> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        let mut inserted = 0;
+        let mut tx = self.pool.begin().await.context("begin tx")?;
+        for r in rows {
+            let res = sqlx::query(
+                r#"INSERT INTO price_bar (symbol, ts, open, high, low, close, volume)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)
+                   ON CONFLICT (symbol, ts) DO UPDATE SET
+                     open   = EXCLUDED.open,
+                     high   = EXCLUDED.high,
+                     low    = EXCLUDED.low,
+                     close  = EXCLUDED.close,
+                     volume = EXCLUDED.volume"#,
+            )
+            .bind(&r.symbol)
+            .bind(r.ts)
+            .bind(r.open)
+            .bind(r.high)
+            .bind(r.low)
+            .bind(r.close)
+            .bind(r.volume)
+            .execute(&mut *tx)
+            .await
+            .context("upsert_price_bars")?;
+            if res.rows_affected() > 0 {
+                inserted += 1;
+            }
+        }
+        tx.commit().await.context("commit tx")?;
+        Ok(inserted)
+    }
+
     /// Upsert a batch of XBRL facts. Idempotent via the unique index on
     /// (symbol, taxonomy, concept, period_end, accession). Returns number
     /// of rows actually inserted (vs already-present).

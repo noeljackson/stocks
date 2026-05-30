@@ -6,6 +6,7 @@
 
 pub mod edgar;
 pub mod fred;
+pub mod massive;
 pub mod sec;
 pub mod xbrl;
 

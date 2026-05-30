@@ -10,7 +10,7 @@ help: ## List targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
 # ---- local infra ----
-.PHONY: up down logs migrate psql
+.PHONY: up down logs migrate psql nuke
 up: ## Start local Postgres+NATS (docker compose)
 	$(COMPOSE) up -d
 	@echo "Postgres :5432  NATS :4222 (mon :8222)"
@@ -30,21 +30,22 @@ migrate: ## Apply db/migrations/*.sql in order (idempotent re-run)
 psql: ## Open psql against local db
 	psql "$(PSQL_URL)"
 
-# ---- Go ----
-.PHONY: go-deps go-build go-vet go-test
-go-deps: ## Resolve Go deps (writes go.sum with checksums)
-	go get github.com/jackc/pgx/v5@latest github.com/nats-io/nats.go@latest
-	go mod tidy
+# ---- Rust ----
+.PHONY: build test check fmt clippy
+build: ## cargo build --release (all binaries into target/release/)
+	cargo build --release
 
-go-build: ## Build all Go binaries into ./bin
-	mkdir -p bin
-	go build -o bin/ ./cmd/...
+test: ## cargo test (lib + integration)
+	cargo test
 
-go-vet: ## Static checks
-	go vet ./...
+check: ## cargo check (fast)
+	cargo check
 
-go-test: ## Run Go tests
-	go test ./...
+fmt: ## cargo fmt
+	cargo fmt --all
+
+clippy: ## cargo clippy on all targets, deny warnings
+	cargo clippy --all-targets -- -D warnings
 
 # ---- Frontend (supply-chain hardened) ----
 .PHONY: web-install web-audit web-scan web-build web-dev
@@ -57,46 +58,47 @@ web-audit: ## Vulnerability audit
 web-scan: ## Fail if any known-compromised (May 2026 wave) package is present
 	@cd web && node ../scripts/scan-deps.mjs
 
-web-build: ## Build SPA into internal/web/dist (embedded by gateway)
+web-build: ## Build SPA into internal/web/dist (embedded by gateway via rust-embed)
 	cd web && npm run build
 
 web-dev: ## Vite dev server
 	cd web && npm run dev
 
-# ---- run ----
-.PHONY: run-gateway run-ingest run-regime run-router run-risk
-run-gateway: ## Run the decision/alert + UI gateway
-	go run ./cmd/gateway
+# ---- run (local dev; build once with `make build`, then ./target/release/<bin>) ----
+.PHONY: run-gateway run-ingest run-regime run-router run-risk run-goalpost
+run-gateway: ## Run the gateway (build first with `make build`)
+	cargo run --release --bin gateway
 
 run-ingest: ## Run the ingestion runner (EDGAR + FRED)
-	go run ./cmd/ingest
+	cargo run --release --bin ingest
 
-run-regime: ## Run the deterministic macro regime classifier
-	go run ./cmd/regime
+run-regime: ## Run the macro regime classifier
+	cargo run --release --bin regime
 
 run-router: ## Run the event router (ingest.* → route.ticker.*)
-	go run ./cmd/router
+	cargo run --release --bin router
 
 run-risk: ## Run the risk overlay (thesis.actionable → risk.veto/warning)
-	go run ./cmd/risk
+	cargo run --release --bin risk
 
 run-goalpost: ## Run the goalpost detector (thesis.updated → integrity check)
-	go run ./cmd/goalpost
+	cargo run --release --bin goalpost
 
 # ---- Python ----
 .PHONY: py-setup py-check run-context
 py-setup: ## Create venv + install pinned python deps
 	cd py && python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 
-py-check: ## Ruff lint python
-	cd py && .venv/bin/ruff check src
+py-check: ## Ruff lint + pytest
+	cd py && .venv/bin/ruff check src tests
+	cd py && .venv/bin/pytest -q
 
 run-context: ## Run the Python context-maintainer
 	cd py && .venv/bin/python -m stocks.context_maintainer
 
 # ---- docker images ----
 .PHONY: images
-images: ## Build container images: one Go image for all services, one Python image
+images: ## Build container images: one Rust image for all services, one Python image
 	docker build -t ghcr.io/noeljackson/stocks:dev .
 	docker build -f Dockerfile.py -t ghcr.io/noeljackson/stocks-py:dev .
 
@@ -116,5 +118,5 @@ k8s-apply: ## Apply to the current kube-context
 
 # ---- verify everything ----
 .PHONY: verify
-verify: go-vet go-build go-test web-scan web-audit k8s-render ## Build + lint + scan + tests + manifest render
+verify: check test web-scan web-audit k8s-render ## Build + lint + scan + tests + manifest render
 	@echo "VERIFY OK"

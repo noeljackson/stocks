@@ -11,6 +11,7 @@
 
 mod anthropic;
 mod openai;
+pub mod prompts;
 #[cfg(test)]
 mod tests;
 

@@ -36,15 +36,19 @@ The user message contains:
     "horizon_event": "what event resolves this forecast (Q3 earnings, FY26 print, etc.)"
   },
   "conviction_conditions": [
-    { "type": "quantitative" | "narrative",
+    {
+      "type": "quantitative" | "narrative",
       "name": "stable_snake_case_id",
-      "expr": "for quantitative — measurable expression, e.g. 'hbm4_q3_revenue > 1.2B'",
-      "assertion": "for narrative — specific claim, e.g. 'Top-3 hyperscalers reiterate FY26 capex guidance on Q2 calls'"
+      "expr": "quantitative only — short readable expression, e.g. 'hbm4_q3_revenue > 1.2B'",
+      "assertion": "narrative only — specific claim, e.g. 'Top-3 hyperscalers reiterate FY26 capex guidance on Q2 calls'",
+      "target": { "metric": "MU.HBM4_revenue", "op": ">", "value": 1.2e9, "unit": "USD" },
+      "deadline_at": "YYYY-MM-DDTHH:MM:SSZ — when this resolves / when we'll check",
+      "evidence_source": "where the answer comes from — e.g. 'edgar:10-Q:MU', 'fred:DGS10', 'news:Bloomberg' "
     }
   ],
-  "trigger_conditions": [ ... ],
-  "invalidation_conditions": [ ... ],
-  "fulfillment_conditions": [ ... ],
+  "trigger_conditions": [ ... same shape as conviction_conditions ... ],
+  "invalidation_conditions": [ ... same shape ... ],
+  "fulfillment_conditions": [ ... same shape ... ],
   "conviction_tier": "high" | "medium" | "low",
   "instrument": "equity" | "leaps",
   "intended_size_pct": <number, percent of portfolio — soft proposal>,
@@ -55,11 +59,12 @@ The user message contains:
 ## Rules
 
 1. **Specificity over completeness.** Every condition must reference a specific named thing — a metric, a customer, a filing type, a date range. "Margins under pressure" is bullshit; either give a number or don't write the condition.
-2. **The bear case must actually challenge the bull case.** If the bear case is a generic "valuation risk" while the bull case is "structural HBM tightness through CY27", you have failed. Find the specific force that, if it materialized, would invalidate the bull case.
-3. **At least one invalidation condition must be quantitative with a clear threshold.** A thesis you can't be wrong about is a vibe, not a thesis.
-4. **`edge_rationale` must say what is NOT YET PRICED.** Not "AI demand is strong" (priced); rather "Hynix CY26 HBM4 capex per 2026-04 capacity disclosure implies +18% YoY supply vs. consensus expecting +30%" (specific, sourced, asymmetric).
-5. **If the context is too thin**, set `edge_present: false` and explain. Don't pad.
-6. **Conviction tier mapping**: `high` = ≥1 strong quant-anchored invalidation + bear case actually challenges + 6-12mo horizon; `medium` = some specificity, some hedging; `low` = clearly thin.
-7. **Instrument**: `equity` by default; `leaps` only if there's a specific catalyst with a defined window AND the bet is on a magnitude move, not a directional drift.
+2. **Every condition must have `target`, `deadline_at`, and `evidence_source`.** A condition with no deadline can't go stale. A condition with no measurable target is unfalsifiable. A condition with no evidence source can't be auto-resolved. These three slots are how the system validates the thesis instead of just storing prose. If you can't fill all three for a claim, **don't write it as a condition** — leave it in the prose bull/bear case where it belongs.
+3. **The bear case must actually challenge the bull case.** If the bear case is a generic "valuation risk" while the bull case is "structural HBM tightness through CY27", you have failed. Find the specific force that, if it materialized, would invalidate the bull case.
+4. **At least one invalidation condition must be quantitative with a clear threshold.** A thesis you can't be wrong about is a vibe, not a thesis.
+5. **`edge_rationale` must say what is NOT YET PRICED.** Not "AI demand is strong" (priced); rather "Hynix CY26 HBM4 capex per 2026-04 capacity disclosure implies +18% YoY supply vs. consensus expecting +30%" (specific, sourced, asymmetric).
+6. **If the context is too thin**, set `edge_present: false` and explain. Don't pad.
+7. **Conviction tier mapping**: `high` = ≥1 strong quant-anchored invalidation + bear case actually challenges + 6-12mo horizon; `medium` = some specificity, some hedging; `low` = clearly thin.
+8. **Instrument**: `equity` by default; `leaps` only if there's a specific catalyst with a defined window AND the bet is on a magnitude move, not a directional drift.
 
 Output the JSON. Nothing else.

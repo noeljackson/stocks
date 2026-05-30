@@ -2,14 +2,17 @@
 SHELL := /bin/bash
 
 # ---- config ----
-COMPOSE := docker compose -f deploy/local/docker-compose.yml --env-file .env
-PSQL_URL ?= $(shell grep -E '^DATABASE_URL=' .env 2>/dev/null | cut -d= -f2-)
+# Compose has shell-style defaults built in (POSTGRES_USER etc.) so no env-file
+# needed. Secrets live in Infisical, never in .env.
+COMPOSE := docker compose -f deploy/local/docker-compose.yml
+PSQL_URL ?= postgres://stocks:stocks_dev_only@localhost:5432/stocks?sslmode=disable
 
-# Secrets injector: if `infisical` is on PATH, run commands through it so the
-# binaries pick up vars from your infisical project. Otherwise fall through to
-# the local .env via dotenvy. Override with RUN= to force a specific prefix
-# (e.g. `make RUN= run-gateway` to skip infisical even when installed).
-RUN ?= $(shell command -v infisical >/dev/null 2>&1 && echo "infisical run --")
+# Secrets injector: when `infisical` is on PATH, wrap commands so the binaries
+# get vars from your Infisical project (env defaults to `dev`; override with
+# `make INFISICAL_ENV=stage run-gateway`). Falls through to local .env via
+# dotenvy when infisical is absent. Force-skip with `make RUN= run-gateway`.
+INFISICAL_ENV ?= dev
+RUN ?= $(shell command -v infisical >/dev/null 2>&1 && echo "infisical run --env=$(INFISICAL_ENV) --")
 
 .PHONY: help
 help: ## List targets
@@ -35,6 +38,22 @@ migrate: ## Apply db/migrations/*.sql in order (idempotent re-run)
 
 psql: ## Open psql against local db
 	psql "$(PSQL_URL)"
+
+seed-demo: ## Seed sample tickers + theses so the UI has content on first load
+	PSQL_URL="$(PSQL_URL)" ./scripts/seed-demo.sh
+
+# ---- demo: bring up everything and seed it, ready to open localhost:8080 ----
+.PHONY: demo demo-up
+demo-up: up migrate seed-demo ## Start infra, apply migrations, seed demo data
+	@echo
+	@echo "✓ infra up + schema + sample data"
+	@echo "  next: in separate terminals, run:"
+	@echo "    make run-gateway     # serves the SPA at http://localhost:8080"
+	@echo "    make run-regime      # macro classifier"
+	@echo "    make run-risk        # risk overlay"
+	@echo "    make run-goalpost    # thesis integrity guard"
+	@echo "    make run-router      # ingest fan-out"
+	@echo "    make run-ingest      # EDGAR + FRED live data"
 
 # ---- Rust ----
 .PHONY: build test check fmt clippy

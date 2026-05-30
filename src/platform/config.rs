@@ -77,9 +77,9 @@ impl Config {
             gateway_addr: get("GATEWAY_ADDR", ":8080"),
             // Empty default → auto-detect.
             llm_provider: get("LLM_PROVIDER", ""),
-            model_deep: get("LLM_MODEL_DEEP", "glm-4.6"),
-            model_routine: get("LLM_MODEL_ROUTINE", "glm-4.6"),
-            model_triage: get("LLM_MODEL_TRIAGE", "glm-4.5-air"),
+            model_deep: get("LLM_MODEL_DEEP", "glm-5.1"),
+            model_routine: get("LLM_MODEL_ROUTINE", "glm-5.1"),
+            model_triage: get("LLM_MODEL_TRIAGE", "glm-5-turbo"),
             sec_user_agent: get("SEC_EDGAR_UA", "stocks-research n@noeljackson.com"),
             fred_api_key: get("FRED_API_KEY", ""),
             anthropic_base_url: get("ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic"),

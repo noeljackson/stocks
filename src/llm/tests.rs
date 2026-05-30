@@ -16,7 +16,7 @@ fn anthropic_happy() -> serde_json::Value {
         "type": "message",
         "role": "assistant",
         "content": [{"type": "text", "text": "hello world"}],
-        "model": "glm-4.6",
+        "model": "glm-5.1",
         "stop_reason": "end_turn",
         "usage": {"input_tokens": 12, "output_tokens": 3}
     })
@@ -38,7 +38,7 @@ fn openai_happy() -> serde_json::Value {
 fn anthropic_cfg(base_url: String, key: &str) -> LlmTransport {
     LlmTransport {
         provider: "anthropic".into(),
-        model: "glm-4.6".into(),
+        model: "glm-5.1".into(),
         anthropic_base_url: base_url,
         anthropic_api_key: key.into(),
         anthropic_version: "2023-06-01".into(),
@@ -82,7 +82,7 @@ async fn anthropic_happy_path() {
 
     let reqs = server.received_requests().await.unwrap();
     let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
-    assert_eq!(body["model"], "glm-4.6");
+    assert_eq!(body["model"], "glm-5.1");
     assert_eq!(body["system"], "you are precise");
     assert!(body.get("max_tokens").is_some(), "anthropic requires max_tokens");
 }

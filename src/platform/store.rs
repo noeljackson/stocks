@@ -13,7 +13,7 @@ use sqlx::{
 };
 use std::time::Duration;
 
-use crate::platform::domain::{Alert, AlertKind};
+use crate::platform::domain::{Alert, AlertKind, MarketStateRow, TickerRow};
 
 #[derive(Clone)]
 pub struct Store {
@@ -122,6 +122,62 @@ impl Store {
                     payload: row.try_get("payload")?,
                     acknowledged: row.try_get("acknowledged")?,
                     created_at: row.try_get("created_at")?,
+                })
+            })
+            .collect()
+    }
+
+    /// Returns the latest market_state row for the UI. None if the table is empty.
+    pub async fn latest_market_state(&self) -> Result<Option<MarketStateRow>> {
+        let row = sqlx::query(
+            r#"SELECT as_of, regime, capitulation, indicators
+                 FROM market_state ORDER BY as_of DESC LIMIT 1"#,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .context("latest_market_state")?;
+        let Some(row) = row else { return Ok(None) };
+        Ok(Some(MarketStateRow {
+            as_of: row.try_get("as_of")?,
+            regime: row.try_get("regime")?,
+            capitulation: row.try_get("capitulation")?,
+            indicators: row.try_get("indicators")?,
+        }))
+    }
+
+    /// Lists active tracked tickers with their cluster + tier for the UI sidebar.
+    pub async fn active_tickers(&self) -> Result<Vec<TickerRow>> {
+        // Cast NUMERIC → float8 in SQL to avoid the bigdecimal feature pull-in.
+        let rows = sqlx::query(
+            r#"SELECT t.symbol,
+                      COALESCE(t.cluster_id, '')        AS cluster_id,
+                      c.name                            AS cluster_name,
+                      t.tier,
+                      t.options_eligible,
+                      t.domain_fit::float8              AS domain_fit,
+                      t.added_at,
+                      (SELECT count(*) FROM thesis th
+                        WHERE th.symbol = t.symbol
+                          AND th.state NOT IN ('closed','disqualified')) AS open_theses
+                 FROM ticker t
+            LEFT JOIN cluster c ON c.id = t.cluster_id
+                WHERE t.status = 'active'
+             ORDER BY t.tier ASC, t.symbol ASC"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("active_tickers")?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(TickerRow {
+                    symbol: row.try_get("symbol")?,
+                    cluster_id: row.try_get("cluster_id")?,
+                    cluster_name: row.try_get::<Option<String>, _>("cluster_name")?,
+                    tier: row.try_get("tier")?,
+                    options_eligible: row.try_get("options_eligible")?,
+                    domain_fit: row.try_get::<Option<f64>, _>("domain_fit").ok().flatten(),
+                    added_at: row.try_get("added_at")?,
+                    open_theses: row.try_get::<i64, _>("open_theses").unwrap_or(0),
                 })
             })
             .collect()

@@ -30,9 +30,9 @@ def load() -> Config:
         ),
         nats_url=os.getenv("NATS_URL", "nats://localhost:4222"),
         llm_provider=os.getenv("LLM_PROVIDER", ""),
-        model_deep=os.getenv("LLM_MODEL_DEEP", "glm-4.6"),
-        model_routine=os.getenv("LLM_MODEL_ROUTINE", "glm-4.6"),
-        model_triage=os.getenv("LLM_MODEL_TRIAGE", "glm-4.5-air"),
+        model_deep=os.getenv("LLM_MODEL_DEEP", "glm-5.1"),
+        model_routine=os.getenv("LLM_MODEL_ROUTINE", "glm-5.1"),
+        model_triage=os.getenv("LLM_MODEL_TRIAGE", "glm-5-turbo"),
         anthropic_base_url=os.getenv(
             "ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic"
         ),

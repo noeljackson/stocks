@@ -23,7 +23,7 @@ ANTHROPIC_HAPPY = {
     "type": "message",
     "role": "assistant",
     "content": [{"type": "text", "text": "hello world"}],
-    "model": "glm-4.6",
+    "model": "glm-5.1",
     "stop_reason": "end_turn",
     "usage": {"input_tokens": 12, "output_tokens": 3},
 }
@@ -61,7 +61,7 @@ def _mock_transport(
 async def test_anthropic_happy_path():
     captured: list[httpx.Request] = []
     client = httpx.AsyncClient(transport=_mock_transport(captured, body=ANTHROPIC_HAPPY))
-    p = AnthropicProvider("https://x", "test-token", model="glm-4.6", client=client)
+    p = AnthropicProvider("https://x", "test-token", model="glm-5.1", client=client)
 
     r = await p.complete(Request(system="be precise", messages=[Message("user", "say hi")]))
     assert r.content == "hello world"
@@ -69,7 +69,7 @@ async def test_anthropic_happy_path():
     assert r.usage.output_tokens == 3
 
     sent = json.loads(captured[0].content)
-    assert sent["model"] == "glm-4.6"
+    assert sent["model"] == "glm-5.1"
     assert sent["system"] == "be precise"
     assert "max_tokens" in sent, "anthropic requires max_tokens"
 

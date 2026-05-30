@@ -82,6 +82,28 @@ impl AlertKind {
     }
 }
 
+/// Latest market regime classification (SPEC §5.4). Surfaced via /api/regime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketStateRow {
+    pub as_of: DateTime<Utc>,
+    pub regime: String,
+    pub capitulation: bool,
+    pub indicators: serde_json::Value,
+}
+
+/// Tracked-ticker summary for the UI sidebar.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TickerRow {
+    pub symbol: String,
+    pub cluster_id: String,
+    pub cluster_name: Option<String>,
+    pub tier: i32,
+    pub options_eligible: bool,
+    pub domain_fit: Option<f64>,
+    pub added_at: DateTime<Utc>,
+    pub open_theses: i64,
+}
+
 /// Unit pushed onto the live SSE feed (SPEC §3 FR7). Mirrors the `alert`
 /// table; payload is opaque JSON until the consumer parses by `kind`.
 #[derive(Debug, Clone, Serialize, Deserialize)]

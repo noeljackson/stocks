@@ -25,6 +25,8 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/api/alerts", get(list_alerts))
+        .route("/api/regime", get(get_regime))
+        .route("/api/tickers", get(list_tickers))
         .route("/api/stream", get(stream))
         .route("/api/decisions", post(record_decision))
         .fallback(spa_handler)
@@ -36,6 +38,31 @@ async fn list_alerts(State(gw): State<Arc<Gateway>>) -> impl IntoResponse {
         Ok(alerts) => (StatusCode::OK, Json(alerts)).into_response(),
         Err(e) => {
             warn!(error = %e, "list_alerts failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn get_regime(State(gw): State<Arc<Gateway>>) -> impl IntoResponse {
+    match gw.store.latest_market_state().await {
+        Ok(Some(r)) => (StatusCode::OK, Json(r)).into_response(),
+        Ok(None) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"regime": "unknown", "capitulation": false, "indicators": {}})),
+        )
+            .into_response(),
+        Err(e) => {
+            warn!(error = %e, "get_regime failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn list_tickers(State(gw): State<Arc<Gateway>>) -> impl IntoResponse {
+    match gw.store.active_tickers().await {
+        Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
+        Err(e) => {
+            warn!(error = %e, "list_tickers failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }

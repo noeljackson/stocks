@@ -11,13 +11,43 @@ export interface Alert {
 export interface StreamEvent {
   subject: string;
   kind: string;
-  payload: unknown;
+  payload: Record<string, unknown>;
+}
+
+export interface MarketState {
+  as_of?: string;
+  regime: "risk_on" | "neutral" | "risk_off" | "unknown";
+  capitulation: boolean;
+  indicators: Record<string, number>;
+}
+
+export interface Ticker {
+  symbol: string;
+  cluster_id: string;
+  cluster_name?: string | null;
+  tier: number;
+  options_eligible: boolean;
+  domain_fit?: number | null;
+  added_at: string;
+  open_theses: number;
 }
 
 export async function fetchAlerts(): Promise<Alert[]> {
   const r = await fetch("/api/alerts");
   if (!r.ok) throw new Error(`alerts ${r.status}`);
   return ((await r.json()) as Alert[] | null) ?? [];
+}
+
+export async function fetchRegime(): Promise<MarketState> {
+  const r = await fetch("/api/regime");
+  if (!r.ok) throw new Error(`regime ${r.status}`);
+  return (await r.json()) as MarketState;
+}
+
+export async function fetchTickers(): Promise<Ticker[]> {
+  const r = await fetch("/api/tickers");
+  if (!r.ok) throw new Error(`tickers ${r.status}`);
+  return ((await r.json()) as Ticker[] | null) ?? [];
 }
 
 /** subscribe opens the SSE feed; returns a cleanup function. */

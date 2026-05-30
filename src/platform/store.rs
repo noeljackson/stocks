@@ -101,6 +101,45 @@ impl Store {
         Ok(id)
     }
 
+    /// Marks an alert acknowledged. Idempotent — re-acking is a no-op.
+    /// Returns true if a row was updated, false if no such alert existed.
+    pub async fn acknowledge_alert(&self, id: i64) -> Result<bool> {
+        let res = sqlx::query("UPDATE alert SET acknowledged = true WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("acknowledge_alert")?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Returns the most recent alerts for the UI feed. When
+    /// `only_unacked` is true (the default for the live-feed view), filters
+    /// out alerts the user has already dismissed.
+    pub async fn recent_alerts_filtered(
+        &self,
+        limit: i64,
+        only_unacked: bool,
+    ) -> Result<Vec<Alert>> {
+        let rows = if only_unacked {
+            sqlx::query(
+                r#"SELECT id, thesis_id, symbol, kind, payload, acknowledged, created_at
+                     FROM alert WHERE acknowledged = false
+                 ORDER BY created_at DESC LIMIT $1"#,
+            )
+        } else {
+            sqlx::query(
+                r#"SELECT id, thesis_id, symbol, kind, payload, acknowledged, created_at
+                     FROM alert ORDER BY created_at DESC LIMIT $1"#,
+            )
+        }
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("recent_alerts_filtered")?;
+
+        rows.into_iter().map(decode_alert).collect()
+    }
+
     /// Returns the most recent alerts for the UI feed.
     pub async fn recent_alerts(&self, limit: i64) -> Result<Vec<Alert>> {
         let rows = sqlx::query(
@@ -112,24 +151,7 @@ impl Store {
         .await
         .context("recent_alerts")?;
 
-        rows.into_iter()
-            .map(|row| {
-                let kind_s: String = row.try_get("kind")?;
-                let kind: AlertKind = serde_json::from_value(serde_json::Value::String(kind_s))
-                    .map_err(|e| anyhow::anyhow!("decode AlertKind: {e}"))?;
-                Ok(Alert {
-                    id: row.try_get("id")?,
-                    thesis_id: row.try_get("thesis_id")?,
-                    symbol: row
-                        .try_get::<Option<String>, _>("symbol")?
-                        .unwrap_or_default(),
-                    kind,
-                    payload: row.try_get("payload")?,
-                    acknowledged: row.try_get("acknowledged")?,
-                    created_at: row.try_get("created_at")?,
-                })
-            })
-            .collect()
+        rows.into_iter().map(decode_alert).collect()
     }
 
     /// Returns the latest market_state row for the UI. None if the table is empty.
@@ -514,6 +536,25 @@ impl Store {
         .context("upsert_market_state")?;
         Ok(())
     }
+}
+
+/// Decode one `alert` row into [`Alert`]. Shared by `recent_alerts` and
+/// `recent_alerts_filtered`.
+fn decode_alert(row: sqlx::postgres::PgRow) -> Result<Alert> {
+    let kind_s: String = row.try_get("kind")?;
+    let kind: AlertKind = serde_json::from_value(serde_json::Value::String(kind_s))
+        .map_err(|e| anyhow::anyhow!("decode AlertKind: {e}"))?;
+    Ok(Alert {
+        id: row.try_get("id")?,
+        thesis_id: row.try_get("thesis_id")?,
+        symbol: row
+            .try_get::<Option<String>, _>("symbol")?
+            .unwrap_or_default(),
+        kind,
+        payload: row.try_get("payload")?,
+        acknowledged: row.try_get("acknowledged")?,
+        created_at: row.try_get("created_at")?,
+    })
 }
 
 #[async_trait::async_trait]

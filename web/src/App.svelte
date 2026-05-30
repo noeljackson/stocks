@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import {
+    ackAlert,
     fetchAlerts,
     fetchRegime,
     fetchTheses,
@@ -35,6 +36,21 @@
   // Per-event expand state for the Feed views (use index or alert id as key).
   let liveOpen = $state<Record<number, boolean>>({});
   let alertOpen = $state<Record<number, boolean>>({});
+  // Default: hide acknowledged alerts; toggle reveals everything.
+  let showAcked = $state(false);
+
+  async function ack(id: number) {
+    try {
+      await ackAlert(id);
+      // Optimistic: remove from list locally; the next fetch confirms.
+      alerts = alerts.filter((a) => a.id !== id || showAcked);
+      if (showAcked) {
+        alerts = alerts.map((a) => (a.id === id ? { ...a, acknowledged: true } : a));
+      }
+    } catch (e) {
+      error = String(e);
+    }
+  }
 
   function toggleLive(i: number) {
     liveOpen = { ...liveOpen, [i]: !liveOpen[i] };
@@ -67,10 +83,15 @@
   let decStatus = $state<string | null>(null);
 
   function refreshAll() {
-    fetchAlerts().then((a) => (alerts = a)).catch((e) => (error = String(e)));
+    fetchAlerts({ unacked: !showAcked }).then((a) => (alerts = a)).catch((e) => (error = String(e)));
     fetchRegime().then((r) => (regime = r)).catch((e) => (error = String(e)));
     fetchTickers().then((t) => (tickers = t)).catch((e) => (error = String(e)));
   }
+
+  // React when the user toggles showAcked.
+  $effect(() => {
+    fetchAlerts({ unacked: !showAcked }).then((a) => (alerts = a)).catch(() => {});
+  });
 
   onMount(() => {
     refreshAll();
@@ -83,7 +104,7 @@
         }
         // Refresh recent alerts when a new one would have been persisted by the gateway.
         if (e.kind === "state_transition" || e.kind === "risk") {
-          fetchAlerts().then((a) => (alerts = a)).catch(() => {});
+          fetchAlerts({ unacked: !showAcked }).then((a) => (alerts = a)).catch(() => {});
         }
       },
       (open) => (connected = open),
@@ -199,21 +220,41 @@
     </section>
 
     <section>
-      <h2>Recent alerts <span class="muted">({alerts.length})</span></h2>
+      <div class="section-hdr">
+        <h2>
+          {showAcked ? "All alerts" : "Open alerts"}
+          <span class="muted">({alerts.length})</span>
+        </h2>
+        <label class="toggle">
+          <input type="checkbox" bind:checked={showAcked} />
+          show acknowledged
+        </label>
+      </div>
       {#if alerts.length === 0}
-        <p class="muted">No alerts yet.</p>
+        <p class="muted">
+          {showAcked ? "No alerts." : "All caught up. Toggle 'show acknowledged' to see history."}
+        </p>
       {/if}
       <ul class="feed">
         {#each alerts as a (a.id)}
           {@const p = (a.payload ?? {}) as Record<string, unknown>}
-          <li class="expandable" onclick={() => toggleAlert(a.id)}>
+          <li class="expandable" class:acked={a.acknowledged} onclick={() => toggleAlert(a.id)}>
             <span class="caret">{alertOpen[a.id] ? "▾" : "▸"}</span>
             <span class="kind" style="color:{kindColor(a.kind, p)}">{a.kind}</span>
             {#if a.symbol}<strong>{a.symbol}</strong>{/if}
             {#if p.veto}<span class="badge danger">VETO</span>{/if}
             {#if p.kind === "goalpost_moved"}<span class="badge warning">GOALPOST</span>{/if}
+            {#if p.kind === "condition_stale"}<span class="badge warning">STALE</span>{/if}
             {#if p.reasons}<span class="muted">{(p.reasons as string[]).join(" · ")}</span>{/if}
             <span class="muted">{shortTs(a.created_at)}</span>
+            {#if !a.acknowledged}
+              <button class="ack-btn" onclick={(e) => { e.stopPropagation(); ack(a.id); }}
+                      title="Mark seen / handled">
+                ack
+              </button>
+            {:else}
+              <span class="muted ack-mark">✓ acked</span>
+            {/if}
             {#if alertOpen[a.id]}
               <div class="event-detail">
                 <h5>alert #{a.id}</h5>
@@ -380,6 +421,15 @@
     font-size: 0.75rem; overflow-x: auto; color: #bac2de; margin: 0.25rem 0;
   }
   .event-detail h5 { margin: 0.4rem 0 0.2rem 0; font-size: 0.75rem; color: #bac2de; text-transform: uppercase; letter-spacing: 0.05em; }
+  .section-hdr { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem; }
+  .toggle { display: flex; align-items: center; gap: 0.35rem; font-size: 0.8rem; color: #6c7086; cursor: pointer; }
+  .ack-btn {
+    margin-left: auto; padding: 0.1rem 0.45rem; font-size: 0.7rem;
+    background: #1b2230; color: #cdd6f4; border: 1px solid #2a3548; border-radius: 4px; cursor: pointer;
+  }
+  .ack-btn:hover { background: #2a3548; }
+  .ack-mark { margin-left: auto; }
+  .feed li.acked { opacity: 0.5; }
 
   .decform {
     display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; max-width: 600px;

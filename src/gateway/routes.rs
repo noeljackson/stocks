@@ -28,6 +28,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/regime", get(get_regime))
         .route("/api/tickers", get(list_tickers))
         .route("/api/theses", get(list_theses))
+        .route("/api/ticker-context", get(get_ticker_context))
         .route("/api/stream", get(stream))
         .route("/api/decisions", post(record_decision))
         .fallback(spa_handler)
@@ -50,6 +51,23 @@ async fn list_theses(
         Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
         Err(e) => {
             warn!(symbol = %sym, error = %e, "list_theses failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn get_ticker_context(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<ThesesQuery>,
+) -> impl IntoResponse {
+    let Some(sym) = q.symbol else {
+        return (StatusCode::BAD_REQUEST, "symbol query param required").into_response();
+    };
+    match gw.store.latest_ticker_context(&sym).await {
+        Ok(Some(row)) => (StatusCode::OK, Json(row)).into_response(),
+        Ok(None) => (StatusCode::NO_CONTENT).into_response(),
+        Err(e) => {
+            warn!(symbol = %sym, error = %e, "get_ticker_context failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
@@ -163,7 +181,28 @@ async fn record_decision(
     StatusCode::NO_CONTENT.into_response()
 }
 
-async fn spa_handler(uri: axum::http::Uri) -> impl IntoResponse {
+async fn spa_handler(
+    State(gw): State<Arc<Gateway>>,
+    uri: axum::http::Uri,
+) -> impl IntoResponse {
+    // Dev mode: anything that ISN'T an /api route lands here. Bounce the
+    // browser to the live Vite dev server so :8080 stops competing with :5173.
+    // API paths reach their dedicated handlers and never hit this fallback.
+    if let Some(target) = gw.dev_redirect.as_deref() {
+        let path = uri.path();
+        let dest = if path == "/" || path.is_empty() {
+            target.to_string()
+        } else {
+            format!("{}{}", target.trim_end_matches('/'), path)
+        };
+        return (
+            StatusCode::FOUND,
+            [(header::LOCATION, dest)],
+            "SPA served by Vite dev server in dev mode — redirecting.",
+        )
+            .into_response();
+    }
+
     let path = uri.path().trim_start_matches('/');
     let asset_path = if path.is_empty() { "index.html" } else { path };
     if let Some(file) = Dist::get(asset_path) {

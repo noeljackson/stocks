@@ -99,6 +99,26 @@ export async function fetchTheses(symbol: string): Promise<ThesisDetail[]> {
   return ((await r.json()) as ThesisDetail[] | null) ?? [];
 }
 
+export interface TickerContext {
+  symbol: string;
+  version: number;
+  structural: Record<string, unknown>;
+  structural_as_of?: string | null;
+  narrative: Record<string, unknown>;
+  narrative_as_of?: string | null;
+  market: Record<string, unknown>;
+  market_as_of?: string | null;
+  created_at: string;
+}
+
+/** Returns `null` when there's no context yet (204 No Content). */
+export async function fetchTickerContext(symbol: string): Promise<TickerContext | null> {
+  const r = await fetch(`/api/ticker-context?symbol=${encodeURIComponent(symbol)}`);
+  if (r.status === 204) return null;
+  if (!r.ok) throw new Error(`ticker-context ${r.status}`);
+  return (await r.json()) as TickerContext;
+}
+
 /** subscribe opens the SSE feed; returns a cleanup function. */
 export function subscribe(
   onEvent: (e: StreamEvent) => void,

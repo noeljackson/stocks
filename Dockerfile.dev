@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+#
+# Dev image for the Rust services. Used by deploy/local/docker-compose.dev.yml
+# with cargo-watch + bind-mounted source for hot reload.
+#
+# NOT for production — use the top-level Dockerfile for that.
+
+FROM rust:1.95-slim-bookworm
+
+ENV CARGO_TERM_COLOR=always \
+    CARGO_HOME=/usr/local/cargo \
+    DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      pkg-config libssl-dev ca-certificates \
+      gcc git curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# cargo-watch pinned (verified against crates.io 2026-05-30).
+RUN cargo install --locked cargo-watch@8.5.3
+
+WORKDIR /app
+# Source is bind-mounted at runtime; nothing copied at build time. Target dir
+# lives in a named volume per the compose file so each rebuild is incremental.
+
+# Default profile is debug — fast rebuild over release optimization.
+CMD ["cargo", "watch", "--help"]

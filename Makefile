@@ -5,6 +5,9 @@ SHELL := /bin/bash
 # Compose has shell-style defaults built in (POSTGRES_USER etc.) so no env-file
 # needed. Secrets live in Infisical, never in .env.
 COMPOSE := docker compose -f deploy/local/docker-compose.yml
+COMPOSE_DEV := docker compose \
+    -f deploy/local/docker-compose.yml \
+    -f deploy/local/docker-compose.dev.yml
 PSQL_URL ?= postgres://stocks:stocks_dev_only@localhost:5432/stocks?sslmode=disable
 
 # Secrets injector: when `infisical` is on PATH, wrap commands so the binaries
@@ -38,6 +41,45 @@ migrate: ## Apply db/migrations/*.sql in order (idempotent re-run)
 
 psql: ## Open psql against local db
 	psql "$(PSQL_URL)"
+
+# ---- all-in-docker dev environment (#36) ----
+# Brings up postgres + nats + ALL rust services + vite SPA dev server, each
+# with hot-reload on source changes. Secrets injected via Infisical.
+.PHONY: dev dev-down dev-logs dev-build dev-restart
+dev: dev-warm ## Start the full dev stack (postgres + nats + 6 rust services + vite) with hot reload
+	$(RUN) $(COMPOSE_DEV) up -d
+	@echo
+	@echo "✓ dev stack up"
+	@echo "  UI (HMR):      http://localhost:5173"
+	@echo "  API:           http://localhost:8080  (/ redirects to 5173 in dev mode)"
+	@echo "  NATS monitor:  http://localhost:8222"
+	@echo "  Postgres:      psql 'postgresql://stocks:stocks_dev_only@localhost:5432/stocks'"
+	@echo
+	@echo "  Tail logs:     make dev-logs"
+	@echo "  Stop:          make dev-down"
+
+# Pre-warm cargo cache + target dir SERIALLY before starting the 6 service
+# containers — otherwise they race on the cargo registry and corrupt it.
+# One-time cost (~3-5 min cold). After this, cargo-watch incrementals are fast.
+.PHONY: dev-warm
+dev-warm: ## Pre-build all Rust binaries serially (avoids cargo cache races)
+	$(COMPOSE_DEV) build
+	@echo "warming cargo cache — first build, ~3-5min..."
+	$(COMPOSE_DEV) up -d postgres nats
+	$(COMPOSE_DEV) run --rm --no-deps gateway cargo build --bins
+	@echo "✓ cargo cache warm"
+
+dev-down: ## Stop the dev stack (keep volumes — cargo cache survives)
+	$(COMPOSE_DEV) down
+
+dev-logs: ## Follow logs from all dev services
+	$(COMPOSE_DEV) logs -f
+
+dev-build: ## Rebuild the dev images (Rust + Vite). Run after Cargo.toml changes.
+	$(COMPOSE_DEV) build
+
+dev-restart: ## Restart one service (SVC=gateway make dev-restart)
+	$(COMPOSE_DEV) restart $(SVC)
 
 seed-demo: ## Seed sample tickers + theses so the UI has content on first load
 	PSQL_URL="$(PSQL_URL)" ./scripts/seed-demo.sh
@@ -156,8 +198,14 @@ py-check: ## Ruff lint + pytest
 	cd py && .venv/bin/ruff check src tests
 	cd py && .venv/bin/pytest -q
 
-run-context: ## Run the Python context-maintainer
-	cd py && $(RUN) .venv/bin/python -m stocks.context_maintainer
+refresh-context: ## Refresh ticker_context for one symbol (SYMBOL=NVDA make refresh-context)
+	cd py && $(RUN) .venv/bin/python -m stocks.context_maintainer $(SYMBOL) $(if $(LIMIT),--limit $(LIMIT))
+
+draft-thesis: ## Draft a thesis from the latest ticker_context (SYMBOL=NVDA make draft-thesis)
+	cd py && $(RUN) .venv/bin/python -m stocks.thesis_engine $(SYMBOL)
+
+# Legacy alias (will be removed when context_maintainer becomes a long-running service).
+run-context: refresh-context ## Alias of refresh-context (deprecated)
 
 # ---- docker images ----
 .PHONY: images

@@ -1,0 +1,126 @@
+# All-in-docker dev environment (#36). Overlays deploy/local/docker-compose.yml.
+#
+# Usage:
+#   infisical run --env=dev -- docker compose \
+#     -f deploy/local/docker-compose.yml \
+#     -f deploy/local/docker-compose.dev.yml up
+#
+# Or just `make dev` which wraps the above.
+#
+# Architecture:
+#   - Each Rust service runs `cargo watch -x 'run --bin X'` in its own
+#     container. Source bind-mounted; target/ + cargo registry on named
+#     volumes so the first build is the only slow one.
+#   - Vite dev server in a node container exposes HMR on :5173.
+#   - Secrets come from the SHELL env (Infisical injects them via
+#     `infisical run --env=dev -- ...` wrapping the compose command).
+
+x-rust-common: &rust-common
+  build:
+    context: ../..
+    dockerfile: Dockerfile.dev
+  image: stocks-rust-dev:latest        # shared image across services
+  working_dir: /app
+  volumes:
+    - ../..:/app                       # bind whole repo (Rust + prompts/ + web/dist)
+    - cargo-cache:/usr/local/cargo/registry
+    - cargo-target:/app/target
+  environment:
+    # Defaults — override via shell env (Infisical-injected) when needed.
+    - DATABASE_URL=postgres://stocks:stocks_dev_only@postgres:5432/stocks?sslmode=disable
+    - NATS_URL=nats://nats:4222
+    - GATEWAY_ADDR=:8080
+    - LLM_PROVIDER
+    - LLM_MODEL_DEEP
+    - LLM_MODEL_ROUTINE
+    - LLM_MODEL_TRIAGE
+    - SEC_EDGAR_UA
+    - FRED_API_KEY
+    - ANTHROPIC_BASE_URL
+    - ANTHROPIC_API_KEY
+    - ANTHROPIC_VERSION
+    - OPENAI_BASE_URL
+    - OPENAI_API_KEY
+    # Dev-mode UX (#38): gateway's SPA fallback redirects browser to vite.
+    - STOCKS_DEV_MODE=1
+    - STOCKS_DEV_UI_URL=http://localhost:5173
+    - RUST_LOG=info,sqlx=warn
+    # cargo-watch occasionally hits "could not find Cargo.toml" if the bind
+    # mount isn't ready; small delay tolerates the race on first start.
+    - CARGO_WATCH_QUIET=1
+  depends_on:
+    postgres:
+      condition: service_healthy
+    nats:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  gateway:
+    <<: *rust-common
+    container_name: stocks-gateway
+    ports:
+      - "8080:8080"
+    command: >-
+      cargo watch -w src -w web/dist -w Cargo.toml -w Cargo.lock
+        -x 'run --bin gateway'
+
+  ingest:
+    <<: *rust-common
+    container_name: stocks-ingest
+    command: >-
+      cargo watch -w src -w Cargo.toml
+        -x 'run --bin ingest'
+
+  regime:
+    <<: *rust-common
+    container_name: stocks-regime
+    command: >-
+      cargo watch -w src -w Cargo.toml
+        -x 'run --bin regime'
+
+  router:
+    <<: *rust-common
+    container_name: stocks-router
+    command: >-
+      cargo watch -w src -w Cargo.toml
+        -x 'run --bin router'
+
+  risk:
+    <<: *rust-common
+    container_name: stocks-risk
+    command: >-
+      cargo watch -w src -w Cargo.toml
+        -x 'run --bin risk'
+
+  goalpost:
+    <<: *rust-common
+    container_name: stocks-goalpost
+    command: >-
+      cargo watch -w src -w Cargo.toml
+        -x 'run --bin goalpost'
+
+  # Vite dev server with HMR. Browser hits :5173 directly during dev; vite's
+  # proxy forwards /api/* and /healthz + /api/stream (SSE) to the gateway
+  # container. Production serves the SPA from the rust gateway via rust-embed.
+  web:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.web-dev
+    image: stocks-web-dev:latest
+    container_name: stocks-web
+    ports:
+      - "5173:5173"
+    environment:
+      # vite.config.ts reads this so /api/* proxies to the gateway service.
+      - API_TARGET=http://gateway:8080
+    volumes:
+      - ../../web:/app
+      - web-node-modules:/app/node_modules   # don't bind-mount node_modules
+    depends_on:
+      - gateway
+
+volumes:
+  cargo-cache:
+  cargo-target:
+  web-node-modules:

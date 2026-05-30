@@ -23,14 +23,19 @@ pub struct Gateway {
     pub store: Arc<Store>,
     pub bus: Arc<Bus>,
     pub hub: Arc<Hub>,
+    /// When Some, the SPA fallback returns a 302 to this URL instead of
+    /// serving the rust-embed'd snapshot. Set by `make dev` so :8080 is
+    /// API-only and the live SPA lives at :5173.
+    pub dev_redirect: Option<String>,
 }
 
 impl Gateway {
-    pub fn new(store: Store, bus: Bus) -> Self {
+    pub fn new(store: Store, bus: Bus, dev_redirect: Option<String>) -> Self {
         Self {
             store: Arc::new(store),
             bus: Arc::new(bus),
             hub: Arc::new(Hub::new()),
+            dev_redirect,
         }
     }
 

@@ -1,0 +1,13 @@
+# syntax=docker/dockerfile:1
+#
+# Dev image for the Svelte+Vite SPA. HMR over websocket; bind-mounted source.
+
+FROM node:26-alpine
+WORKDIR /app
+# Install deps inside the image so node_modules lives on a named volume
+# (not on the bind mount — cross-OS bind-mounted node_modules is slow).
+COPY web/package.json web/package-lock.json web/.npmrc ./
+RUN npm ci --ignore-scripts
+EXPOSE 5173
+# --host 0.0.0.0 so HMR works through the docker network → host browser.
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

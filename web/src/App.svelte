@@ -4,6 +4,7 @@
     fetchAlerts,
     fetchRegime,
     fetchTheses,
+    fetchTickerContext,
     fetchTickers,
     postDecision,
     subscribe,
@@ -12,7 +13,9 @@
     type StreamEvent,
     type ThesisDetail,
     type Ticker,
+    type TickerContext,
   } from "./lib/api";
+  import ContextPanel from "./lib/ContextPanel.svelte";
   import ThesisDetails from "./lib/ThesisDetails.svelte";
 
   type View = "feed" | "tickers" | "decisions";
@@ -27,6 +30,8 @@
 
   // Per-symbol expand state for the Tickers view (symbol → loaded theses or null while loading).
   let expanded = $state<Record<string, ThesisDetail[] | null | undefined>>({});
+  // Parallel context load per-symbol; `undefined` = not loaded, `null` = no context.
+  let contextBySymbol = $state<Record<string, TickerContext | null | undefined>>({});
   // Per-event expand state for the Feed views (use index or alert id as key).
   let liveOpen = $state<Record<number, boolean>>({});
   let alertOpen = $state<Record<number, boolean>>({});
@@ -46,14 +51,13 @@
       return;
     }
     expanded = { ...expanded, [symbol]: null }; // loading
-    try {
-      const t = await fetchTheses(symbol);
-      expanded = { ...expanded, [symbol]: t };
-    } catch (e) {
-      error = String(e);
-      const { [symbol]: _, ...rest } = expanded;
-      expanded = rest;
-    }
+    // Fire both fetches in parallel — context and theses are independent.
+    const [theses, ctx] = await Promise.all([
+      fetchTheses(symbol).catch((e) => { error = String(e); return [] as ThesisDetail[]; }),
+      fetchTickerContext(symbol).catch((e) => { error = String(e); return null; }),
+    ]);
+    expanded = { ...expanded, [symbol]: theses };
+    contextBySymbol = { ...contextBySymbol, [symbol]: ctx };
   }
 
   // Decision form
@@ -253,11 +257,18 @@
           {#if isOpen}
             <tr class="detail-row">
               <td colspan="7">
+                <!-- Context band — what the LLM has synthesized for this ticker -->
+                {#if contextBySymbol[t.symbol] !== undefined}
+                  <ContextPanel ctx={contextBySymbol[t.symbol] ?? null} symbol={t.symbol} />
+                {/if}
+
+                <!-- Theses for this ticker -->
                 {#if expanded[t.symbol] === null}
-                  <p class="muted">Loading theses…</p>
+                  <p class="muted">Loading…</p>
                 {:else if expanded[t.symbol] && (expanded[t.symbol] as ThesisDetail[]).length === 0}
-                  <p class="muted">No theses recorded for <strong>{t.symbol}</strong> yet.
-                  This ticker is tracked but hasn't graduated into a written thesis.</p>
+                  <p class="muted">No theses for <strong>{t.symbol}</strong> yet.
+                  Run <code>make draft-thesis SYMBOL={t.symbol}</code> to ask the engine
+                  to draft one against the context above.</p>
                 {:else}
                   {#each expanded[t.symbol] as ThesisDetail[] as thesis (thesis.thesis_id)}
                     <ThesisDetails {thesis} />

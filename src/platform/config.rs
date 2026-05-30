@@ -23,6 +23,12 @@ pub struct Config {
     pub anthropic_version: String,
     pub openai_base_url: String,
     pub openai_api_key: String,
+
+    /// When true (set by `make dev`), the gateway's SPA fallback returns a
+    /// 302 to `dev_ui_url` instead of serving the rust-embed'd snapshot.
+    /// Stops the stale-SPA-at-:8080 footgun (#38).
+    pub dev_mode: bool,
+    pub dev_ui_url: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -87,6 +93,8 @@ impl Config {
             anthropic_version: get("ANTHROPIC_VERSION", "2023-06-01"),
             openai_base_url: get("OPENAI_BASE_URL", ""),
             openai_api_key: get("OPENAI_API_KEY", ""),
+            dev_mode: matches!(get("STOCKS_DEV_MODE", "").as_str(), "1" | "true" | "yes"),
+            dev_ui_url: get("STOCKS_DEV_UI_URL", "http://localhost:5173"),
         }
     }
 

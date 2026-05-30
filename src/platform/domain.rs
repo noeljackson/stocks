@@ -104,6 +104,73 @@ pub struct TickerRow {
     pub open_theses: i64,
 }
 
+/// A single thesis condition — the canonical shape used by the thesis engine,
+/// goalpost detector, staleness service, and (future) condition evaluator.
+///
+/// The legacy minimal shape `{ name, type, expr | assertion }` is still
+/// valid — `target`, `deadline_at`, `evidence_source`, `status`,
+/// `last_checked_at`, `last_observed_value` are all optional and default at
+/// the application layer. New conditions written by the thesis engine (#8)
+/// after prompt-update (#9) include all six.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Condition {
+    #[serde(default)]
+    pub name: String,
+    /// "quantitative" | "narrative"
+    #[serde(default, rename = "type")]
+    pub condition_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assertion: Option<String>,
+    /// Measurable threshold or boolean. E.g.
+    /// `{ "metric": "MU.HBM_revenue", "op": ">", "value": 1.2e9, "unit": "USD" }`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at: Option<DateTime<Utc>>,
+    /// Where the answer comes from — URL, EDGAR form spec, FRED series, etc.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_source: Option<String>,
+    /// `pending | satisfied | refuted | inconclusive | stale`. Defaults to `pending`.
+    #[serde(default = "default_status")]
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_checked_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_observed_value: Option<serde_json::Value>,
+}
+
+fn default_status() -> String {
+    "pending".to_string()
+}
+
+impl Condition {
+    /// True if this condition has all three substance-gate slots filled
+    /// (target + deadline_at + evidence_source). Used by #10 substance check.
+    #[must_use]
+    pub fn is_well_formed(&self) -> bool {
+        self.target.is_some()
+            && self.deadline_at.is_some()
+            && self.evidence_source.as_deref().is_some_and(|s| !s.is_empty())
+    }
+}
+
+/// Per-ticker context row for the UI's drill-down panel (SPEC §5.2).
+/// The market band is intentionally raw (not LLM-synthesized) and may be `{}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TickerContextRow {
+    pub symbol: String,
+    pub version: i32,
+    pub structural: serde_json::Value,
+    pub structural_as_of: Option<DateTime<Utc>>,
+    pub narrative: serde_json::Value,
+    pub narrative_as_of: Option<DateTime<Utc>>,
+    pub market: serde_json::Value,
+    pub market_as_of: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
 /// Full thesis record + version-history audit trail for the UI detail panel.
 /// The history lets the UI render goalpost-moved markers per revision.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,5 +258,59 @@ mod tests {
             serde_json::to_string(&AlertKind::StateTransition).unwrap(),
             "\"state_transition\""
         );
+    }
+
+    #[test]
+    fn condition_legacy_shape_deserializes() {
+        // Minimal { name, type, expr } shape from before #9 must still parse.
+        let c: Condition = serde_json::from_str(
+            r#"{ "name":"gm", "type":"quantitative", "expr":"gross_margin < 45" }"#,
+        )
+        .unwrap();
+        assert_eq!(c.name, "gm");
+        assert_eq!(c.condition_type, "quantitative");
+        assert_eq!(c.expr.as_deref(), Some("gross_margin < 45"));
+        assert_eq!(c.status, "pending"); // default
+        assert!(!c.is_well_formed(), "legacy shape lacks the three slots");
+    }
+
+    #[test]
+    fn condition_rich_shape_roundtrips() {
+        let json = r#"{
+          "name":"hbm4_q3_revenue",
+          "type":"quantitative",
+          "expr":"MU.HBM4_revenue > 1.2B",
+          "target": {"metric":"MU.HBM4_revenue","op":">","value":1.2e9,"unit":"USD"},
+          "deadline_at":"2026-07-30T00:00:00Z",
+          "evidence_source":"edgar:10-Q:MU",
+          "status":"pending"
+        }"#;
+        let c: Condition = serde_json::from_str(json).unwrap();
+        assert!(c.is_well_formed(), "all three slots filled");
+        // Round-trip back to JSON without losing fields.
+        let back = serde_json::to_value(&c).unwrap();
+        assert_eq!(back["target"]["op"], ">");
+        assert_eq!(back["evidence_source"], "edgar:10-Q:MU");
+    }
+
+    #[test]
+    fn condition_well_formed_requires_all_three() {
+        let mut c = Condition {
+            name: "x".into(),
+            condition_type: "quantitative".into(),
+            expr: Some("x > 1".into()),
+            assertion: None,
+            target: Some(serde_json::json!({"op":">", "value": 1})),
+            deadline_at: None,
+            evidence_source: Some("fred:DGS10".into()),
+            status: "pending".into(),
+            last_checked_at: None,
+            last_observed_value: None,
+        };
+        assert!(!c.is_well_formed(), "missing deadline_at");
+        c.deadline_at = Some(Utc::now());
+        assert!(c.is_well_formed());
+        c.evidence_source = Some(String::new());
+        assert!(!c.is_well_formed(), "empty evidence_source doesn't count");
     }
 }

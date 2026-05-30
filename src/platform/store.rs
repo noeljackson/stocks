@@ -15,8 +15,10 @@ use std::time::Duration;
 
 use crate::llm::prompts::{InvocationRecorder, InvocationRow};
 use crate::platform::domain::{
-    Alert, AlertKind, MarketStateRow, ThesisDetail, ThesisVersionEvent, TickerContextRow, TickerRow,
+    Alert, AlertKind, Condition, MarketStateRow, ThesisDetail, ThesisSubstance,
+    ThesisVersionEvent, TickerContextRow, TickerRow, WellFormedCondCounts,
 };
+use crate::thesis::substance::{self, Thesis as SubstanceInput};
 
 #[derive(Clone)]
 pub struct Store {
@@ -278,6 +280,52 @@ impl Store {
                 })
                 .collect();
 
+            let forecast: serde_json::Value = row.try_get("forecast")?;
+            let conviction_conditions: serde_json::Value = row.try_get("conviction_conditions")?;
+            let trigger_conditions: serde_json::Value = row.try_get("trigger_conditions")?;
+            let invalidation_conditions: serde_json::Value =
+                row.try_get("invalidation_conditions")?;
+            let fulfillment_conditions: serde_json::Value =
+                row.try_get("fulfillment_conditions")?;
+            let intended_size: serde_json::Value = row.try_get("intended_size")?;
+
+            let parse_conds = |v: &serde_json::Value| -> Vec<Condition> {
+                serde_json::from_value(v.clone()).unwrap_or_default()
+            };
+            let conviction = parse_conds(&conviction_conditions);
+            let trigger = parse_conds(&trigger_conditions);
+            let invalidation = parse_conds(&invalidation_conditions);
+            let fulfillment = parse_conds(&fulfillment_conditions);
+
+            // Substance is "present" when forecast/intended_size is a non-null
+            // populated value. The thesis engine writes `null` for absent.
+            let forecast_present = !forecast.is_null()
+                && !matches!(&forecast, serde_json::Value::Object(o) if o.is_empty());
+            let intended_size_present = !intended_size.is_null()
+                && !matches!(&intended_size, serde_json::Value::Object(o) if o.is_empty());
+            let sub_input = SubstanceInput {
+                forecast_present,
+                intended_size_present,
+                conviction: conviction.clone(),
+                trigger: trigger.clone(),
+                invalidation: invalidation.clone(),
+                fulfillment: fulfillment.clone(),
+            };
+            let wfc = sub_input.well_formed_counts();
+            let report = substance::substance_report(&sub_input);
+            let substance_summary = ThesisSubstance {
+                score: report.score,
+                max_score: report.max_score,
+                missing: report.missing,
+                blocked_at: report.blocked_at,
+                well_formed: WellFormedCondCounts {
+                    conviction: u32::try_from(wfc.conviction).unwrap_or(0),
+                    trigger: u32::try_from(wfc.trigger).unwrap_or(0),
+                    invalidation: u32::try_from(wfc.invalidation).unwrap_or(0),
+                    fulfillment: u32::try_from(wfc.fulfillment).unwrap_or(0),
+                },
+            };
+
             out.push(ThesisDetail {
                 thesis_id,
                 symbol: row.try_get("symbol")?,
@@ -287,19 +335,20 @@ impl Store {
                 edge_rationale: row.try_get("edge_rationale")?,
                 bull_case: row.try_get("bull_case").ok(),
                 bear_case: row.try_get("bear_case").ok(),
-                forecast: row.try_get("forecast")?,
-                conviction_conditions: row.try_get("conviction_conditions")?,
-                trigger_conditions: row.try_get("trigger_conditions")?,
-                invalidation_conditions: row.try_get("invalidation_conditions")?,
-                fulfillment_conditions: row.try_get("fulfillment_conditions")?,
+                forecast,
+                conviction_conditions,
+                trigger_conditions,
+                invalidation_conditions,
+                fulfillment_conditions,
                 conviction_tier: row.try_get("conviction_tier").ok(),
                 instrument: row.try_get("instrument").ok(),
-                intended_size: row.try_get("intended_size")?,
+                intended_size,
                 version: row.try_get("version")?,
                 immutable_original: row.try_get("immutable_original")?,
                 created_at: row.try_get("created_at")?,
                 updated_at: row.try_get("updated_at")?,
                 history,
+                substance: Some(substance_summary),
             });
         }
         Ok(out)

@@ -36,6 +36,22 @@
     thesis.immutable_original.edge_rationale !== thesis.edge_rationale
   );
 
+  // Substance checklist (#10): which structural slots are filled.
+  let sub = $derived(thesis.substance);
+  let slotState = $derived.by(() => {
+    const wf = sub?.well_formed ?? { conviction: 0, trigger: 0, invalidation: 0, fulfillment: 0 };
+    const missing = new Set(sub?.missing ?? []);
+    return [
+      { key: "edge_rationale",          label: "Edge rationale",   present: !!thesis.edge_rationale,          count: undefined },
+      { key: "forecast",                label: "Forecast",          present: !missing.has("forecast"),         count: undefined },
+      { key: "conviction_conditions",   label: "Conviction",        present: !missing.has("conviction_conditions"),   count: `${wf.conviction}/${thesis.conviction_conditions?.length ?? 0}` },
+      { key: "trigger_conditions",      label: "Trigger",           present: !missing.has("trigger_conditions"),      count: `${wf.trigger}/${thesis.trigger_conditions?.length ?? 0}` },
+      { key: "invalidation_conditions", label: "Invalidation",      present: !missing.has("invalidation_conditions"), count: `${wf.invalidation}/${thesis.invalidation_conditions?.length ?? 0}` },
+      { key: "intended_size",           label: "Intended size",     present: !missing.has("intended_size"),    count: undefined },
+      { key: "fulfillment_conditions",  label: "Fulfillment",       present: !missing.has("fulfillment_conditions"),  count: `${wf.fulfillment}/${thesis.fulfillment_conditions?.length ?? 0}` },
+    ];
+  });
+
   function fmtCondition(c: Condition): string {
     if (c.type === "quantitative") return c.expr ?? "(no expr)";
     return c.assertion ?? "(no assertion)";
@@ -60,6 +76,28 @@
     <span class="meta">v{thesis.version}</span>
     <span class="meta muted">updated {shortTs(thesis.updated_at)}</span>
   </div>
+
+  {#if sub}
+    <div class="substance" class:skeleton={sub.blocked_at !== null}>
+      <div class="sub-hdr">
+        <strong>Substance:</strong>
+        <span class="score">{sub.score}/{sub.max_score}</span>
+        {#if sub.blocked_at}
+          <span class="badge danger">SKELETON — can't enter <code>{sub.blocked_at}</code></span>
+        {:else}
+          <span class="badge ok">complete — all gates pass</span>
+        {/if}
+      </div>
+      <ul class="slots">
+        {#each slotState as s (s.key)}
+          <li class:on={s.present} class:off={!s.present}>
+            {s.present ? "✓" : "✗"} {s.label}
+            {#if s.count !== undefined}<span class="muted">{s.count} well-formed</span>{/if}
+          </li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
 
   <h4>Edge rationale</h4>
   <p class="rationale">{thesis.edge_rationale}</p>
@@ -193,4 +231,25 @@
   .raw { margin-top: 1rem; }
   .raw summary { cursor: pointer; color: #6c7086; font-size: 0.75rem; }
   .raw pre { background: #0a0d14; padding: 0.5rem; border-radius: 4px; font-size: 0.75rem; overflow-x: auto; color: #bac2de; }
+
+  .substance {
+    background: rgba(180, 190, 254, 0.06); border: 1px solid #2a3548;
+    border-radius: 6px; padding: 0.6rem 0.8rem; margin-bottom: 0.75rem;
+  }
+  .substance.skeleton {
+    background: rgba(243, 139, 168, 0.06); border-color: rgba(243, 139, 168, 0.3);
+  }
+  .sub-hdr { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+  .score {
+    background: rgba(137, 180, 250, 0.15); color: #89b4fa;
+    padding: 0.1rem 0.45rem; border-radius: 4px; font-size: 0.75rem;
+  }
+  .slots {
+    list-style: none; padding: 0; margin: 0.5rem 0 0 0;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.25rem 0.75rem;
+    font-size: 0.85rem;
+  }
+  .slots li.on { color: #a6e3a1; }
+  .slots li.off { color: #f38ba8; }
+  .slots li .muted { margin-left: 0.4rem; }
 </style>

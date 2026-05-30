@@ -65,6 +65,21 @@ export interface ThesisVersionEvent {
   at: string;
 }
 
+export interface WellFormedCondCounts {
+  conviction: number;
+  trigger: number;
+  invalidation: number;
+  fulfillment: number;
+}
+
+export interface ThesisSubstance {
+  score: number;
+  max_score: number;
+  missing: string[];
+  blocked_at: string | null;
+  well_formed: WellFormedCondCounts;
+}
+
 export interface ThesisDetail {
   thesis_id: string;
   symbol: string;
@@ -91,6 +106,7 @@ export interface ThesisDetail {
   created_at: string;
   updated_at: string;
   history: ThesisVersionEvent[];
+  substance?: ThesisSubstance | null;
 }
 
 export async function fetchTheses(symbol: string): Promise<ThesisDetail[]> {

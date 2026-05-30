@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: staler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: staler
+  template:
+    metadata:
+      labels:
+        app: staler
+    spec:
+      containers:
+        - name: staler
+          image: ghcr.io/noeljackson/stocks:dev
+          command: ["/staler"]
+          envFrom:
+            - configMapRef: { name: stocks-config }
+            - secretRef: { name: stocks-secrets }
+          env:
+            - { name: STALER_INTERVAL_SECS, value: "300" }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }

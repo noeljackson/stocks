@@ -44,6 +44,8 @@ x-rust-common: &rust-common
     # Dev-mode UX (#38): gateway's SPA fallback redirects browser to vite.
     - STOCKS_DEV_MODE=1
     - STOCKS_DEV_UI_URL=http://localhost:5173
+    # Faster staleness sweep in dev so demos don't wait 5 min. Only `staler` reads it.
+    - STALER_INTERVAL_SECS=30
     - RUST_LOG=info,sqlx=warn
     # cargo-watch occasionally hits "could not find Cargo.toml" if the bind
     # mount isn't ready; small delay tolerates the race on first start.
@@ -99,6 +101,13 @@ services:
     command: >-
       cargo watch -w src -w Cargo.toml
         -x 'run --bin goalpost'
+
+  staler:
+    <<: *rust-common
+    container_name: stocks-staler
+    command: >-
+      cargo watch -w src -w Cargo.toml
+        -x 'run --bin staler'
 
   # Vite dev server with HMR. Browser hits :5173 directly during dev; vite's
   # proxy forwards /api/* and /healthz + /api/stream (SSE) to the gateway

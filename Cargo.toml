@@ -42,6 +42,10 @@ name = "devpub"
 path = "src/bin/devpub.rs"
 
 [[bin]]
+name = "staler"
+path = "src/bin/staler.rs"
+
+[[bin]]
 name = "llmsmoke"
 path = "src/bin/llmsmoke.rs"
 

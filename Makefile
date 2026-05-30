@@ -153,6 +153,9 @@ run-risk: ## Run the risk overlay (thesis.actionable → risk.veto/warning)
 run-goalpost: ## Run the goalpost detector (thesis.updated → integrity check)
 	$(RUN) cargo run --release --bin goalpost
 
+run-staler: ## Run the staleness service (past-deadline conditions → risk.warning)
+	$(RUN) cargo run --release --bin staler
+
 llmsmoke: ## One-shot LLM round-trip — picks transport from env (mock if no key)
 	$(RUN) cargo run --release --bin llmsmoke -- "$(MSG)"
 

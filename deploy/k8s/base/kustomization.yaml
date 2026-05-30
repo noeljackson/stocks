@@ -14,6 +14,7 @@ resources:
   - router.yaml
   - risk.yaml
   - goalpost.yaml
+  - staler.yaml
   - context-maintainer.yaml
 
 labels:

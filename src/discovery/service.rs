@@ -26,13 +26,21 @@ pub async fn run_once(pool: &PgPool, bus: &Bus) -> Result<usize> {
     let version: i32 = row.try_get("version")?;
     let cfg: Config = serde_json::from_value(body).context("parse discovery config")?;
 
-    // Universe: active tickers + benchmarks excluded (no point scanning SPY/QQQ).
+    // Scan pool = discovery_pool (broad investible names from FMP screener, #88)
+    // UNION active tickers (our curated universe). UNION dedups for us. This
+    // lets the scanner find signals on names we don't yet track — the whole
+    // point of universe self-expansion.
     let symbols: Vec<String> = sqlx::query_scalar(
-        "SELECT symbol FROM ticker WHERE status = 'active' ORDER BY symbol",
+        r#"SELECT symbol FROM (
+              SELECT symbol FROM discovery_pool WHERE dropped_at IS NULL
+              UNION
+              SELECT symbol FROM ticker WHERE status = 'active'
+           ) s
+           ORDER BY symbol"#,
     )
     .fetch_all(pool)
     .await
-    .context("load tickers")?;
+    .context("load scan pool")?;
 
     let mut total_hits = 0;
     for symbol in &symbols {

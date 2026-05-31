@@ -127,6 +127,49 @@ impl Store {
         Ok(())
     }
 
+    /// Active discovery pool symbols (not dropped). Used by the discovery
+    /// scanner instead of `ticker` so it can fire signals on names we
+    /// don't yet track (#88).
+    pub async fn discovery_pool_symbols(&self) -> Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT symbol FROM discovery_pool WHERE dropped_at IS NULL ORDER BY symbol",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("discovery_pool_symbols")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    /// For each symbol, return the OLDEST bar timestamp we have (None when
+    /// we have no bars yet). Lets the price ingest decide cold-start vs
+    /// incremental backfill per ticker.
+    pub async fn oldest_bar_per_symbol(
+        &self,
+        symbols: &[String],
+    ) -> Result<std::collections::HashMap<String, Option<DateTime<Utc>>>> {
+        let mut out: std::collections::HashMap<String, Option<DateTime<Utc>>> =
+            symbols.iter().map(|s| (s.clone(), None)).collect();
+        if symbols.is_empty() {
+            return Ok(out);
+        }
+        let rows = sqlx::query(
+            r#"SELECT symbol, MIN(ts) AS min_ts
+                 FROM price_bar
+                WHERE symbol = ANY($1)
+             GROUP BY symbol"#,
+        )
+        .bind(symbols)
+        .fetch_all(&self.pool)
+        .await
+        .context("oldest_bar_per_symbol")?;
+        for r in rows {
+            let s: String = r.try_get("symbol")?;
+            let ts: Option<DateTime<Utc>> = r.try_get("min_ts")?;
+            out.insert(s, ts);
+        }
+        Ok(out)
+    }
+
     /// All open positions in the shape the risk overlay consumes.
     /// Recent decisions for a given symbol — joins through thesis to filter.
     pub async fn decisions_for_symbol(&self, symbol: &str) -> Result<Vec<serde_json::Value>> {

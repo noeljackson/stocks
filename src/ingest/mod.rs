@@ -6,11 +6,13 @@
 
 pub mod cboe;
 pub mod crowd_sentiment_service;
+pub mod discovery_pool_service;
 pub mod edgar;
 pub mod fmp;
 pub mod fmp_estimates;
 pub mod fmp_estimates_service;
 pub mod fmp_news;
+pub mod fmp_screener;
 pub mod fred;
 pub mod massive;
 pub mod massive_news;

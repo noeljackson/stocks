@@ -183,17 +183,27 @@ async fn scan_one(pool: &PgPool, symbol: &str, cfg: &Config) -> Result<Vec<Signa
     Ok(hits)
 }
 
-/// Idempotent within a (symbol, signal, second) tuple — UNIQUE constraint
-/// on (symbol, signal_name, proposed_at) catches re-runs.
+/// Idempotent. Skips when an OPEN candidate (status='proposed') already
+/// exists for (symbol, signal_name) — re-firing the same signal at 5-minute
+/// intervals would otherwise create dozens of duplicate rows per ticker
+/// (#105). Once the operator confirms or rejects, a fresh firing CAN create
+/// a new candidate.
 ///
-/// On insert, also fire an attention_item(candidate_review) so the operator
+/// On insert, also fires an attention_item(candidate_review) so the operator
 /// surface (#86) picks it up immediately. The attention table's partial
 /// unique on (kind, candidate_id) WHERE status='open' dedups across runs.
 async fn persist(pool: &PgPool, hit: &SignalHit, config_version: &str) -> Result<()> {
     use crate::attention::{kind, severity, source, title_for_candidate};
     let row = sqlx::query(
-        r#"INSERT INTO discovery_candidate (symbol, signal_name, signal_value, reasoning, config_version)
-           VALUES ($1, $2, $3, $4, $5)
+        r#"INSERT INTO discovery_candidate
+                 (symbol, signal_name, signal_value, reasoning, config_version)
+           SELECT $1, $2, $3, $4, $5
+            WHERE NOT EXISTS (
+                  SELECT 1 FROM discovery_candidate
+                   WHERE symbol = $1
+                     AND signal_name = $2
+                     AND status = 'proposed'
+                  )
            ON CONFLICT DO NOTHING
            RETURNING id"#,
     )

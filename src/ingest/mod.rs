@@ -6,6 +6,8 @@
 
 pub mod edgar;
 pub mod fmp;
+pub mod fmp_estimates;
+pub mod fmp_estimates_service;
 pub mod fred;
 pub mod massive;
 pub mod sec;

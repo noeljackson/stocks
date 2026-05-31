@@ -1,20 +1,19 @@
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
-html, body { height: 100%; margin: 0; }
-html, body, #app { min-height: 100dvh; }
+html, body, #app {
+  margin: 0; padding: 0;
+  height: 100vh;
+  /* dvh also for browsers that shrink for mobile chrome */
+  height: 100dvh;
+  width: 100vw;
+  overflow: hidden;
+}
 body {
   font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
   background: #0b0e14;
   color: #cdd6f4;
 }
-/* The Svelte mount point IS the workspace's flex parent. The shell's outer
- * div uses flex:1 to fill regardless of how Svelte wraps things. */
-#app {
-  display: flex;
-  flex-direction: column;
-  height: 100dvh;
-}
-#app > * { flex: 1 1 auto; min-height: 0; }
+/* Workspace is position:fixed inside #app — no flex needed here. */
 
 h1 { font-size: 1.1rem; margin: 0; }
 h2 { font-size: .95rem; margin: 0 0 .5rem; color: #b4befe; }

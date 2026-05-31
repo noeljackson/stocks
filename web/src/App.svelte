@@ -446,9 +446,10 @@
     <div class="error error-bar">{error} <button class="x" onclick={() => (error = null)} aria-label="dismiss">✕</button></div>
   {/if}
 
-  <!-- Main workspace: chart placeholder + right detail panel -->
-  <main class="main">
-    <section class="chart-panel">
+  <!-- Body: left column (chart + bottom drawer stacked) + vertical splitter + right panel (full height) -->
+  <div class="body">
+    <div class="main-col">
+      <section class="chart-panel">
       <div class="chart-stub">
         <h3>
           {#if selectedSymbol}
@@ -470,7 +471,148 @@
           </dl>
         {/if}
       </div>
-    </section>
+      </section>
+
+      <!-- splitter is a sibling between chart and drawer (grid row 2) -->
+      <div
+        class="split-h"
+        role="separator"
+        aria-orientation="horizontal"
+        title="drag to resize"
+        onpointerdown={startResizeBottom}
+      ></div>
+
+      <!-- bottom drawer is inside main-col so it only spans the chart width -->
+      <footer class="bottom">
+    <nav class="bottom-tabs">
+      {#each ["events", "discovery", "decisions", "calibration"] as BottomMode[] as m}
+        <button class:active={bottomMode === m} onclick={() => (bottomMode = m, bottomOpen = true)}>
+          {m}
+          {#if m === "discovery" && pending.length > 0}<span class="badge tiny">{pending.length}</span>{/if}
+          {#if m === "events"}<span class="badge tiny">{live.length}</span>{/if}
+        </button>
+      {/each}
+      <button
+        class="bottom-toggle"
+        onclick={() => (bottomOpen = !bottomOpen)}
+        title={bottomOpen ? "collapse drawer" : "expand drawer"}
+      >
+        {bottomOpen ? "▾ hide" : "▴ show"}
+      </button>
+      {#if bottomOpen}
+        <button class="bottom-reset" onclick={resetBottom} title="reset drawer height">⟲</button>
+      {/if}
+    </nav>
+
+    {#if bottomOpen}
+      <div class="bottom-body">
+        {#if bottomMode === "events"}
+          {#if live.length === 0}
+            <p class="muted">Waiting for events…</p>
+          {:else}
+            <ul class="event-feed">
+              {#each live.slice(0, 80) as e, i (i)}
+                {@const p = (e.payload ?? {}) as Record<string, unknown>}
+                <li
+                  onclick={() => p.symbol && selectSymbol(p.symbol as string)}
+                  class:linkable={!!p.symbol}
+                >
+                  <span class="kind" style="color:{kindColor(e.kind, p)}">{e.kind}</span>
+                  <code>{e.subject}</code>
+                  {#if p.symbol}<strong>{p.symbol as string}</strong>{/if}
+                  {#if e.kind === "risk" && p.veto}<span class="badge danger tiny">VETO {(p.reasons as string[])?.join(", ")}</span>{/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        {:else if bottomMode === "discovery"}
+          {#if pending.length === 0}
+            <p class="muted">Nothing pending. Run <code>make run-discovery</code> + <code>make classify-candidates</code>.</p>
+          {:else}
+            <ul class="disc-list">
+              {#each pending as c (c.id)}
+                <li class="disc-card">
+                  <div class="disc-hdr">
+                    <strong class="link-symbol" onclick={() => selectSymbol(c.symbol)}>{c.symbol}</strong>
+                    <span class="badge tiny">{c.signal_name}</span>
+                    {#if c.signal_value !== null}<span class="muted">value {c.signal_value.toFixed(3)}</span>{/if}
+                    <span class="muted">{shortTs(c.proposed_at)}</span>
+                  </div>
+                  {#if c.reasoning}<p class="muted disc-reasoning">{c.reasoning}</p>{/if}
+                  {#if c.proposed_lists.length > 0}
+                    <div class="disc-lists">
+                      {#each c.proposed_lists as p}
+                        {#if p.watchlist_id}
+                          <label class="disc-pick">
+                            <input
+                              type="checkbox"
+                              checked={chosenLists[c.id]?.[p.watchlist_id] ?? false}
+                              onchange={() => p.watchlist_id && toggleChoice(c.id, p.watchlist_id)}
+                            />
+                            <span>{p.watchlist_name}</span>
+                            <span class="badge tiny conf-{p.confidence}">{p.confidence}</span>
+                            <span class="muted disc-rat">{p.rationale}</span>
+                          </label>
+                        {/if}
+                      {/each}
+                    </div>
+                  {/if}
+                  {#if c.suggested_new_list}
+                    <div class="disc-newlist">
+                      <span class="badge tiny">propose new</span>
+                      <strong>{c.suggested_new_list.name}</strong>
+                      <span class="muted">— {c.suggested_new_list.description}</span>
+                    </div>
+                  {/if}
+                  <div class="disc-actions">
+                    <button onclick={() => confirmOne(c.id)}>Confirm</button>
+                    <button class="reject" onclick={() => rejectOne(c.id)}>Reject</button>
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        {:else if bottomMode === "decisions"}
+          <form onsubmit={submitDecision} class="decform">
+            <label>
+              Thesis ID
+              <input bind:value={decThesisId} placeholder="(leave blank for ad-hoc)" />
+            </label>
+            <label>
+              Action
+              <select bind:value={decAction}>
+                <option>enter</option><option>exit</option><option>skip</option><option>resize</option>
+              </select>
+            </label>
+            <label>
+              User choice
+              <select bind:value={decChoice}>
+                <option>confirmed</option><option>rejected</option><option>deferred</option>
+              </select>
+            </label>
+            <button type="submit">Submit</button>
+            {#if decStatus}<span class="muted">{decStatus}</span>{/if}
+          </form>
+        {:else if bottomMode === "calibration"}
+          {#if calibration}
+            <dl class="meta-list inline">
+              <dt>Predictions</dt><dd>{calibration.predictions_total}</dd>
+              <dt>Scored outcomes</dt><dd>{calibration.outcomes_scored}</dd>
+              {#if calibration.mean_brier !== null}
+                <dt>Mean Brier</dt><dd>{calibration.mean_brier.toFixed(4)}</dd>
+              {/if}
+              {#if calibration.median_lead_time_days !== null}
+                <dt>Median lead</dt><dd>{calibration.median_lead_time_days.toFixed(1)}d</dd>
+              {/if}
+            </dl>
+          {:else}
+            <p class="muted">No calibration data yet.</p>
+          {/if}
+        {/if}
+      </div>
+    {/if}
+      </footer>
+    </div>
 
     <div
       class="split-v"
@@ -616,145 +758,8 @@
         {/if}
       </section>
     </aside>
-  </main>
+  </div>
 
-  <!-- Bottom drawer: workflows -->
-  <footer class="bottom">
-    <div
-      class="split-h"
-      role="separator"
-      aria-orientation="horizontal"
-      title="drag to resize"
-      onpointerdown={startResizeBottom}
-    ></div>
-    <nav class="bottom-tabs">
-      {#each ["events", "discovery", "decisions", "calibration"] as BottomMode[] as m}
-        <button class:active={bottomMode === m} onclick={() => (bottomMode = m, bottomOpen = true)}>
-          {m}
-          {#if m === "discovery" && pending.length > 0}<span class="badge tiny">{pending.length}</span>{/if}
-          {#if m === "events"}<span class="badge tiny">{live.length}</span>{/if}
-        </button>
-      {/each}
-      <button
-        class="bottom-toggle"
-        onclick={() => (bottomOpen = !bottomOpen)}
-        title={bottomOpen ? "collapse drawer" : "expand drawer"}
-      >
-        {bottomOpen ? "▾ hide" : "▴ show"}
-      </button>
-      {#if bottomOpen}
-        <button class="bottom-reset" onclick={resetBottom} title="reset drawer height">⟲</button>
-      {/if}
-    </nav>
-
-    {#if bottomOpen}
-      <div class="bottom-body">
-        {#if bottomMode === "events"}
-          {#if live.length === 0}
-            <p class="muted">Waiting for events…</p>
-          {:else}
-            <ul class="event-feed">
-              {#each live.slice(0, 80) as e, i (i)}
-                {@const p = (e.payload ?? {}) as Record<string, unknown>}
-                <li
-                  onclick={() => p.symbol && selectSymbol(p.symbol as string)}
-                  class:linkable={!!p.symbol}
-                >
-                  <span class="kind" style="color:{kindColor(e.kind, p)}">{e.kind}</span>
-                  <code>{e.subject}</code>
-                  {#if p.symbol}<strong>{p.symbol as string}</strong>{/if}
-                  {#if e.kind === "risk" && p.veto}<span class="badge danger tiny">VETO {(p.reasons as string[])?.join(", ")}</span>{/if}
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        {:else if bottomMode === "discovery"}
-          {#if pending.length === 0}
-            <p class="muted">Nothing pending. Run <code>make run-discovery</code> + <code>make classify-candidates</code>.</p>
-          {:else}
-            <ul class="disc-list">
-              {#each pending as c (c.id)}
-                <li class="disc-card">
-                  <div class="disc-hdr">
-                    <strong class="link-symbol" onclick={() => selectSymbol(c.symbol)}>{c.symbol}</strong>
-                    <span class="badge tiny">{c.signal_name}</span>
-                    {#if c.signal_value !== null}<span class="muted">value {c.signal_value.toFixed(3)}</span>{/if}
-                    <span class="muted">{shortTs(c.proposed_at)}</span>
-                  </div>
-                  {#if c.reasoning}<p class="muted disc-reasoning">{c.reasoning}</p>{/if}
-                  {#if c.proposed_lists.length > 0}
-                    <div class="disc-lists">
-                      {#each c.proposed_lists as p}
-                        {#if p.watchlist_id}
-                          <label class="disc-pick">
-                            <input
-                              type="checkbox"
-                              checked={chosenLists[c.id]?.[p.watchlist_id] ?? false}
-                              onchange={() => p.watchlist_id && toggleChoice(c.id, p.watchlist_id)}
-                            />
-                            <span>{p.watchlist_name}</span>
-                            <span class="badge tiny conf-{p.confidence}">{p.confidence}</span>
-                            <span class="muted disc-rat">{p.rationale}</span>
-                          </label>
-                        {/if}
-                      {/each}
-                    </div>
-                  {/if}
-                  {#if c.suggested_new_list}
-                    <div class="disc-newlist">
-                      <span class="badge tiny">propose new</span>
-                      <strong>{c.suggested_new_list.name}</strong>
-                      <span class="muted">— {c.suggested_new_list.description}</span>
-                    </div>
-                  {/if}
-                  <div class="disc-actions">
-                    <button onclick={() => confirmOne(c.id)}>Confirm</button>
-                    <button class="reject" onclick={() => rejectOne(c.id)}>Reject</button>
-                  </div>
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        {:else if bottomMode === "decisions"}
-          <form onsubmit={submitDecision} class="decform">
-            <label>
-              Thesis ID
-              <input bind:value={decThesisId} placeholder="(leave blank for ad-hoc)" />
-            </label>
-            <label>
-              Action
-              <select bind:value={decAction}>
-                <option>enter</option><option>exit</option><option>skip</option><option>resize</option>
-              </select>
-            </label>
-            <label>
-              User choice
-              <select bind:value={decChoice}>
-                <option>confirmed</option><option>rejected</option><option>deferred</option>
-              </select>
-            </label>
-            <button type="submit">Submit</button>
-            {#if decStatus}<span class="muted">{decStatus}</span>{/if}
-          </form>
-        {:else if bottomMode === "calibration"}
-          {#if calibration}
-            <dl class="meta-list inline">
-              <dt>Predictions</dt><dd>{calibration.predictions_total}</dd>
-              <dt>Scored outcomes</dt><dd>{calibration.outcomes_scored}</dd>
-              {#if calibration.mean_brier !== null}
-                <dt>Mean Brier</dt><dd>{calibration.mean_brier.toFixed(4)}</dd>
-              {/if}
-              {#if calibration.median_lead_time_days !== null}
-                <dt>Median lead</dt><dd>{calibration.median_lead_time_days.toFixed(1)}d</dd>
-              {/if}
-            </dl>
-          {:else}
-            <p class="muted">No calibration data yet.</p>
-          {/if}
-        {/if}
-      </div>
-    {/if}
-  </footer>
 </div>
 
 <style>
@@ -763,10 +768,27 @@
     position: fixed;
     inset: 0;
     display: grid;
-    /* Top bar (44) / error bar (auto when present) / main (fills) / bottom (CSS var) */
-    grid-template-rows: 44px auto minmax(0, 1fr) var(--bottom-h, 36px);
+    /* Top bar (44) / error bar (auto when present) / body (fills) */
+    grid-template-rows: 44px auto minmax(0, 1fr);
     grid-template-columns: 1fr;
     background: #0b0e14;
+    overflow: hidden;
+  }
+
+  /* Body splits horizontally: main-col | splitter | right panel.
+     Right panel is full body height; bottom drawer is nested in main-col. */
+  .body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 6px var(--right-w, 360px);
+    min-height: 0;
+    overflow: hidden;
+  }
+  .main-col {
+    display: grid;
+    /* chart fills, splitter (8px), bottom drawer (var) */
+    grid-template-rows: minmax(0, 1fr) 8px var(--bottom-h, 36px);
+    min-height: 0;
+    min-width: 0;
     overflow: hidden;
   }
 
@@ -806,19 +828,11 @@
     color: inherit; cursor: pointer; padding: 0 .35rem;
   }
 
-  /* Main: chart fills, splitter, right panel takes --right-w */
-  .main {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 6px var(--right-w, 360px);
-    min-height: 0;
-    height: 100%;
-    overflow: hidden;
-  }
   .chart-panel {
     overflow: auto;
     padding: 1rem;
     min-width: 0;
-    height: 100%;
+    min-height: 0;
   }
   .split-v {
     background: #1f2733;

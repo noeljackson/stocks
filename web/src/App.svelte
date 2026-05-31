@@ -768,21 +768,25 @@
     position: fixed;
     inset: 0;
     display: grid;
-    /* Top bar (44) / error bar (auto when present) / body (fills) */
-    grid-template-rows: 44px auto minmax(0, 1fr);
+    /* Top bar (44) / body (fills). Error bar overlays via position:absolute. */
+    grid-template-rows: 44px minmax(0, 1fr);
     grid-template-columns: 1fr;
     background: #0b0e14;
     overflow: hidden;
+  }
+  .error-bar {
+    position: absolute; top: 44px; left: 0; right: 0; z-index: 5;
+    margin: .35rem .75rem;
   }
 
   /* Body splits horizontally: main-col | splitter | right panel.
      Right panel is full body height; bottom drawer is nested in main-col. */
   .body {
+    /* Sits in workspace grid row 3 (minmax(0, 1fr)) — fills available height. */
     display: grid;
     grid-template-columns: minmax(0, 1fr) 6px var(--right-w, 360px);
-    height: 100vh;
-    height: 100dvh;
     min-height: 0;
+    min-width: 0;
     overflow: hidden;
   }
   .main-col {
@@ -821,9 +825,7 @@
   .status { margin-left: auto; font-size: .75rem; color: #f38ba8; }
   .status.on { color: #a6e3a1; }
 
-  .error-bar {
-    margin: 0 1rem; display: flex; align-items: center; gap: .5rem;
-  }
+  .error-bar { display: flex; align-items: center; gap: .5rem; }
   .error-bar .x {
     margin-left: auto;
     background: transparent; border: 1px solid currentColor; border-radius: 3px;

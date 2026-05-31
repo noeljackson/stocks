@@ -204,6 +204,51 @@ row=$("${PSQL[@]}" -c "SELECT horizon_at FROM prediction WHERE thesis_id='$thesi
 [[ "$row" != "" ]] || fail "horizon_at NULL on fresh prediction — bug regressed (#60)"
 ok "fresh prediction has horizon_at=$row"
 
+# ---------- stage 9: period-qualified evaluator path (#62) ----------
+step "stage 9: evaluator resolves a period-qualified metric"
+# Inject a metric the new period resolver should handle. MU FY2018 Q3 Revenue
+# is in our XBRL data (>$6B), so this should flip to satisfied.
+"${PSQL[@]}" -c "
+UPDATE thesis SET conviction_conditions = conviction_conditions || jsonb_build_array(
+  jsonb_build_object('type','quantitative','name','smoketest_period_q3_fy2018',
+    'expr','smoketest #62: $SYMBOL Q3 FY2018 revenue > 1B',
+    'target', jsonb_build_object('metric','$SYMBOL.Q3_FY2018_revenue','op','>','value',1000000000,'unit','USD'),
+    'deadline_at','2099-12-31T00:00:00Z',
+    'evidence_source','edgar:10-Q:$SYMBOL'
+  )
+) WHERE thesis_id='$thesis_id'" >/dev/null
+EVAL_INTERVAL_SECS=1 "${RUN[@]}" "$BIN/evaluator" >/tmp/smoketest-eval2.log 2>&1 &
+ev2=$!; sleep 3; kill "$ev2" 2>/dev/null || true; wait "$ev2" 2>/dev/null || true
+period_status=$("${PSQL[@]}" -c "SELECT status FROM v_condition WHERE thesis_id='$thesis_id' AND name='smoketest_period_q3_fy2018'")
+[[ "$period_status" == "satisfied" ]] || fail "period-qualified metric expected satisfied, got '$period_status'"
+ok "period resolver flipped Q3_FY2018 condition to satisfied"
+
+# ---------- stage 10: consensus has new components live ----------
+step "stage 10: consensus 5/5 components live (estimate_revision, news, crowd)"
+ok_components=$("${PSQL[@]}" -c "
+SELECT (SELECT count(*) FROM jsonb_array_elements(components) c WHERE c->>'status'='ok')
+  FROM consensus_score WHERE symbol='$SYMBOL'
+ ORDER BY computed_at DESC LIMIT 1")
+[[ "$ok_components" -ge 4 ]] || fail "expected at least 4/5 consensus components ok, got $ok_components"
+ok "$SYMBOL has $ok_components of 5 consensus components live"
+
+# ---------- stage 11: news ingest has rows + sentiment ----------
+step "stage 11: news_article has rows with sentiment populated"
+news_total=$("${PSQL[@]}" -c "SELECT count(*) FROM news_article WHERE symbol='$SYMBOL'")
+news_scored=$("${PSQL[@]}" -c "SELECT count(*) FROM news_article WHERE symbol='$SYMBOL' AND sentiment IS NOT NULL")
+if [[ "$news_total" -eq 0 ]]; then
+    warn "no news_article rows for $SYMBOL — run ingest first to backfill"
+else
+    [[ "$news_scored" -gt 0 ]] || fail "$news_total articles, none sentiment-scored"
+    ok "$news_scored of $news_total articles sentiment-scored"
+fi
+
+# ---------- stage 12: crowd sentiment markers populated (#20) ----------
+step "stage 12: crowd_sentiment has CBOE markers"
+crowd_sources=$("${PSQL[@]}" -c "SELECT count(DISTINCT source) FROM crowd_sentiment")
+[[ "$crowd_sources" -ge 1 ]] || warn "crowd_sentiment empty — run ingest first"
+[[ "$crowd_sources" -ge 1 ]] && ok "crowd_sentiment has $crowd_sources distinct source(s)"
+
 # ---------- summary ----------
 step "all stages passed ✓"
 printf "%-22s %s\n" "Symbol:"           "$SYMBOL"
@@ -211,3 +256,6 @@ printf "%-22s %s\n" "Thesis:"           "$thesis_id"
 printf "%-22s %s\n" "Final state:"      "$state"
 printf "%-22s %s\n" "Satisfied conds:"  "$satisfied"
 printf "%-22s %s\n" "Risk verdict id:"  "$new_alert  (veto=$veto)"
+printf "%-22s %s/5\n" "Consensus components:" "$ok_components"
+printf "%-22s %s scored of %s\n" "News articles:" "$news_scored" "$news_total"
+printf "%-22s %s\n" "Crowd sources:"    "$crowd_sources"

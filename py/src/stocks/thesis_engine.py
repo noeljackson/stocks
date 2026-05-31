@@ -8,9 +8,9 @@ at state=forming with version=1 and immutable_original frozen.
 Usage:  python -m stocks.thesis_engine SYMBOL
 Example: python -m stocks.thesis_engine NVDA
 
-If the LLM judges that the context doesn't support a real edge
-(`edge_present: false`), the run is honestly logged + skipped — no row
-persisted. Refusing to draft is a valid output.
+If the LLM judges that the context is substantial but not actionable, it can
+persist a neutral monitoring thesis. If the context is too thin, the run is
+honestly logged + skipped. Refusing to draft is a valid output.
 """
 
 from __future__ import annotations
@@ -116,6 +116,8 @@ async def _persist_thesis(
     immutable_original = {
         "edge_rationale": draft.get("edge_rationale") or "",
         "invalidation_conditions": draft.get("invalidation_conditions") or [],
+        "thesis_kind": draft.get("thesis_kind") or "actionable_edge",
+        "no_edge_reason": draft.get("no_edge_reason"),
         "drafted_at": dt.datetime.now(dt.UTC).isoformat(),
     }
     thesis_id = uuid.uuid4()
@@ -153,6 +155,64 @@ async def _persist_thesis(
         json.dumps(immutable_original),
     )
     return thesis_id
+
+
+def _context_has_substance(context: dict | None) -> bool:
+    if not context:
+        return False
+    for band in ("structural", "narrative", "market"):
+        value = context.get(band)
+        if isinstance(value, dict):
+            for item in value.values():
+                if item not in (None, "", [], {}):
+                    return True
+        elif value not in (None, "", [], {}):
+            return True
+    return False
+
+
+def _draft_kind(parsed: dict, context: dict | None) -> str:
+    explicit = parsed.get("thesis_kind")
+    if explicit in {"actionable_edge", "monitoring", "decline"}:
+        return explicit
+    if parsed.get("edge_present"):
+        return "actionable_edge"
+    return "monitoring" if _context_has_substance(context) else "decline"
+
+
+def _normalize_monitoring_draft(symbol: str, parsed: dict) -> dict:
+    """Make a no-edge but substantial-context result persistable as a thesis.
+
+    This keeps the operator from seeing a blank thesis panel for important
+    tracked names while preserving the distinction between "monitoring" and
+    "actionable edge".
+    """
+    reason = parsed.get("no_edge_reason") or "No actionable information-diffusion edge is present."
+    out = dict(parsed)
+    out["thesis_kind"] = "monitoring"
+    out["edge_present"] = False
+    out["edge_rationale"] = out.get("edge_rationale") or f"Monitoring thesis for {symbol}: {reason}"
+    out["bull_case"] = out.get("bull_case") or (
+        "Base case remains constructive if upcoming company updates confirm "
+        "that current demand, margin, and competitive-position assumptions are intact."
+    )
+    out["bear_case"] = out.get("bear_case") or (
+        "The monitoring case weakens if new filings, estimates, news, or price action "
+        "show that consensus expectations are too high or the competitive setup is deteriorating."
+    )
+    out["forecast"] = out.get("forecast") or {
+        "direction": "neutral",
+        "magnitude_rough": "flat to low single digits",
+        "horizon_days": 90,
+        "horizon_event": "next material company update",
+    }
+    out["conviction_conditions"] = out.get("conviction_conditions") or []
+    out["trigger_conditions"] = out.get("trigger_conditions") or []
+    out["invalidation_conditions"] = out.get("invalidation_conditions") or []
+    out["fulfillment_conditions"] = out.get("fulfillment_conditions") or []
+    out["conviction_tier"] = out.get("conviction_tier") or "low"
+    out["instrument"] = out.get("instrument") or "equity"
+    return out
 
 
 async def draft(symbol: str) -> dict:
@@ -229,7 +289,10 @@ async def draft(symbol: str) -> dict:
         )
         parsed = _extract_json(resp.content)
 
-        if not parsed.get("edge_present"):
+        kind = _draft_kind(parsed, context)
+        if kind == "monitoring":
+            parsed = _normalize_monitoring_draft(symbol, parsed)
+        elif kind == "decline":
             log.warning(
                 "LLM declined to draft (edge_present=false): %s",
                 parsed.get("no_edge_reason", "(no reason given)"),

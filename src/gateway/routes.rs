@@ -232,7 +232,7 @@ async fn get_ticker_context(
 #[derive(Debug, Deserialize, Default)]
 struct CandlesQuery {
     symbol: Option<String>,
-    /// 1M / 3M / 6M / YTD / 1Y / ALL — defaults to 6M when omitted.
+    /// 200D / 1Y / 2Y / ALL — defaults to 1Y when omitted.
     #[serde(default)]
     range: Option<String>,
 }
@@ -244,19 +244,12 @@ async fn get_candles(
     let Some(sym) = q.symbol else {
         return (StatusCode::BAD_REQUEST, "symbol query param required").into_response();
     };
-    use chrono::Datelike;
-    let lookback_days: i64 = match q.range.as_deref().unwrap_or("6M") {
-        "1M" => 35,
-        "3M" => 100,
-        "6M" => 200,
-        "YTD" => {
-            let today = chrono::Utc::now().date_naive();
-            let jan1 = chrono::NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap_or(today);
-            (today - jan1).num_days().max(1)
-        }
+    let lookback_days: i64 = match q.range.as_deref().unwrap_or("1Y") {
+        "200D" => 320,
         "1Y" => 380,
+        "2Y" => 760,
         "ALL" => 365 * 30,
-        _ => 200,
+        _ => 380,
     };
     match gw.store.candles_for(&sym, lookback_days).await {
         Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
@@ -290,16 +283,12 @@ async fn get_symbol_events(
     let Some(sym) = q.symbol else {
         return (StatusCode::BAD_REQUEST, "symbol query param required").into_response();
     };
-    use chrono::Datelike;
-    let lookback_days: i64 = match q.range.as_deref().unwrap_or("6M") {
-        "1M" => 35, "3M" => 100, "6M" => 200,
-        "YTD" => {
-            let today = chrono::Utc::now().date_naive();
-            let jan1 = chrono::NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap_or(today);
-            (today - jan1).num_days().max(1)
-        }
-        "1Y" => 380, "ALL" => 365 * 30,
-        _ => 200,
+    let lookback_days: i64 = match q.range.as_deref().unwrap_or("1Y") {
+        "200D" => 320,
+        "1Y" => 380,
+        "2Y" => 760,
+        "ALL" => 365 * 30,
+        _ => 380,
     };
     match gw.store.symbol_events(&sym, lookback_days).await {
         Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),

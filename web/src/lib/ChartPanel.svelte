@@ -106,6 +106,7 @@
     chart = createChart(container, {
       autoSize: true,
       layout: { background: { color: "#0b0e14" }, textColor: "#bac2de" },
+      localization: { locale: "en-US" },
       grid: { vertLines: { color: "#1f2733" }, horzLines: { color: "#1f2733" } },
       timeScale: { borderColor: "#2a3548", timeVisible: false, rightOffset: 4 },
       rightPriceScale: { borderColor: "#2a3548" },

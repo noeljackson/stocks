@@ -47,7 +47,7 @@
 
   // ---------- workspace state ----------
   type RightTab = "overview" | "context" | "theses" | "alerts" | "decisions";
-  type BottomMode = "attention" | "events" | "discovery" | "decisions" | "calibration";
+  type BottomMode = "attention" | "events" | "discovery" | "decisions" | "calibration" | "diagnostics";
 
   let selectedSymbol = $state<string | null>(null);
   let selectedWatchlistId = $state<string | null>(null);
@@ -58,6 +58,10 @@
   // ---------- global data ----------
   let regime = $state<MarketState | null>(null);
   let calibration = $state<Calibration | null>(null);
+  // System status (#92) — populated on demand when diagnostics tab is open.
+  let sysStatus = $state<Record<string, unknown> | null>(null);
+  let sysStatusError = $state<string | null>(null);
+  let sysStatusTimer: ReturnType<typeof setInterval> | null = null;
   let tickers = $state<Ticker[]>([]);
   let alerts = $state<Alert[]>([]);
   let live = $state<StreamEvent[]>([]);
@@ -468,6 +472,31 @@
     fetchAlerts({ unacked: !showAcked }).then((a) => (alerts = a)).catch(() => {});
   });
 
+  async function refreshSysStatus() {
+    try {
+      const r = await fetch("/api/system-status");
+      if (!r.ok) {
+        sysStatusError = `HTTP ${r.status}`;
+        return;
+      }
+      sysStatus = await r.json();
+      sysStatusError = null;
+    } catch (e) {
+      sysStatusError = e instanceof Error ? e.message : String(e);
+    }
+  }
+  // Poll while the diagnostics tab is open AND the drawer is expanded.
+  $effect(() => {
+    const shouldPoll = bottomMode === "diagnostics" && bottomOpen;
+    if (shouldPoll) {
+      void refreshSysStatus();
+      sysStatusTimer = setInterval(refreshSysStatus, 30000);
+      return () => {
+        if (sysStatusTimer) { clearInterval(sysStatusTimer); sysStatusTimer = null; }
+      };
+    }
+  });
+
   $effect(() => {
     // Once tickers and watchlists arrive, auto-pick the first symbol.
     if (!selectedSymbol && (tickers.length > 0 || watchlists.length > 0)) {
@@ -591,7 +620,7 @@
         >
           <footer class="bottom">
     <nav class="bottom-tabs">
-      {#each ["attention", "events", "discovery", "decisions", "calibration"] as BottomMode[] as m}
+      {#each ["attention", "events", "discovery", "decisions", "calibration", "diagnostics"] as BottomMode[] as m}
         <button
           class:active={bottomMode === m}
           onclick={() => { bottomMode = m; if (!bottomOpen) bottomPane?.expand(); }}
@@ -858,6 +887,101 @@
             </dl>
           {:else}
             <p class="muted">No calibration data yet.</p>
+          {/if}
+        {:else if bottomMode === "diagnostics"}
+          {#if sysStatus}
+            {@const ing = (sysStatus.ingest ?? {}) as Record<string, { last_at: string|null; count_24h: number; symbols_24h?: number }>}
+            {@const disc = sysStatus.discovery as { last_pass_at: string|null; open_candidates: number; by_signal: { signal: string; count: number }[]; pool_size: number }}
+            {@const cog = sysStatus.cognition as { contexts_24h: number; contexts_total_symbols: number; thesis_by_state: { state: string; count: number }[] }}
+            {@const att = sysStatus.attention as { open_items: number; by_kind: { kind: string; count: number }[] }}
+            {@const llm = sysStatus.llm as { calls_24h: number; avg_latency_ms: number|null; by_prompt: { prompt: string; count: number; avg_ms: number|null; last_at: string|null }[] }}
+            <div class="diag-grid">
+              <section class="diag">
+                <h5>Ingest <span class="muted">— last 24h</span></h5>
+                <table class="diag-tbl">
+                  <thead><tr><th>source</th><th>last</th><th>rows</th><th>symbols</th></tr></thead>
+                  <tbody>
+                    {#each Object.entries(ing) as [src, v] (src)}
+                      <tr>
+                        <td><strong>{src}</strong></td>
+                        <td class="muted">{v.last_at ? relativeTime(v.last_at) : "—"}</td>
+                        <td>{v.count_24h}</td>
+                        <td>{v.symbols_24h ?? "—"}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </section>
+
+              <section class="diag">
+                <h5>Discovery</h5>
+                <dl class="meta-list inline">
+                  <dt>last pass</dt><dd>{disc.last_pass_at ? relativeTime(disc.last_pass_at) : "—"}</dd>
+                  <dt>open candidates</dt><dd>{disc.open_candidates}</dd>
+                  <dt>pool size</dt><dd>{disc.pool_size}</dd>
+                </dl>
+                {#if disc.by_signal?.length}
+                  <ul class="chips">
+                    {#each disc.by_signal as s (s.signal)}
+                      <li class="chip">{s.signal}: <strong>{s.count}</strong></li>
+                    {/each}
+                  </ul>
+                {/if}
+              </section>
+
+              <section class="diag">
+                <h5>Cognition</h5>
+                <dl class="meta-list inline">
+                  <dt>contexts (24h)</dt><dd>{cog.contexts_24h}</dd>
+                  <dt>symbols with context</dt><dd>{cog.contexts_total_symbols}</dd>
+                </dl>
+                {#if cog.thesis_by_state?.length}
+                  <ul class="chips">
+                    {#each cog.thesis_by_state as s (s.state)}
+                      <li class="chip">{s.state}: <strong>{s.count}</strong></li>
+                    {/each}
+                  </ul>
+                {/if}
+              </section>
+
+              <section class="diag">
+                <h5>Attention</h5>
+                <dl class="meta-list inline">
+                  <dt>open items</dt><dd>{att.open_items}</dd>
+                </dl>
+                {#if att.by_kind?.length}
+                  <ul class="chips">
+                    {#each att.by_kind as k (k.kind)}
+                      <li class="chip">{k.kind}: <strong>{k.count}</strong></li>
+                    {/each}
+                  </ul>
+                {/if}
+              </section>
+
+              <section class="diag wide">
+                <h5>LLM <span class="muted">— {llm.calls_24h} calls / 24h · avg {llm.avg_latency_ms ?? "—"}ms</span></h5>
+                {#if llm.by_prompt?.length}
+                  <table class="diag-tbl">
+                    <thead><tr><th>prompt</th><th>calls</th><th>avg ms</th><th>last</th></tr></thead>
+                    <tbody>
+                      {#each llm.by_prompt as p (p.prompt)}
+                        <tr>
+                          <td><code>{p.prompt}</code></td>
+                          <td>{p.count}</td>
+                          <td>{p.avg_ms ?? "—"}</td>
+                          <td class="muted">{p.last_at ? relativeTime(p.last_at) : "—"}</td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                {/if}
+              </section>
+            </div>
+            <p class="muted hint">Auto-refreshes every 30s while this tab is open.</p>
+          {:else if sysStatusError}
+            <p class="err">Failed to load: {sysStatusError}</p>
+          {:else}
+            <p class="muted">Loading…</p>
           {/if}
         {/if}
       </div>
@@ -1476,4 +1600,29 @@
   }
   .link-mini:hover { text-decoration: underline; }
   .hint { margin-top: .35rem; font-size: .75rem; }
+
+  /* #92 diagnostics tab */
+  .diag-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;
+  }
+  .diag.wide { grid-column: 1 / -1; }
+  .diag {
+    background: #11161f; border: 1px solid #1f2733; border-radius: 4px;
+    padding: 0.5rem 0.75rem;
+  }
+  .diag h5 { margin: 0 0 0.5rem 0; font-size: 0.8rem; color: #bac2de; font-weight: 600; }
+  .diag-tbl { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+  .diag-tbl th { text-align: left; color: #6c7086; font-weight: 400; padding: 0.2rem 0.4rem 0.2rem 0; }
+  .diag-tbl td { padding: 0.15rem 0.4rem 0.15rem 0; }
+  .diag-tbl code { font-size: 0.78rem; color: #cdd6f4; background: #0a0d14; padding: 0 0.25rem; border-radius: 3px; }
+  .chips {
+    display: flex; flex-wrap: wrap; gap: 0.3rem; list-style: none;
+    margin: 0.3rem 0 0 0; padding: 0;
+  }
+  .chip {
+    background: rgba(137, 180, 250, 0.08); color: #cdd6f4;
+    border: 1px solid #1f2733; border-radius: 3px;
+    padding: 0.1rem 0.4rem; font-size: 0.72rem;
+  }
+  .err { color: #f38ba8; font-size: 0.85rem; }
 </style>

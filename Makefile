@@ -159,6 +159,9 @@ run-staler: ## Run the staleness service (past-deadline conditions → risk.warn
 run-evaluator: ## Run the condition evaluator (resolves targets → satisfied/refuted)
 	$(RUN) cargo run --release --bin evaluator
 
+run-consensus: ## Run the consensus computation (SPEC §6.2, exit + lead-time anchor)
+	$(RUN) cargo run --release --bin consensus
+
 llmsmoke: ## One-shot LLM round-trip — picks transport from env (mock if no key)
 	$(RUN) cargo run --release --bin llmsmoke -- "$(MSG)"
 

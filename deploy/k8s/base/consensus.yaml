@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: consensus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: consensus
+  template:
+    metadata:
+      labels:
+        app: consensus
+    spec:
+      containers:
+        - name: consensus
+          image: ghcr.io/noeljackson/stocks:dev
+          command: ["/consensus"]
+          envFrom:
+            - configMapRef: { name: stocks-config }
+            - secretRef: { name: stocks-secrets }
+          env:
+            - { name: CONSENSUS_INTERVAL_SECS, value: "300" }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }

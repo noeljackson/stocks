@@ -16,6 +16,7 @@ resources:
   - goalpost.yaml
   - staler.yaml
   - evaluator.yaml
+  - consensus.yaml
   - context-maintainer.yaml
 
 labels:

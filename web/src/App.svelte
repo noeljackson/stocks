@@ -50,7 +50,6 @@
   type BottomMode = "attention" | "events" | "discovery" | "decisions" | "calibration" | "diagnostics";
 
   let selectedSymbol = $state<string | null>(null);
-  let selectedWatchlistId = $state<string | null>(null);
   let rightTab = $state<RightTab>("overview");
   let bottomMode = $state<BottomMode>("attention");
   let bottomOpen = $state(true);
@@ -87,7 +86,7 @@
       error = String(e);
     }
   }
-  async function rejectGroup(candidateIds: number[], reason: string) {
+  async function rejectGroup(candidateIds: number[], _reason: string) {
     try {
       // Iterate; backend resolves the matching attention item per candidate.
       for (const id of candidateIds) await rejectCandidate(id);
@@ -195,6 +194,16 @@
   let symbolContext = $state<TickerContext | null | undefined>(undefined);
   let symbolTheses = $state<ThesisDetail[] | null | undefined>(undefined);
   let symbolDecisions = $state<DecisionRow[] | null | undefined>(undefined);
+  let activeThesisDirections = $derived.by<string[]>(() => {
+    if (!symbolTheses) return [];
+    const dirs = new Set<string>();
+    for (const t of symbolTheses) {
+      if (["closed", "disqualified"].includes(t.state)) continue;
+      const dir = forecastDirectionFrom(t.forecast);
+      if (dir) dirs.add(dir);
+    }
+    return [...dirs].sort();
+  });
   // We don't have a per-symbol alerts endpoint yet; we filter globally.
   let showAcked = $state(false);
 
@@ -209,8 +218,12 @@
   // ---------- decision form (in bottom drawer) ----------
   let decThesisId = $state("");
   let decAction = $state("skip");
+  let decSide = $state("none");
+  let decInstrument = $state("equity");
   let decChoice = $state("deferred");
   let decStatus = $state<string | null>(null);
+  let decThesis = $derived(symbolTheses?.find((t) => t.thesis_id === decThesisId) ?? null);
+  let decThesisDirection = $derived(forecastDirectionFrom(decThesis?.forecast));
 
   // Synthetic "Universe" pseudo-list — all active tickers. Computed on the
   // fly from /api/tickers so we don't need a DB-side system list.
@@ -224,7 +237,6 @@
     created_at: "",
     member_count: tickers.length,
   });
-  let allWatchlists = $derived<Watchlist[]>([...watchlists, universeList, poolList]);
   let universeMembers = $derived<WatchlistMember[]>(
     tickers.map((t) => ({
       watchlist_id: UNIVERSE_ID,
@@ -255,6 +267,7 @@
       added_by: "pool",
     })),
   );
+  let allWatchlists = $derived<Watchlist[]>([...watchlists, universeList, poolList]);
 
   // ---------- helpers ----------
   function regimeColor(r: string | undefined): string {
@@ -278,6 +291,29 @@
     if (!s) return "";
     const d = new Date(s);
     return d.toLocaleTimeString();
+  }
+
+  function forecastDirectionFrom(forecast: Record<string, unknown> | null | undefined): string | null {
+    const dir = forecast?.direction;
+    return typeof dir === "string" && dir.length > 0 ? dir : null;
+  }
+
+  function decisionIntentLabel(d: DecisionRow): string {
+    if (d.action === "enter") {
+      const side = (d.side ?? "").trim();
+      if (side && side !== "none") return `enter ${side}`;
+      if (d.thesis_direction === "down") return "enter bearish thesis";
+      if (d.thesis_direction === "up") return "enter bullish thesis";
+      return "enter thesis";
+    }
+    return d.action;
+  }
+
+  function visibleSizing(d: DecisionRow): Record<string, unknown> | null {
+    const entries = Object.entries(d.sizing ?? {}).filter(
+      ([k]) => !["side", "instrument", "thesis_direction"].includes(k),
+    );
+    return entries.length > 0 ? Object.fromEntries(entries) : null;
   }
 
   function tickerFor(symbol: string | null): Ticker | undefined {
@@ -315,7 +351,6 @@
     for (const w of allWatchlists) {
       const m = membersFor(w.id);
       if (m.length > 0) {
-        selectedWatchlistId = w.id;
         expandedListIds = { ...expandedListIds, [w.id]: true };
         selectSymbol(m[0].symbol);
         return;
@@ -441,12 +476,23 @@
   // ---------- decision form ----------
   async function submitDecision(e: Event) {
     e.preventDefault();
+    if (decAction === "enter" && decSide === "none") {
+      decStatus = "pick a trade side before entering";
+      return;
+    }
     decStatus = "sending…";
     try {
+      const sizing: Record<string, unknown> = {};
+      if (decAction === "enter" || decAction === "resize") {
+        sizing.side = decSide;
+        sizing.instrument = decInstrument;
+      }
+      if (decThesisDirection) sizing.thesis_direction = decThesisDirection;
       await postDecision({
         thesis_id: decThesisId || undefined,
         action: decAction,
         user_choice: decChoice,
+        sizing: Object.keys(sizing).length > 0 ? sizing : undefined,
       });
       decStatus = "recorded ✓";
       setTimeout(() => (decStatus = null), 2500);
@@ -858,10 +904,37 @@
               Thesis ID
               <input bind:value={decThesisId} placeholder="(leave blank for ad-hoc)" />
             </label>
+            {#if decThesisDirection}
+              <span class="decision-context thesis-{decThesisDirection}">
+                thesis {decThesisDirection}
+              </span>
+            {/if}
             <label>
               Action
               <select bind:value={decAction}>
-                <option>enter</option><option>exit</option><option>skip</option><option>resize</option>
+                <option value="enter">enter thesis</option>
+                <option value="exit">exit position</option>
+                <option value="skip">skip</option>
+                <option value="resize">resize</option>
+              </select>
+            </label>
+            <label>
+              Side
+              <select bind:value={decSide}>
+                <option value="none">choose side…</option>
+                <option value="long">long common</option>
+                <option value="short">short common</option>
+                <option value="call">calls / call spread</option>
+                <option value="put">puts / put spread</option>
+                <option value="hedge">hedge</option>
+              </select>
+            </label>
+            <label>
+              Instrument
+              <select bind:value={decInstrument}>
+                <option value="equity">equity</option>
+                <option value="leaps">LEAPS</option>
+                <option value="options">options</option>
               </select>
             </label>
             <label>
@@ -1127,10 +1200,19 @@
               {#if symbolDecisions === undefined}
                 <p class="muted">Loading…</p>
               {:else if symbolDecisions && symbolDecisions.length > 0}
+                {#if activeThesisDirections.length > 1}
+                  <p class="decision-warning">
+                    Conflicting open thesis directions: {activeThesisDirections.join(" / ")}.
+                    Choose the thesis before recording a decision.
+                  </p>
+                {/if}
                 <ul class="decisions">
                   {#each symbolDecisions as d (d.decision_id)}
+                    {@const extraSizing = visibleSizing(d)}
                     <li>
-                      <span class="badge tiny dec-{d.action}">{d.action}</span>
+                      <span class="badge tiny dec-{d.action} thesis-{d.thesis_direction ?? 'unknown'}">{decisionIntentLabel(d)}</span>
+                      {#if d.thesis_direction}<span class="muted">thesis {d.thesis_direction}</span>{/if}
+                      {#if d.instrument}<span class="muted">{d.instrument}</span>{/if}
                       {#if d.user_choice}<span class="muted">{d.user_choice}</span>{/if}
                       <span class="muted">{shortTs(d.at)}</span>
                       {#if d.thesis_id}
@@ -1140,8 +1222,8 @@
                           title="prefill the decision form with this thesis"
                         >use ↓</button>
                       {/if}
-                      {#if d.sizing}
-                        <pre class="dec-sizing">{JSON.stringify(d.sizing)}</pre>
+                      {#if extraSizing}
+                        <pre class="dec-sizing">{JSON.stringify(extraSizing)}</pre>
                       {/if}
                     </li>
                   {/each}
@@ -1450,6 +1532,22 @@
     border-radius: 4px; padding: .35rem .8rem; font: inherit; cursor: pointer;
   }
   .decform .muted { grid-column: 2; align-self: end; }
+  .decision-context {
+    align-self: end;
+    border: 1px solid #2a3548;
+    border-radius: 3px;
+    padding: .25rem .45rem;
+    font-size: .75rem;
+  }
+  .decision-warning {
+    margin: 0 0 .4rem 0;
+    padding: .35rem .5rem;
+    border: 1px solid rgba(249,226,175,.35);
+    border-radius: 4px;
+    color: rgb(249,226,175);
+    background: rgba(249,226,175,.08);
+    font-size: .78rem;
+  }
 
   /* Generic */
   .kind { font-size: .65rem; text-transform: uppercase; letter-spacing: .05em; }
@@ -1594,6 +1692,10 @@
   .badge.dec-exit    { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
   .badge.dec-skip    { background: rgba(108,112,134,.2);  color: #9aa3b8; }
   .badge.dec-resize  { background: rgba(249,226,175,.18); color: rgb(249,226,175); }
+  .thesis-down { color: rgb(243,139,168); }
+  .thesis-up { color: rgb(166,227,161); }
+  .badge.thesis-down { background: rgba(243,139,168,.16); color: rgb(243,139,168); }
+  .badge.thesis-up { background: rgba(166,227,161,.16); color: rgb(166,227,161); }
   .link-mini {
     background: transparent; color: #89b4fa; border: none; cursor: pointer;
     font: inherit; font-size: .75rem; padding: 0;

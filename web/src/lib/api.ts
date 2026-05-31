@@ -330,6 +330,10 @@ export interface DecisionRow {
   action: string;
   user_choice?: string | null;
   sizing?: Record<string, unknown> | null;
+  thesis_state?: string | null;
+  thesis_direction?: string | null;
+  side?: string | null;
+  instrument?: string | null;
   at: string;
 }
 

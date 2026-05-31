@@ -128,6 +128,35 @@ impl Store {
     }
 
     /// All open positions in the shape the risk overlay consumes.
+    /// Recent decisions for a given symbol — joins through thesis to filter.
+    pub async fn decisions_for_symbol(&self, symbol: &str) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query(
+            r#"SELECT d.decision_id, d.thesis_id, d.action, d.user_choice,
+                      d.sizing, d.at
+                 FROM decision d
+                 JOIN thesis t USING (thesis_id)
+                WHERE t.symbol = $1
+             ORDER BY d.at DESC LIMIT 100"#,
+        )
+        .bind(symbol)
+        .fetch_all(&self.pool)
+        .await
+        .context("decisions_for_symbol")?;
+        rows.into_iter()
+            .map(|r| {
+                let at: DateTime<Utc> = r.try_get("at")?;
+                Ok(serde_json::json!({
+                    "decision_id": r.try_get::<uuid::Uuid, _>("decision_id")?,
+                    "thesis_id": r.try_get::<Option<uuid::Uuid>, _>("thesis_id")?,
+                    "action": r.try_get::<String, _>("action")?,
+                    "user_choice": r.try_get::<Option<String>, _>("user_choice")?,
+                    "sizing": r.try_get::<Option<serde_json::Value>, _>("sizing")?,
+                    "at": at,
+                }))
+            })
+            .collect()
+    }
+
     /// Returns timestamped events for a symbol — thesis state transitions,
     /// risk alerts, decisions — for chart marker overlays (#57 PR3).
     pub async fn symbol_events(

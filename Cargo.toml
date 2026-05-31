@@ -54,6 +54,10 @@ name = "consensus"
 path = "src/bin/consensus.rs"
 
 [[bin]]
+name = "reflection"
+path = "src/bin/reflection.rs"
+
+[[bin]]
 name = "llmsmoke"
 path = "src/bin/llmsmoke.rs"
 

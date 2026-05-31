@@ -31,6 +31,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/theses", get(list_theses))
         .route("/api/theses/{thesis_id}/transition", post(transition_thesis))
         .route("/api/ticker-context", get(get_ticker_context))
+        .route("/api/calibration", get(get_calibration))
         .route("/api/stream", get(stream))
         .route("/api/decisions", post(record_decision))
         .fallback(spa_handler)
@@ -156,6 +157,26 @@ async fn transition_thesis(
         "to": req.to,
     })))
         .into_response()
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CalibrationQuery {
+    #[serde(default)]
+    days: Option<i64>,
+}
+
+async fn get_calibration(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<CalibrationQuery>,
+) -> impl IntoResponse {
+    let lookback = q.days.unwrap_or(90).max(1);
+    match crate::reflection::service::calibration_summary(&gw.store.pool, lookback).await {
+        Ok(summary) => (StatusCode::OK, Json(summary)).into_response(),
+        Err(e) => {
+            warn!(error = %e, "get_calibration failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
 }
 
 async fn get_ticker_context(

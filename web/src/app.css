@@ -1,14 +1,17 @@
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
+html, body, #app { height: 100%; }
 body {
   margin: 0;
   font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
   background: #0b0e14;
   color: #cdd6f4;
 }
-#app { max-width: 980px; margin: 0 auto; padding: 1.25rem; }
-h1 { font-size: 1.25rem; margin: 0; }
-h2 { font-size: .95rem; margin: 1.25rem 0 .5rem; color: #b4befe; }
-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #94e2d5; }
-.muted { color: #6c7693; }
-.error { color: #f38ba8; }
+/* Full-viewport workspace (#57). The shell owns its own grid. */
+#app { display: flex; flex-direction: column; }
+h1 { font-size: 1.1rem; margin: 0; }
+h2 { font-size: .95rem; margin: 0 0 .5rem; color: #b4befe; }
+h3 { font-size: .85rem; margin: 0 0 .35rem; color: #b4befe; font-weight: 600; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #94e2d5; font-size: .85em; }
+.muted { color: #6c7693; font-size: .8rem; }
+.error { color: #f38ba8; background: rgba(243,139,168,0.1); padding: .4rem .6rem; border-radius: 4px; font-size: .85rem; }

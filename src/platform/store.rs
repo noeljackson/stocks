@@ -127,6 +127,24 @@ impl Store {
         Ok(())
     }
 
+    /// Union of active tickers + active discovery pool members. Use this
+    /// from any cognition-supporting ingest (news, estimates, XBRL) so the
+    /// data follows the broader pool (#104) — not just the curated universe.
+    pub async fn scan_pool_symbols(&self) -> Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"SELECT symbol FROM (
+                  SELECT symbol FROM ticker WHERE status = 'active'
+                  UNION
+                  SELECT symbol FROM discovery_pool WHERE dropped_at IS NULL
+               ) s
+               ORDER BY symbol"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("scan_pool_symbols")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
     /// Active discovery pool symbols (not dropped). Used by the discovery
     /// scanner instead of `ticker` so it can fire signals on names we
     /// don't yet track (#88).

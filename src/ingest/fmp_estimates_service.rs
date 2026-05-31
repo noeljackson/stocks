@@ -23,12 +23,14 @@ use tracing::{info, warn};
 use super::fmp_estimates::{
     FmpEstimatesAdapter, NormalizedEstimate, decode_response, diff_snapshots, normalize,
 };
-use super::sec;
+use crate::platform::store::Store;
 
-/// One pass over the universe. Returns the number of revision events emitted.
+/// One pass over scan_pool ∪ universe (#104). Returns revision events emitted.
 pub async fn run_once(pool: &PgPool, adapter: &FmpEstimatesAdapter) -> Result<usize> {
+    let store = Store { pool: pool.clone() };
+    let symbols = store.scan_pool_symbols().await.unwrap_or_default();
     let mut total_revisions = 0;
-    for (symbol, _) in sec::all_seeded() {
+    for symbol in &symbols {
         match scan_one(pool, adapter, symbol).await {
             Ok(n) => total_revisions += n,
             Err(e) => warn!(symbol = %symbol, error = %e, "fmp_estimates scan_one failed"),

@@ -61,6 +61,10 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/discovery-pool", get(list_discovery_pool))
         .route("/api/attention", get(list_attention_items))
         .route("/api/attention/{id}/dismiss", post(dismiss_attention_item))
+        .route(
+            "/api/symbols/{symbol}/refresh-context",
+            post(trigger_refresh_context),
+        )
         .route("/api/stream", get(stream))
         .fallback(spa_handler)
         .with_state(gw)
@@ -805,6 +809,31 @@ async fn confirm_candidate(
         }
     }
     StatusCode::NO_CONTENT.into_response()
+}
+
+/// Operator-triggered: re-run the cognition pipeline for SYMBOL. Used when
+/// the UI opens a ticker that has no `ticker_context` yet, or when the
+/// operator wants to refresh stale context. Reuses the `discovery.confirmed`
+/// subject so the existing cognition consumer handles it — `candidate_id` is
+/// optional in the consumer's payload schema.
+async fn trigger_refresh_context(
+    State(gw): State<Arc<Gateway>>,
+    Path(symbol): Path<String>,
+) -> impl IntoResponse {
+    let sym = symbol.to_ascii_uppercase();
+    if sym.is_empty() || sym.len() > 10 {
+        return (StatusCode::BAD_REQUEST, "invalid symbol").into_response();
+    }
+    let payload = serde_json::json!({"symbol": sym, "source": "ui-refresh"});
+    if let Err(e) = gw
+        .bus
+        .publish(subjects::DISCOVERY_CONFIRMED, payload.to_string().as_bytes())
+        .await
+    {
+        warn!(symbol = %sym, error = %e, "publish refresh-context failed");
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    StatusCode::ACCEPTED.into_response()
 }
 
 async fn reject_candidate(

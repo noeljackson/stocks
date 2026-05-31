@@ -26,6 +26,7 @@ import asyncpg
 
 from . import config
 from .context_maintainer import _llm_cfg, _provider_name, _repo_root  # noqa: PLC2701
+from .context_maintainer import refresh as refresh_context
 from .llm import new_provider
 from .prompts import AsyncpgRecorder, invoke, load
 
@@ -164,10 +165,25 @@ async def draft(symbol: str) -> dict:
     try:
         context = await _load_latest_context(pool, symbol)
         if context is None:
-            raise RuntimeError(
-                f"no ticker_context for {symbol} — run "
-                f"`make refresh-context SYMBOL={symbol}` first"
-            )
+            # Auto-synthesize. The thesis pipeline owns its inputs — operators
+            # shouldn't see "run make refresh-context" instructions.
+            log.info("no context for %s; synthesizing inline", symbol)
+            try:
+                await refresh_context(symbol)
+            except Exception:  # noqa: BLE001
+                log.exception("inline context refresh failed for %s", symbol)
+            context = await _load_latest_context(pool, symbol)
+            if context is None:
+                # Honest decline — return a structured no-edge payload instead
+                # of raising, so the cognition consumer can persist a
+                # thesis_incomplete attention item with a real reason.
+                return {
+                    "edge_present": False,
+                    "no_edge_reason": (
+                        f"context synthesis failed for {symbol} "
+                        "(insufficient ingested evidence)"
+                    ),
+                }
         prior = await _load_prior_thesis(pool, symbol)
         if prior is not None:
             log.info(

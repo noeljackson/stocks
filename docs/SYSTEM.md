@@ -23,8 +23,24 @@ window between "available" and "obvious to the late retail/passive tech crowd".
 
 ## Operating loop
 
-The product loop is built around one selected symbol at a time, but every piece
-is fed by append-only event history.
+The desired operating model is continuous scanning with tiered depth. The system
+should always be pulling new market, news, estimate, filing, sentiment, and
+portfolio evidence for the symbols it can reasonably monitor. Most scans should
+not interrupt the operator. They should update evidence, context, thesis state,
+and freshness silently, then create attention only when something meaningful
+needs judgment.
+
+```text
+continuous scan
+  -> fresh evidence
+  -> updated context
+  -> re-evaluated thesis state
+  -> attention only when judgment is needed
+```
+
+The product loop is built around one selected symbol at a time in the UI, but
+the background system is always scanning many symbols and appending event
+history.
 
 ```text
 1. Ingest
@@ -51,6 +67,63 @@ is fed by append-only event history.
 8. Record decision/outcome
    Keep every decision and outcome so calibration can improve
 ```
+
+The durable mental model:
+
+```text
+Discovery pool = broad radar
+Watchlists     = focused radar
+Context        = memory per symbol
+Thesis         = active hypothesis
+Attention      = "look here now"
+Decision       = what the human chose
+Outcome        = whether it was right
+```
+
+## Scan tiers
+
+Scanning should be broad, but not equally expensive for every symbol. The system
+should spend cheap deterministic work on the broad pool and reserve expensive
+LLM cognition for names that earn attention.
+
+```text
+Tier 3 / discovery_pool
+  cheap broad radar
+  price/volume
+  news headlines and sentiment when available
+  estimate/rating snapshots
+  lightweight profile/fundamental metadata
+  candidate_review attention when signals fire
+
+Tier 2 / watchlisted or confirmed candidate
+  regular context maintenance
+  richer evidence history
+  XBRL/company facts where available
+  thesis drafting when context supports a real edge
+
+Tier 1 / active thesis or position
+  deep context maintenance
+  thesis condition evaluation
+  risk checks
+  consensus/fulfillment monitoring
+  decision and outcome support
+```
+
+The broad pool should not receive full LLM thesis generation on every scan. It
+should receive enough coverage to detect that a symbol deserves human review.
+Confirmed/watchlisted symbols get deeper context and thesis workflows.
+
+The scan universe for cheap data should be consistent:
+
+```text
+active discovery_pool
+UNION
+active ticker/watchlist universe
+```
+
+If discovery scans the broad pool but news, estimates, ratings, or fundamentals
+only scan the old seed list, the system degenerates into a price/volume scanner.
+That is not the desired product.
 
 ## Core objects
 

@@ -4,6 +4,19 @@
   let { ctx, symbol }: { ctx: TickerContext | null; symbol: string } = $props();
 
   let openBand = $state<"structural" | "narrative" | "market" | null>("structural");
+  let synthError = $state<string | null>(null);
+  // Track per-symbol so we only fire once per ticker per session, even if
+  // ctx stays null across multiple re-renders.
+  const fired = new Set<string>();
+
+  // Auto-trigger synthesis the moment we render with no context. No button —
+  // the parent's polling picks up v1 within ~30s of the LLM call returning.
+  $effect(() => {
+    if (ctx !== null || !symbol) return;
+    if (fired.has(symbol)) return;
+    fired.add(symbol);
+    void synthesize();
+  });
 
   function shortTs(s: string | null | undefined): string {
     if (!s) return "—";
@@ -17,16 +30,32 @@
   function pretty(o: unknown): string {
     return JSON.stringify(o, null, 2);
   }
+
+  async function synthesize() {
+    synthError = null;
+    try {
+      const res = await fetch(
+        `/api/symbols/${encodeURIComponent(symbol)}/refresh-context`,
+        { method: "POST" },
+      );
+      if (!res.ok) synthError = `HTTP ${res.status}`;
+    } catch (e) {
+      synthError = e instanceof Error ? e.message : String(e);
+    }
+  }
 </script>
 
 {#if ctx === null}
   <div class="empty">
-    <h4>Context</h4>
+    <h4>Context <span class="muted-chip">synthesizing…</span></h4>
     <p class="muted">
-      No <code>ticker_context</code> yet for <strong>{symbol}</strong>.
-      Run <code>make refresh-context SYMBOL={symbol}</code> to synthesize one from the
-      ingested corpus. The thesis engine refuses to draft against empty context.
+      Cognition pipeline is composing the first context version for
+      <strong>{symbol}</strong> from the ingested news + estimates + price
+      evidence. Usually appears within ~30s.
     </p>
+    {#if synthError}
+      <p class="err">Refresh failed: {synthError}</p>
+    {/if}
   </div>
 {:else}
   <div class="context">
@@ -135,5 +164,10 @@
     white-space: pre-wrap; word-break: break-word;
   }
   .muted { color: #6c7086; font-size: 0.8rem; }
-  code { background: #0a0d14; padding: 0.05rem 0.3rem; border-radius: 3px; font-size: 0.85rem; }
+  .muted-chip {
+    display: inline-block; padding: 0.05rem 0.4rem; border-radius: 4px;
+    background: rgba(108, 112, 134, 0.15); color: #6c7086;
+    font-size: 0.7rem; font-weight: 400;
+  }
+  .err { color: #f38ba8; font-size: 0.8rem; }
 </style>

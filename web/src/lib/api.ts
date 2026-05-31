@@ -155,6 +155,66 @@ export async function fetchCalibration(days = 90): Promise<Calibration> {
   return (await r.json()) as Calibration;
 }
 
+export interface Watchlist {
+  id: string;
+  name: string;
+  description?: string | null;
+  color?: string | null;
+  is_system: boolean;
+  created_at: string;
+  member_count: number;
+}
+
+export interface WatchlistMember {
+  watchlist_id: string;
+  symbol: string;
+  added_at: string;
+  added_by?: string | null;
+}
+
+export async function fetchWatchlists(): Promise<Watchlist[]> {
+  const r = await fetch("/api/watchlists");
+  if (!r.ok) throw new Error(`watchlists ${r.status}`);
+  return ((await r.json()) as Watchlist[] | null) ?? [];
+}
+
+export async function fetchWatchlistMembers(id: string): Promise<WatchlistMember[]> {
+  const r = await fetch(`/api/watchlists/${id}/members`);
+  if (!r.ok) throw new Error(`watchlist members ${r.status}`);
+  return ((await r.json()) as WatchlistMember[] | null) ?? [];
+}
+
+export async function createWatchlist(body: { name: string; description?: string; color?: string }): Promise<{ id: string }> {
+  const r = await fetch("/api/watchlists", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`create watchlist ${r.status}`);
+  return (await r.json()) as { id: string };
+}
+
+export async function addToWatchlist(id: string, symbol: string, addedBy = "user"): Promise<void> {
+  const r = await fetch(`/api/watchlists/${id}/members`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ symbol, added_by: addedBy }),
+  });
+  if (!r.ok && r.status !== 204) throw new Error(`add member ${r.status}`);
+}
+
+export async function removeFromWatchlist(id: string, symbol: string): Promise<void> {
+  const r = await fetch(`/api/watchlists/${id}/members/${encodeURIComponent(symbol)}`, {
+    method: "DELETE",
+  });
+  if (!r.ok && r.status !== 204) throw new Error(`remove member ${r.status}`);
+}
+
+export async function deleteWatchlist(id: string): Promise<void> {
+  const r = await fetch(`/api/watchlists/${id}`, { method: "DELETE" });
+  if (!r.ok && r.status !== 204) throw new Error(`delete watchlist ${r.status}`);
+}
+
 /** subscribe opens the SSE feed; returns a cleanup function. */
 export function subscribe(
   onEvent: (e: StreamEvent) => void,

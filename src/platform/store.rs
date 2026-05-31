@@ -16,7 +16,8 @@ use std::time::Duration;
 use crate::llm::prompts::{InvocationRecorder, InvocationRow};
 use crate::platform::domain::{
     Alert, AlertKind, Condition, MarketStateRow, ThesisDetail, ThesisSubstance,
-    ThesisVersionEvent, TickerContextRow, TickerRow, WellFormedCondCounts,
+    ThesisVersionEvent, TickerContextRow, TickerRow, Watchlist, WatchlistMember,
+    WellFormedCondCounts,
 };
 use crate::thesis::substance::{self, Thesis as SubstanceInput};
 
@@ -423,6 +424,134 @@ impl Store {
             });
         }
         Ok(out)
+    }
+
+    /// All watchlists with member counts (#54). Most-recent first; system
+    /// lists rendered with a chip in the UI.
+    pub async fn list_watchlists(&self) -> Result<Vec<Watchlist>> {
+        let rows = sqlx::query(
+            r#"SELECT w.id, w.name, w.description, w.color, w.is_system, w.created_at,
+                      COUNT(m.symbol) AS member_count
+                 FROM watchlist w
+                 LEFT JOIN watchlist_member m ON m.watchlist_id = w.id
+             GROUP BY w.id
+             ORDER BY w.is_system DESC, w.name ASC"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("list_watchlists")?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(Watchlist {
+                    id: r.try_get("id")?,
+                    name: r.try_get("name")?,
+                    description: r.try_get("description").ok(),
+                    color: r.try_get("color").ok(),
+                    is_system: r.try_get("is_system")?,
+                    created_at: r.try_get("created_at")?,
+                    member_count: r.try_get::<i64, _>("member_count").unwrap_or(0),
+                })
+            })
+            .collect()
+    }
+
+    /// Members of one watchlist (UI loads on click).
+    pub async fn list_watchlist_members(&self, id: uuid::Uuid) -> Result<Vec<WatchlistMember>> {
+        let rows = sqlx::query(
+            r#"SELECT watchlist_id, symbol, added_at, added_by
+                 FROM watchlist_member
+                WHERE watchlist_id = $1
+             ORDER BY added_at DESC"#,
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await
+        .context("list_watchlist_members")?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(WatchlistMember {
+                    watchlist_id: r.try_get("watchlist_id")?,
+                    symbol: r.try_get("symbol")?,
+                    added_at: r.try_get("added_at")?,
+                    added_by: r.try_get("added_by").ok(),
+                })
+            })
+            .collect()
+    }
+
+    pub async fn create_watchlist(
+        &self,
+        name: &str,
+        description: Option<&str>,
+        color: Option<&str>,
+    ) -> Result<uuid::Uuid> {
+        let row = sqlx::query(
+            r#"INSERT INTO watchlist (name, description, color, is_system)
+               VALUES ($1, $2, $3, false)
+               RETURNING id"#,
+        )
+        .bind(name)
+        .bind(description)
+        .bind(color)
+        .fetch_one(&self.pool)
+        .await
+        .context("create_watchlist")?;
+        Ok(row.try_get("id")?)
+    }
+
+    /// Adds symbol to watchlist. Idempotent on (watchlist_id, symbol) PK;
+    /// inserts the ticker row if it doesn't exist (default tier=2 — watch-only).
+    pub async fn add_to_watchlist(
+        &self,
+        watchlist_id: uuid::Uuid,
+        symbol: &str,
+        added_by: &str,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await.context("begin tx")?;
+        // Ensure ticker exists; default tier=2 (watch-only) for fresh adds.
+        sqlx::query("INSERT INTO ticker (symbol, tier) VALUES ($1, 2) ON CONFLICT DO NOTHING")
+            .bind(symbol)
+            .execute(&mut *tx)
+            .await
+            .context("ensure ticker row")?;
+        sqlx::query(
+            r#"INSERT INTO watchlist_member (watchlist_id, symbol, added_by)
+               VALUES ($1, $2, $3) ON CONFLICT DO NOTHING"#,
+        )
+        .bind(watchlist_id)
+        .bind(symbol)
+        .bind(added_by)
+        .execute(&mut *tx)
+        .await
+        .context("add_to_watchlist")?;
+        tx.commit().await.context("commit tx")?;
+        Ok(())
+    }
+
+    pub async fn remove_from_watchlist(
+        &self,
+        watchlist_id: uuid::Uuid,
+        symbol: &str,
+    ) -> Result<bool> {
+        let res = sqlx::query(
+            "DELETE FROM watchlist_member WHERE watchlist_id = $1 AND symbol = $2",
+        )
+        .bind(watchlist_id)
+        .bind(symbol)
+        .execute(&self.pool)
+        .await
+        .context("remove_from_watchlist")?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Delete a watchlist + its memberships. Refuses to drop system lists.
+    pub async fn delete_watchlist(&self, id: uuid::Uuid) -> Result<bool> {
+        let res = sqlx::query("DELETE FROM watchlist WHERE id = $1 AND is_system = false")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("delete_watchlist")?;
+        Ok(res.rows_affected() > 0)
     }
 
     /// Upsert a batch of price bars (#17). Primary key (symbol, ts) handles

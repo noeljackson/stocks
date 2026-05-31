@@ -2,13 +2,18 @@
   import { onMount } from "svelte";
   import {
     ackAlert,
+    addToWatchlist,
+    createWatchlist,
     fetchAlerts,
     fetchCalibration,
     fetchRegime,
     fetchTheses,
     fetchTickerContext,
     fetchTickers,
+    fetchWatchlistMembers,
+    fetchWatchlists,
     postDecision,
+    removeFromWatchlist,
     subscribe,
     type Alert,
     type Calibration,
@@ -17,11 +22,13 @@
     type ThesisDetail,
     type Ticker,
     type TickerContext,
+    type Watchlist,
+    type WatchlistMember,
   } from "./lib/api";
   import ContextPanel from "./lib/ContextPanel.svelte";
   import ThesisDetails from "./lib/ThesisDetails.svelte";
 
-  type View = "feed" | "tickers" | "decisions";
+  type View = "feed" | "tickers" | "watchlists" | "decisions";
   let view = $state<View>("feed");
 
   let regime = $state<MarketState | null>(null);
@@ -31,6 +38,71 @@
   let live = $state<StreamEvent[]>([]);
   let connected = $state(false);
   let error = $state<string | null>(null);
+
+  // Watchlists state (#54)
+  let watchlists = $state<Watchlist[]>([]);
+  let activeWatchlistId = $state<string | null>(null);
+  let watchlistMembers = $state<WatchlistMember[]>([]);
+  let newListName = $state("");
+  let newListDescription = $state("");
+  let addSymbolFor = $state<Record<string, string>>({});
+
+  async function refreshWatchlists() {
+    try {
+      watchlists = await fetchWatchlists();
+      if (activeWatchlistId === null && watchlists.length > 0) {
+        activeWatchlistId = watchlists[0].id;
+      }
+      if (activeWatchlistId) {
+        watchlistMembers = await fetchWatchlistMembers(activeWatchlistId);
+      }
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function pickWatchlist(id: string) {
+    activeWatchlistId = id;
+    try {
+      watchlistMembers = await fetchWatchlistMembers(id);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function submitNewList(e: Event) {
+    e.preventDefault();
+    if (!newListName.trim()) return;
+    try {
+      await createWatchlist({ name: newListName.trim(), description: newListDescription.trim() || undefined });
+      newListName = "";
+      newListDescription = "";
+      await refreshWatchlists();
+    } catch (err) {
+      error = String(err);
+    }
+  }
+
+  async function addMember(id: string) {
+    const sym = (addSymbolFor[id] ?? "").trim().toUpperCase();
+    if (!sym) return;
+    try {
+      await addToWatchlist(id, sym);
+      addSymbolFor = { ...addSymbolFor, [id]: "" };
+      await refreshWatchlists();
+    } catch (err) {
+      error = String(err);
+    }
+  }
+
+  async function removeMember(id: string, symbol: string) {
+    try {
+      await removeFromWatchlist(id, symbol);
+      await refreshWatchlists();
+    } catch (err) {
+      error = String(err);
+    }
+  }
 
   // Per-symbol expand state for the Tickers view (symbol → loaded theses or null while loading).
   let expanded = $state<Record<string, ThesisDetail[] | null | undefined>>({});
@@ -90,6 +162,7 @@
     fetchRegime().then((r) => (regime = r)).catch((e) => (error = String(e)));
     fetchTickers().then((t) => (tickers = t)).catch((e) => (error = String(e)));
     fetchCalibration().then((c) => (calibration = c)).catch(() => {});
+    refreshWatchlists();
   }
 
   // React when the user toggles showAcked.
@@ -196,6 +269,9 @@
   <button class:active={view === "feed"} onclick={() => (view = "feed")}>Feed</button>
   <button class:active={view === "tickers"} onclick={() => (view = "tickers")}>
     Tickers <span class="badge">{tickers.length}</span>
+  </button>
+  <button class:active={view === "watchlists"} onclick={() => (view = "watchlists")}>
+    Watchlists <span class="badge">{watchlists.length}</span>
   </button>
   <button class:active={view === "decisions"} onclick={() => (view = "decisions")}>Decision</button>
 </nav>
@@ -339,6 +415,81 @@
         {/each}
       </tbody>
     </table>
+  {:else if view === "watchlists"}
+    <h2>Watchlists</h2>
+    <p class="muted">User-curated multi-list ticker organization. Same ticker can live on many lists.</p>
+
+    <form onsubmit={submitNewList} class="new-list">
+      <input bind:value={newListName} placeholder="new list name" />
+      <input bind:value={newListDescription} placeholder="description (optional)" />
+      <button type="submit">Create</button>
+    </form>
+
+    <div class="wl-grid">
+      <aside class="wl-side">
+        {#each watchlists as w (w.id)}
+          <button
+            class="wl-pick"
+            class:active={activeWatchlistId === w.id}
+            onclick={() => pickWatchlist(w.id)}
+            style={w.color ? `border-left: 3px solid ${w.color}` : ""}
+          >
+            <strong>{w.name}</strong>
+            <span class="muted">{w.member_count}</span>
+            {#if w.is_system}<span class="badge">system</span>{/if}
+            {#if w.description}<div class="muted desc">{w.description}</div>{/if}
+          </button>
+        {/each}
+      </aside>
+
+      <section class="wl-main">
+        {#if !activeWatchlistId}
+          <p class="muted">Pick a list on the left, or create a new one above.</p>
+        {:else}
+          {@const active = watchlists.find((w) => w.id === activeWatchlistId)}
+          <h3>{active?.name ?? "—"} <span class="muted">({watchlistMembers.length} members)</span></h3>
+
+          <form
+            onsubmit={(e) => { e.preventDefault(); if (activeWatchlistId) addMember(activeWatchlistId); }}
+            class="add-symbol"
+          >
+            <input
+              placeholder="add ticker, e.g. AAPL"
+              value={addSymbolFor[activeWatchlistId] ?? ""}
+              oninput={(e) => {
+                if (activeWatchlistId) {
+                  addSymbolFor = { ...addSymbolFor, [activeWatchlistId]: (e.target as HTMLInputElement).value };
+                }
+              }}
+            />
+            <button type="submit">Add</button>
+          </form>
+
+          {#if watchlistMembers.length === 0}
+            <p class="muted">No members yet.</p>
+          {:else}
+            <table class="member-table">
+              <thead><tr><th>Symbol</th><th>Added</th><th>By</th><th></th></tr></thead>
+              <tbody>
+                {#each watchlistMembers as m (m.symbol)}
+                  <tr>
+                    <td><strong>{m.symbol}</strong></td>
+                    <td><span class="muted">{shortTs(m.added_at)}</span></td>
+                    <td><span class="muted">{m.added_by ?? "—"}</span></td>
+                    <td>
+                      <button class="ack-btn"
+                              onclick={() => activeWatchlistId && removeMember(activeWatchlistId, m.symbol)}>
+                        remove
+                      </button>
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
+        {/if}
+      </section>
+    </div>
   {:else}
     <h2>Record a decision</h2>
     <p class="muted">
@@ -466,4 +617,41 @@
   }
   .decform button { grid-column: 1; }
   .decform .muted { grid-column: 2; align-self: end; }
+
+  /* Watchlists view (#54) */
+  .new-list { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+  .new-list input {
+    background: #0a0d14; color: #cdd6f4; border: 1px solid #2a3548; border-radius: 4px;
+    padding: 0.35rem 0.5rem; font: inherit; min-width: 140px;
+  }
+  .new-list input:first-child { flex: 0 0 200px; }
+  .new-list input:nth-child(2) { flex: 1; min-width: 220px; }
+
+  .wl-grid {
+    display: grid; grid-template-columns: 260px 1fr; gap: 1rem;
+  }
+  @media (max-width: 700px) { .wl-grid { grid-template-columns: 1fr; } }
+
+  .wl-side { display: flex; flex-direction: column; gap: 0.35rem; }
+  .wl-pick {
+    background: #11161f; border: 1px solid #1f2733; border-radius: 6px;
+    padding: 0.55rem 0.7rem; cursor: pointer; text-align: left;
+    color: inherit; font: inherit;
+    display: flex; flex-direction: column; gap: 0.2rem;
+  }
+  .wl-pick:hover { background: rgba(137, 180, 250, 0.06); }
+  .wl-pick.active { background: rgba(137, 180, 250, 0.12); border-color: #45567a; }
+  .wl-pick strong { display: inline-block; margin-right: 0.4rem; }
+  .wl-pick .desc { font-size: 0.75rem; line-height: 1.3; margin-top: 0.15rem; }
+
+  .wl-main h3 { font-size: 0.95rem; margin: 0 0 0.5rem 0; }
+  .add-symbol { display: flex; gap: 0.4rem; margin-bottom: 0.75rem; }
+  .add-symbol input {
+    background: #0a0d14; color: #cdd6f4; border: 1px solid #2a3548; border-radius: 4px;
+    padding: 0.35rem 0.5rem; font: inherit; flex: 1;
+  }
+  .member-table { width: 100%; }
+  .member-table th, .member-table td {
+    text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid #1f2733;
+  }
 </style>

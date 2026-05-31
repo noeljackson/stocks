@@ -13,6 +13,8 @@ use stocks::ingest;
 use stocks::ingest::edgar::EdgarAdapter;
 use stocks::ingest::fred::FredAdapter;
 use stocks::ingest::fmp::FmpPriceAdapter;
+use stocks::ingest::fmp_estimates::FmpEstimatesAdapter;
+use stocks::ingest::fmp_estimates_service;
 use stocks::ingest::xbrl::XbrlAdapter;
 use stocks::platform::{bus::Bus, config::Config, logging, store::Store, subjects};
 use tracing::{error, info};
@@ -51,6 +53,22 @@ async fn main() -> Result<()> {
                     Err(e) => error!(error = %e, "fmp price poll failed"),
                 }
                 tokio::time::sleep(interval).await;
+            }
+        });
+    }
+
+    // FMP analyst-estimates snapshot + diff service (#18). Daily snapshot per
+    // universe ticker → estimate_snapshot; diff vs prior → estimate_revision.
+    // 6h interval matches the price loop; the diff is a no-op on quiet days.
+    {
+        let pool = store.pool.clone();
+        let key = cfg.fmp_api_key.clone();
+        let base = cfg.fmp_base_url.clone();
+        tokio::spawn(async move {
+            let adapter = FmpEstimatesAdapter::new(&key, &base);
+            let interval = Duration::from_secs(6 * 3600);
+            if let Err(e) = fmp_estimates_service::run(pool, adapter, interval).await {
+                error!(error = %e, "fmp_estimates service exited");
             }
         });
     }

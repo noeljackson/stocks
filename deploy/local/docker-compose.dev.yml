@@ -164,6 +164,38 @@ services:
     depends_on:
       - gateway
 
+  # Cognition consumer (#100): on discovery.confirmed, runs context_maintainer
+  # + thesis_engine + sharpen + challenge for the symbol. Closes the manual
+  # `make refresh-context SYMBOL=X` gap.
+  cognition:
+    image: python:3.12-slim
+    container_name: stocks-cognition
+    working_dir: /repo/py
+    volumes:
+      # Mount whole repo so the Python services can read prompts/ at runtime.
+      - ../..:/repo
+    environment:
+      - DATABASE_URL=postgres://stocks:stocks_dev_only@postgres:5432/stocks?sslmode=disable
+      - NATS_URL=nats://nats:4222
+      - FRED_API_KEY
+      - FMP_API_KEY
+      - FMP_BASE_URL
+      - SEC_EDGAR_UA
+      - ANTHROPIC_API_KEY
+      - ANTHROPIC_BASE_URL
+      - ANTHROPIC_VERSION
+      - LLM_PROVIDER
+      - LLM_MODEL_DEEP
+      - LLM_MODEL_ROUTINE
+      - LLM_MODEL_TRIAGE
+    command: >-
+      sh -c "pip install -q -e . && python -m stocks.cognition_service"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
 volumes:
   cargo-cache:
   cargo-target:

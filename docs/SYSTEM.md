@@ -1,0 +1,663 @@
+# System model
+
+This project is a single-operator trading intelligence system. It does not try
+to be an autonomous hedge fund. It helps one human notice tech-infrastructure
+inflections earlier, reason about them more consistently, and record enough
+evidence to learn from decisions over time.
+
+The shortest description:
+
+```text
+market/data events
+  -> maintained ticker context
+  -> structured theses
+  -> risk-gated alerts
+  -> human decisions
+  -> outcomes/reflection
+  -> better future signals/prompts
+```
+
+The system's edge is information diffusion. Public facts do not become equally
+understood by every market participant at once. The system tries to find the
+window between "available" and "obvious to the late retail/passive tech crowd".
+
+## Operating loop
+
+The product loop is built around one selected symbol at a time, but every piece
+is fed by append-only event history.
+
+```text
+1. Ingest
+   EDGAR, FRED, price, estimates, ratings, news, sentiment, portfolio state
+
+2. Route
+   Normalize events, persist them, fan them out to affected tickers and services
+
+3. Maintain context
+   Keep each ticker's structural, narrative, and market context fresh
+
+4. Discover
+   Scan a broader universe for cheap early signals and propose watchlist adds
+
+5. Draft/evaluate thesis
+   Convert context + technicals + regime into a falsifiable thesis object
+
+6. Apply safety nets
+   Risk overlay, condition evaluator, staleness checks, goalpost detector
+
+7. Alert human
+   Surface only meaningful transitions, alignments, invalidations, and decisions
+
+8. Record decision/outcome
+   Keep every decision and outcome so calibration can improve
+```
+
+## Core objects
+
+### Ticker
+
+A persistent monitoring object. Tickers have a cluster, tier, tradeability
+metadata, and watchlist membership. A ticker can be lightly monitored before it
+has any thesis.
+
+```text
+ticker
+  symbol
+  cluster
+  tier
+  options_eligible
+  domain_fit
+```
+
+### Watchlist
+
+The operator-facing way to browse the universe. Watchlists are not just manual
+folders; discovery can propose adding symbols to them. The UI should treat
+`Universe` / `All Tickers` as the replacement for a separate Tickers page.
+
+```text
+watchlist
+  -> visible navigation group
+  -> symbol membership
+  -> discovery assignment target
+```
+
+### Ticker context
+
+The system's memory for a symbol. It is versioned and append-only.
+
+```text
+ticker_context
+  structural  -> slow facts: business model, fundamentals, competitive position
+  narrative   -> medium-speed facts: catalysts, analyst drift, monitored risks
+  market      -> fast facts: price/volume/technicals/sentiment
+```
+
+Each band has its own freshness timestamp. That matters because a fresh price
+tick must not make stale narrative or lagged 13F data look current.
+
+### Thesis
+
+The thesis is the primary product object. It is not a note or a vibe; it is a
+versioned, falsifiable state-machine object.
+
+```text
+thesis
+  symbol
+  state
+  edge_rationale
+  forecast
+  conviction_conditions
+  trigger_conditions
+  invalidation_conditions
+  fulfillment_conditions
+  version history
+```
+
+The original edge rationale and invalidation conditions are preserved. Later
+edits can refine the thesis, but weakening invalidation is flagged by the
+goalpost detector.
+
+### Decision
+
+A decision records what the human did or declined to do. It is append-only and
+is used later for calibration and reflection.
+
+```text
+decision
+  thesis_id
+  action proposed
+  user choice
+  sizing/rationale
+  timestamp
+```
+
+### Outcome
+
+An outcome scores a thesis or prediction after time has passed. This is how the
+system learns whether it was early, calibrated, or just noisy.
+
+## Data flow
+
+The system is event-driven. Services communicate through NATS JetStream and
+write durable state to Postgres.
+
+```text
+                 +----------------+
+                 | external data  |
+                 | EDGAR/FRED/... |
+                 +-------+--------+
+                         |
+                         v
+                  ingest.* events
+                         |
+                         v
+        +----------------+----------------+
+        | NATS JetStream durable streams  |
+        +-------+------------+------------+
+                |            |
+                v            v
+          route.ticker.*   regime.*
+                |            |
+                v            v
+        ticker context   market_state
+                |            |
+                +------+-----+
+                       |
+                       v
+                   thesis.*
+                       |
+                 +-----+------+
+                 |            |
+                 v            v
+              risk.*      alerts/SSE
+                 |            |
+                 +-----+------+
+                       |
+                       v
+                  operator UI
+                       |
+                       v
+                 decision.*
+```
+
+Postgres is the durable system of record. JetStream is the replayable event
+fabric. Replaying history through improved prompts, indicators, or evaluators is
+part of the design.
+
+## Pipeline in detail
+
+The pipeline has two connected lanes:
+
+```text
+data lane
+  external source -> ingest_event -> normalized store -> NATS subject
+
+reasoning lane
+  routed events -> context/thesis/risk/reflection -> alerts and decisions
+```
+
+Every stage should either persist append-only evidence, emit a typed event, or
+both. A service that only mutates hidden state is a design smell.
+
+### 1. Ingestion
+
+Ingestion adapters pull data from vendors and public sources, normalize the
+payload, write an append-only raw/normalized record, and publish an event.
+
+Examples:
+
+```text
+SEC/XBRL facts        -> ingest.filing / ingest.fundamental
+FRED macro series     -> ingest.macro
+FMP daily OHLCV       -> ingest.price
+FMP estimates/grades  -> ingest.estimate / ingest.rating
+Massive/FMP news      -> ingest.news
+IBKR portfolio state  -> position.updated
+```
+
+The ingestion rule is simple: never overwrite the past. If a vendor revises
+data, record the new observation with its own ingestion time.
+
+### 2. Routing
+
+The router fans broad ingest events into subjects that downstream services can
+consume without knowing every vendor shape.
+
+```text
+ingest.*
+  -> route.ticker.NVDA
+  -> route.ticker.AMD
+  -> route.market
+```
+
+Ticker-routed events feed context maintenance and discovery. Market-routed
+events feed regime, consensus, and cross-market signals.
+
+### 3. Market state
+
+The regime service consumes market inputs and writes `market_state`.
+
+```text
+route.market
+  -> indicator snapshot
+  -> regime classification
+  -> market_state row
+  -> regime.state event when state changes
+```
+
+Regime does not create a thesis by itself. It modulates whether a thesis is
+allowed to become actionable, how aggressive sizing should be, and whether
+tactical dip-buy conditions are valid.
+
+### 4. Context maintenance
+
+Context is the maintained memory for a ticker. The context maintainer combines
+recent routed events with prior context and emits a new version when the state
+materially changes.
+
+```text
+route.ticker.SYMBOL
+  + previous ticker_context
+  + prompt version
+  -> new ticker_context version
+  -> context.updated / context.shift
+```
+
+The three context bands move at different speeds:
+
+```text
+structural  slow     business quality, end markets, fundamentals
+narrative   medium   catalysts, analyst drift, competitive developments
+market      fast     price, volume, technicals, sentiment
+```
+
+Freshness is part of the output. A stale narrative band is a decision input, not
+just an ops warning.
+
+### 5. Discovery
+
+Discovery scans the wider universe for cheap signals that might deserve deeper
+attention.
+
+```text
+price/volume anomaly
+estimate or rating drift
+news/catalyst burst
+relative strength
+domain-fit classification
+  -> discovery_candidate
+  -> discovery.candidate
+```
+
+Discovery does not silently promote a symbol into the operator's focus. It
+creates a candidate with evidence and proposed watchlist assignments. The human
+confirms or rejects the assignment, and that correction becomes part of the
+learning signal.
+
+### 6. Thesis drafting and sharpening
+
+The thesis engine turns maintained context into a structured thesis when there
+is a plausible edge.
+
+```text
+latest ticker_context
+  + market_state
+  + relevant events
+  + prompt hash
+  -> thesis draft
+  -> prediction rows for calibration
+```
+
+A valid thesis must explain what is not yet priced, what would increase
+conviction, what would trigger action, what would invalidate it, and what would
+count as fulfillment/consensus arrival.
+
+Sharpen/challenge passes improve the object without changing its purpose:
+
+```text
+sharpen   -> proposes clearer measurable conditions
+challenge -> flags weak rationale, missing evidence, or self-deception risk
+```
+
+### 7. Condition evaluation
+
+The evaluator and staleness service continuously inspect thesis conditions.
+
+```text
+v_condition
+  -> resolve target metric
+  -> compare observed value to condition target
+  -> mark satisfied/refuted/stale
+  -> emit warning when stale or dangerous
+```
+
+Condition status should support transitions, not bypass them. A condition being
+satisfied is evidence; the state machine still controls what can happen next.
+
+### 8. Thesis state transitions
+
+The thesis state machine is the canonical path from idea to action to outcome.
+
+```text
+forming
+  -> building_conviction
+  -> armed
+  -> actionable
+  -> position_open
+  -> exiting
+  -> closed
+```
+
+At any point a thesis can become `disqualified` when the idea is invalidated or
+the object is not good enough to keep alive.
+
+Promotion gates are substance gates:
+
+```text
+forming -> building_conviction
+  requires forecast + conviction conditions
+
+building_conviction -> armed
+  requires trigger + invalidation conditions
+
+armed -> actionable
+  requires trigger readiness
+
+position_open -> exiting
+  requires fulfillment/exit conditions
+```
+
+Code should use `thesis::substance::promotion_allowed()` and the transition
+endpoint rather than mutating `thesis.state` directly.
+
+### 9. Risk and alerting
+
+When a thesis becomes actionable, the risk overlay evaluates it independently.
+
+```text
+thesis.actionable
+  -> risk overlay
+  -> risk.ok | risk.warning | risk.veto
+  -> gateway alert/feed
+```
+
+The risk overlay constrains the proposal. It does not decide whether the idea
+is intellectually good; it decides whether the proposed action fits portfolio,
+liquidity, concentration, drawdown, options, and regime constraints.
+
+### 10. Consensus and reflection
+
+Consensus is both an exit signal and a validation anchor.
+
+```text
+estimate saturation
+rating/news coverage
+retail attention
+price extension
+  -> consensus_score
+  -> thesis.fulfilled when thresholds cross
+  -> outcome row
+  -> calibration metrics
+```
+
+Reflection scores what happened after a thesis or prediction. The point is not
+to celebrate wins; it is to learn whether the system was early, calibrated, and
+useful versus passive tech beta.
+
+## Service families
+
+Rust owns deterministic event processing and the operator gateway.
+
+```text
+gateway     REST, SSE, embedded Svelte SPA
+ingest      vendor adapters and append-only ingest events
+router      fan-out from ingest subjects to ticker/market subjects
+regime      market-state classifier
+risk        independent risk overlay
+goalpost    detects thesis edits that weaken invalidation
+staler      warns on stale or past-deadline thesis conditions
+evaluator   evaluates quantitative/narrative thesis conditions
+consensus   computes consensus/fulfillment anchors
+discovery   promotes candidate symbols from cheap-wide signals
+reflection  scores predictions and outcomes
+```
+
+Python owns LLM-heavy cognition and research workflows.
+
+```text
+context_maintainer  refreshes ticker_context
+thesis_engine       drafts thesis objects from context
+sharpen             improves thesis conditions
+challenge           critiques weak theses
+classify            assigns discovery candidates to watchlists
+```
+
+All LLM calls must go through the prompt registry wrappers so invocation,
+prompt hash, tokens, and latency are auditable.
+
+## Operator UI model
+
+The UI should be a workstation, not an admin console. The durable interaction
+model is:
+
+```text
+selected symbol
+  -> chart
+  -> selected-symbol panel
+  -> context
+  -> theses
+  -> alerts
+  -> decisions
+```
+
+Target shell:
+
+```text
++------------------------------------------------------------------------------+
+| Top bar: symbol/search, range, regime, stream status, actions                |
++--------------------------------------------------------------+---------------+
+| Main chart: candles, thesis markers, alert markers, regime overlays          |
+|                                                              | Right panel   |
+|                                                              | Watchlist     |
+|                                                              | Symbol detail |
+|                                                              | Context       |
+|                                                              | Theses        |
+|                                                              | Alerts        |
+|                                                              | Decisions     |
++--------------------------------------------------------------+---------------+
+| Bottom drawer: events, discovery queue, decisions, calibration, diagnostics  |
++------------------------------------------------------------------------------+
+```
+
+Watchlists should be selected through a dropdown. Symbol membership should use
+checkmarked watchlist menus, similar to TradingView. This keeps ticker browsing,
+manual watchlist edits, and discovery candidate assignment under one mental
+model.
+
+## Decision process
+
+The human decision process is deliberately separated from the machine pipeline.
+The system can propose, warn, veto, and record. It does not silently trade.
+
+### Candidate decision
+
+Discovery candidate review answers: "Should this symbol enter our monitored
+universe, and where?"
+
+```text
+discovery_candidate proposed
+  -> LLM/watchlist classifier proposes lists
+  -> UI shows evidence + checkmarked list assignments
+  -> human confirms or rejects
+```
+
+Confirming a candidate:
+
+```text
+candidate.status = confirmed
+selected watchlist memberships are created
+symbol becomes easy to revisit from the watchlist UI
+classification/decision is kept for later learning
+```
+
+Rejecting a candidate:
+
+```text
+candidate.status = rejected
+reason/evidence remains in history
+future classifiers can learn boundary corrections
+```
+
+### Thesis decision
+
+Thesis review answers: "Is this a real thesis, and what state is it allowed to
+enter?"
+
+```text
+draft thesis
+  -> inspect edge rationale
+  -> inspect forecast and conditions
+  -> sharpen/challenge if needed
+  -> transition only when substance gates pass
+```
+
+The user should not need to infer whether a thesis is vague. The UI should show
+the missing substance directly:
+
+```text
+forecast missing
+conviction condition too vague
+trigger condition lacks target/deadline/evidence source
+invalidation condition missing
+fulfillment condition missing
+```
+
+The transition decision is separate from the trade decision. Moving a thesis to
+`armed` means "watch this for action." Moving it to `actionable` means "the
+system believes the trigger is ready and risk should evaluate it."
+
+### Trade decision
+
+Trade decision answers: "Given the thesis and risk overlay, what will the human
+do?"
+
+```text
+actionable thesis
+  -> risk.ok / risk.warning / risk.veto
+  -> human chooses:
+       accept / reduce / defer / skip / reject
+  -> decision row is appended
+```
+
+Decision rows should capture enough information for later evaluation:
+
+```text
+thesis_id
+proposed action
+user choice
+sizing
+rationale
+timestamp
+risk result visible at decision time
+```
+
+The expected behavior by risk result:
+
+```text
+risk.ok
+  user may accept, defer, reduce, or skip
+
+risk.warning
+  user may continue, but the warning must remain attached to the decision
+
+risk.veto
+  UI should block accept/open-position flows
+  user can still record skip/reject/defer
+```
+
+### Position and exit decision
+
+When the human opens a position, the thesis moves into position tracking.
+
+```text
+decision accepted
+  -> position_open after manual/broker-confirmed position exists
+  -> conditions continue to be evaluated
+  -> invalidation/fulfillment alerts are surfaced
+```
+
+Exit decisions are driven by thesis conditions, not by hindsight editing.
+
+```text
+invalidation condition satisfied
+  -> thesis should move toward exiting or disqualified
+
+fulfillment/consensus condition satisfied
+  -> thesis should move toward exiting/closed
+
+manual exit
+  -> record the decision and preserve the original thesis for scoring
+```
+
+### Outcome decision
+
+Outcome scoring answers: "Was the system useful?"
+
+```text
+closed / fulfilled / invalidated thesis
+  -> outcome row
+  -> Brier/calibration score when forecast is scorable
+  -> lead-time-to-consensus when consensus is observed
+  -> decision quality compared with QQQ/SMH
+```
+
+Bad outcomes are first-class data. The system should make it easy to see when a
+thesis was late, uncalibrated, overruled by risk, or rejected correctly by the
+human.
+
+## Safety model
+
+The system deliberately separates powers:
+
+```text
+thesis engine proposes
+risk overlay constrains
+human decides
+reflection scores
+```
+
+No service both proposes and approves its own trade. Risk and integrity checks
+are deterministic where possible, and append-only histories make later review
+possible.
+
+Important safety nets:
+
+```text
+risk overlay       position and portfolio limits
+goalpost detector  flags self-serving thesis edits
+staleness service  warns when deadlines/data go stale
+condition evaluator resolves thesis conditions against evidence
+prompt audit       records which prompt version produced each LLM output
+```
+
+## Validation model
+
+Backtesting is not the primary proof. The edge depends on forward information
+diffusion and self-built point-in-time data.
+
+Primary validation:
+
+```text
+lead-time-to-consensus
+  alert timestamp -> consensus/fulfillment timestamp
+
+forecast calibration
+  thesis forecast -> realized outcome
+
+decision quality
+  realized choices -> passive tech beta benchmarks such as QQQ/SMH
+```
+
+If the system does not improve decision quality after enough forward use, the
+right answer is to reassess it, not to add complexity.

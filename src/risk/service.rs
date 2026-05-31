@@ -6,10 +6,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use chrono::Utc;
 use serde::Deserialize;
-use sqlx::Row;
 use tracing::{info, warn};
 
-use super::{Config, Intent, Portfolio, Position, evaluate};
+use super::{Config, Intent, Portfolio, derive_portfolio, evaluate};
 use crate::platform::bus::{Bus, ConsumerHandle};
 use crate::platform::store::Store;
 use crate::platform::subjects;
@@ -30,8 +29,10 @@ struct Actionable {
     premium_at_risk: f64,
 }
 
-// v0 portfolio defaults — replaced with live IBKR integration in a later phase.
-const DEFAULT_PORTFOLIO: Portfolio = Portfolio {
+// Honest fallback when the operator hasn't set `portfolio_settings` yet.
+// Marked explicitly so risk verdicts emitted during this state can be
+// recognized as demo-mode (we also log a warn! at every evaluation).
+const UNCONFIGURED_PORTFOLIO: Portfolio = Portfolio {
     total_value: 100_000.0,
     cash_pct: 50.0,
     drawdown_pct: 0.0,
@@ -75,7 +76,20 @@ async fn on_actionable(store: &Store, bus: &Bus, data: &[u8]) -> Result<()> {
     };
     let (cfg_json, cfg_ver) = store.active_config("risk").await?;
     let cfg: Config = serde_json::from_value(cfg_json)?;
-    let positions = load_open_positions(store).await?;
+    let positions = store.open_positions_for_risk().await?;
+    let settings = store.portfolio_settings().await?;
+    let realized_pnl = store.realized_pnl_total().await.unwrap_or(0.0);
+
+    let (portfolio, is_demo) = match derive_portfolio(settings, &positions, realized_pnl) {
+        Some(p) => (p, false),
+        None => {
+            warn!(
+                "portfolio_settings.account_size_usd unset — risk overlay running on \
+                 DEMO portfolio (100k notional, 50% cash). Set via PUT /api/portfolio."
+            );
+            (UNCONFIGURED_PORTFOLIO, true)
+        }
+    };
 
     let intent = Intent {
         symbol: a.symbol.clone(),
@@ -84,7 +98,7 @@ async fn on_actionable(store: &Store, bus: &Bus, data: &[u8]) -> Result<()> {
         delta_notional: a.delta_notional,
         premium_at_risk: a.premium_at_risk,
     };
-    let decision = evaluate(&intent, &positions, DEFAULT_PORTFOLIO, &cfg);
+    let decision = evaluate(&intent, &positions, portfolio, &cfg);
 
     if !decision.veto && decision.warnings.is_empty() {
         return Ok(());
@@ -98,6 +112,12 @@ async fn on_actionable(store: &Store, bus: &Bus, data: &[u8]) -> Result<()> {
         "warnings":  decision.warnings,
         "size_mult": decision.size_mult,
         "config_version": cfg_ver,
+        "portfolio_demo": is_demo,
+        "portfolio": {
+            "total_value": portfolio.total_value,
+            "cash_pct":    portfolio.cash_pct,
+            "drawdown_pct": portfolio.drawdown_pct,
+        },
         "at":        Utc::now(),
     });
     let subject = if decision.veto { subjects::RISK_VETO } else { subjects::RISK_WARNING };
@@ -111,30 +131,3 @@ async fn on_actionable(store: &Store, bus: &Bus, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-async fn load_open_positions(store: &Store) -> Result<Vec<Position>> {
-    // Cast NUMERIC → float8 in SQL so sqlx hands us a primitive f64 directly,
-    // avoiding the `bigdecimal` feature pull-in.
-    let rows = sqlx::query(
-        r#"SELECT p.symbol,
-                  COALESCE(t.cluster_id, '') AS cluster,
-                  p.instrument,
-                  COALESCE(p.delta_notional, 0)::float8 AS delta_notional,
-                  COALESCE(p.premium_at_risk, 0)::float8 AS premium_at_risk
-             FROM position p
-             LEFT JOIN ticker t ON t.symbol = p.symbol
-            WHERE p.closed_at IS NULL"#,
-    )
-    .fetch_all(&store.pool)
-    .await?;
-    rows.into_iter()
-        .map(|row| {
-            Ok(Position {
-                symbol: row.try_get("symbol")?,
-                cluster: row.try_get("cluster")?,
-                instrument: row.try_get("instrument")?,
-                delta_notional: row.try_get::<f64, _>("delta_notional")?,
-                premium_at_risk: row.try_get::<f64, _>("premium_at_risk")?,
-            })
-        })
-        .collect()
-}

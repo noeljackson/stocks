@@ -81,6 +81,93 @@ impl Store {
         Ok((body, version))
     }
 
+    /// Reads the operator-set portfolio frame (#26). Returns the singleton
+    /// row; `account_size_usd` is `None` until the operator sets it.
+    pub async fn portfolio_settings(&self) -> Result<crate::risk::PortfolioSettings> {
+        let row = sqlx::query(
+            r#"SELECT account_size_usd::float8 AS acct,
+                      high_water_mark_usd::float8 AS hwm
+                 FROM portfolio_settings WHERE id = 1"#,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .context("portfolio_settings")?;
+        let Some(row) = row else {
+            return Ok(crate::risk::PortfolioSettings::default());
+        };
+        Ok(crate::risk::PortfolioSettings {
+            account_size_usd: row.try_get::<Option<f64>, _>("acct").ok().flatten(),
+            high_water_mark_usd: row.try_get::<Option<f64>, _>("hwm").ok().flatten(),
+        })
+    }
+
+    /// Upsert operator-set account size + high-water mark. Either field may
+    /// be left `None` (caller's intent: "don't touch this field").
+    pub async fn upsert_portfolio_settings(
+        &self,
+        account_size_usd: Option<f64>,
+        high_water_mark_usd: Option<f64>,
+        updated_by: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"INSERT INTO portfolio_settings (id, account_size_usd, high_water_mark_usd, updated_at, updated_by)
+               VALUES (1, $1, $2, now(), $3)
+               ON CONFLICT (id) DO UPDATE SET
+                   account_size_usd = COALESCE(EXCLUDED.account_size_usd, portfolio_settings.account_size_usd),
+                   high_water_mark_usd = COALESCE(EXCLUDED.high_water_mark_usd, portfolio_settings.high_water_mark_usd),
+                   updated_at = now(),
+                   updated_by = EXCLUDED.updated_by"#,
+        )
+        .bind(account_size_usd)
+        .bind(high_water_mark_usd)
+        .bind(updated_by)
+        .execute(&self.pool)
+        .await
+        .context("upsert_portfolio_settings")?;
+        Ok(())
+    }
+
+    /// All open positions in the shape the risk overlay consumes.
+    pub async fn open_positions_for_risk(&self) -> Result<Vec<crate::risk::Position>> {
+        let rows = sqlx::query(
+            r#"SELECT p.symbol,
+                      COALESCE(t.cluster_id, '') AS cluster,
+                      p.instrument,
+                      COALESCE(p.delta_notional, 0)::float8 AS delta_notional,
+                      COALESCE(p.premium_at_risk, 0)::float8 AS premium_at_risk
+                 FROM position p
+                 LEFT JOIN ticker t ON t.symbol = p.symbol
+                WHERE p.closed_at IS NULL"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("open_positions_for_risk")?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(crate::risk::Position {
+                    symbol: row.try_get("symbol")?,
+                    cluster: row.try_get("cluster")?,
+                    instrument: row.try_get("instrument")?,
+                    delta_notional: row.try_get::<f64, _>("delta_notional")?,
+                    premium_at_risk: row.try_get::<f64, _>("premium_at_risk")?,
+                })
+            })
+            .collect()
+    }
+
+    /// Sum of realized PnL across closed positions. Used by the risk overlay
+    /// to compute realized drawdown (#26). Treats NULL as 0.
+    pub async fn realized_pnl_total(&self) -> Result<f64> {
+        let row = sqlx::query(
+            r#"SELECT COALESCE(SUM(realized_pnl), 0)::float8 AS total
+                 FROM position WHERE closed_at IS NOT NULL"#,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .context("realized_pnl_total")?;
+        Ok(row.try_get::<f64, _>("total")?)
+    }
+
     /// Inserts an alert and returns its id.
     pub async fn insert_alert(
         &self,

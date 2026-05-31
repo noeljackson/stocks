@@ -72,6 +72,52 @@ pub struct Portfolio {
     pub drawdown_pct: f64,
 }
 
+/// Operator-set frame for the portfolio (#26). When `account_size_usd` is
+/// `None`, the system is unconfigured and the risk overlay falls back to a
+/// demo portfolio with a loud warning rather than crashing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PortfolioSettings {
+    pub account_size_usd: Option<f64>,
+    pub high_water_mark_usd: Option<f64>,
+}
+
+/// Pure derivation: given operator settings, open positions, and the realized
+/// PnL summed over closed positions, return the [`Portfolio`] the risk
+/// overlay should evaluate against. Returns `None` if the system is
+/// unconfigured (account_size_usd unset) — caller decides the fallback.
+///
+/// - `cash_pct = max(0, account_size - sum(open delta + premium)) / account_size`
+/// - `drawdown_pct` is negative (or zero). With realized PnL only it captures
+///   the closed-book draw; once IBKR is wired (#25) we'll fold unrealized in.
+///   Anchored at `high_water_mark_usd` if set; otherwise the account size.
+#[must_use]
+pub fn derive_portfolio(
+    settings: PortfolioSettings,
+    open: &[Position],
+    realized_pnl: f64,
+) -> Option<Portfolio> {
+    let total = settings.account_size_usd?;
+    if total <= 0.0 {
+        return None;
+    }
+    let consumed: f64 = open
+        .iter()
+        .map(|p| p.delta_notional + p.premium_at_risk)
+        .sum();
+    let cash = (total - consumed).max(0.0);
+    let cash_pct = 100.0 * cash / total;
+
+    let anchor = settings.high_water_mark_usd.unwrap_or(total).max(total);
+    let current_equity = total + realized_pnl;
+    let drawdown_pct = if current_equity >= anchor {
+        0.0
+    } else {
+        100.0 * (current_equity - anchor) / anchor
+    };
+
+    Some(Portfolio { total_value: total, cash_pct, drawdown_pct })
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Decision {
     pub veto: bool,

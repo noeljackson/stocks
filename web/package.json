@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "lightweight-charts": "5.2.0",
+    "paneforge": "1.0.2",
     "uplot": "1.6.32"
   },
   "devDependencies": {

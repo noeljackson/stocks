@@ -35,6 +35,7 @@
   } from "./lib/api";
   import ContextPanel from "./lib/ContextPanel.svelte";
   import ThesisDetails from "./lib/ThesisDetails.svelte";
+  import { PaneGroup, Pane, PaneResizer } from "paneforge";
 
   // ---------- workspace state ----------
   type RightTab = "overview" | "context" | "theses" | "alerts" | "decisions";
@@ -337,70 +338,19 @@
   let selectedTicker = $derived(tickerFor(selectedSymbol));
 
   // ---------- panel sizing + resize ----------
-  // Pixels for the right panel width and the bottom drawer height.
-  // Persisted to localStorage so reloads don't reset.
-  function loadSize(k: string, def: number, min: number, max: number): number {
-    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(k) : null;
-    const n = raw ? parseInt(raw, 10) : NaN;
-    return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : def;
-  }
-  // v2 keys — bumped on default change to drop any stuck values from earlier runs.
-  let rightWidth = $state(loadSize("ws.v2.rightWidth", 360, 240, 800));
-  let bottomHeight = $state(loadSize("ws.v2.bottomHeight", 200, 80, 600));
-  $effect(() => {
-    try { localStorage.setItem("ws.v2.rightWidth", String(rightWidth)); } catch {}
-  });
-  $effect(() => {
-    try { localStorage.setItem("ws.v2.bottomHeight", String(bottomHeight)); } catch {}
-  });
-
-  function startResizeRight(e: PointerEvent) {
-    const startX = e.clientX;
-    const startW = rightWidth;
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-    const move = (m: PointerEvent) => {
-      const dx = startX - m.clientX;
-      rightWidth = Math.max(240, Math.min(800, startW + dx));
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-  function startResizeBottom(e: PointerEvent) {
-    if (!bottomOpen) {
-      // First drag from collapsed state opens the drawer.
-      bottomOpen = true;
-    }
-    const startY = e.clientY;
-    const startH = bottomHeight;
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-    const move = (m: PointerEvent) => {
-      const dy = startY - m.clientY;
-      // Clamp to viewport so we never push the drawer past the chart area.
-      const maxH = Math.max(120, window.innerHeight - 200);
-      bottomHeight = Math.max(80, Math.min(maxH, startH + dy));
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-  function resetBottom() {
-    bottomHeight = 200;
-    bottomOpen = true;
+  // paneforge bottom-pane API ref so the "hide" button can collapse it
+  // imperatively. Sizes persist via PaneGroup autoSaveId — no manual
+  // localStorage juggling.
+  let bottomPane: { collapse: () => void; expand: () => void; isCollapsed: () => boolean } | null = null;
+  function toggleBottom() {
+    if (!bottomPane) return;
+    if (bottomPane.isCollapsed()) bottomPane.expand();
+    else bottomPane.collapse();
+    bottomOpen = !bottomPane.isCollapsed();
   }
 </script>
 
-<div
-  class="workspace"
-  class:bottom-open={bottomOpen}
-  style="--right-w: {rightWidth}px; --bottom-h: {bottomOpen ? bottomHeight : 36}px;"
->
+<div class="workspace">
   <!-- Top bar: symbol + regime + connection -->
   <header class="top">
     <div class="brand">stocks <span class="muted">intel</span></div>
@@ -447,9 +397,11 @@
   {/if}
 
   <!-- Body: left column (chart + bottom drawer stacked) + vertical splitter + right panel (full height) -->
-  <div class="body">
-    <div class="main-col">
-      <section class="chart-panel">
+  <PaneGroup direction="horizontal" autoSaveId="ws.v3.outer" class="body">
+    <Pane defaultSize={72} minSize={40}>
+      <PaneGroup direction="vertical" autoSaveId="ws.v3.left" class="main-col">
+        <Pane defaultSize={70} minSize={30}>
+          <section class="chart-panel">
       <div class="chart-stub">
         <h3>
           {#if selectedSymbol}
@@ -471,22 +423,27 @@
           </dl>
         {/if}
       </div>
-      </section>
+          </section>
+        </Pane>
 
-      <!-- splitter is a sibling between chart and drawer (grid row 2) -->
-      <div
-        class="split-h"
-        role="separator"
-        aria-orientation="horizontal"
-        title="drag to resize"
-        onpointerdown={startResizeBottom}
-      ></div>
+        <PaneResizer class="split-h" />
 
-      <!-- bottom drawer is inside main-col so it only spans the chart width -->
-      <footer class="bottom">
+        <Pane
+          bind:this={bottomPane}
+          defaultSize={30}
+          minSize={6}
+          collapsible
+          collapsedSize={5}
+          onCollapse={() => (bottomOpen = false)}
+          onExpand={() => (bottomOpen = true)}
+        >
+          <footer class="bottom">
     <nav class="bottom-tabs">
       {#each ["events", "discovery", "decisions", "calibration"] as BottomMode[] as m}
-        <button class:active={bottomMode === m} onclick={() => (bottomMode = m, bottomOpen = true)}>
+        <button
+          class:active={bottomMode === m}
+          onclick={() => { bottomMode = m; if (!bottomOpen) bottomPane?.expand(); }}
+        >
           {m}
           {#if m === "discovery" && pending.length > 0}<span class="badge tiny">{pending.length}</span>{/if}
           {#if m === "events"}<span class="badge tiny">{live.length}</span>{/if}
@@ -494,14 +451,11 @@
       {/each}
       <button
         class="bottom-toggle"
-        onclick={() => (bottomOpen = !bottomOpen)}
+        onclick={toggleBottom}
         title={bottomOpen ? "collapse drawer" : "expand drawer"}
       >
         {bottomOpen ? "▾ hide" : "▴ show"}
       </button>
-      {#if bottomOpen}
-        <button class="bottom-reset" onclick={resetBottom} title="reset drawer height">⟲</button>
-      {/if}
     </nav>
 
     {#if bottomOpen}
@@ -611,18 +565,15 @@
         {/if}
       </div>
     {/if}
-      </footer>
-    </div>
+          </footer>
+        </Pane>
+      </PaneGroup>
+    </Pane>
 
-    <div
-      class="split-v"
-      role="separator"
-      aria-orientation="vertical"
-      title="drag to resize"
-      onpointerdown={startResizeRight}
-    ></div>
+    <PaneResizer class="split-v" />
 
-    <aside class="right">
+    <Pane defaultSize={28} minSize={18} maxSize={50}>
+      <aside class="right">
       <!-- Watchlists nav -->
       <section class="wl-section">
         <div class="wl-hdr">
@@ -757,8 +708,9 @@
           <p class="muted center-msg">Pick a symbol on the left.</p>
         {/if}
       </section>
-    </aside>
-  </div>
+      </aside>
+    </Pane>
+  </PaneGroup>
 
 </div>
 
@@ -781,20 +733,14 @@
 
   /* Body splits horizontally: main-col | splitter | right panel.
      Right panel is full body height; bottom drawer is nested in main-col. */
-  .body {
-    /* Sits in workspace grid row 3 (minmax(0, 1fr)) — fills available height. */
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 6px var(--right-w, 360px);
-    min-height: 0;
-    min-width: 0;
+  /* paneforge nests its own divs inside .body / .main-col — they need to
+     fill the workspace row and stack their flex children. */
+  :global(.body) {
+    height: 100%;
     overflow: hidden;
   }
-  .main-col {
-    display: grid;
-    /* chart fills, splitter (8px), bottom drawer (var) */
-    grid-template-rows: minmax(0, 1fr) 8px var(--bottom-h, 36px);
-    min-height: 0;
-    min-width: 0;
+  :global(.main-col) {
+    height: 100%;
     overflow: hidden;
   }
 
@@ -837,24 +783,28 @@
     padding: 1rem;
     min-width: 0;
     min-height: 0;
+    height: 100%;
   }
-  .split-v {
+  /* paneforge wraps each Pane in a div; the inner content fills it. */
+  :global([data-pane]) { display: flex; flex-direction: column; min-height: 0; }
+  :global([data-pane] > *) { flex: 1 1 auto; min-height: 0; }
+  :global(.split-v) {
     background: #1f2733;
     cursor: col-resize;
-    transition: background .15s;
-    /* Wider hit area than the visual; pseudo center bar inside. */
-    position: relative;
     width: 6px;
+    flex-shrink: 0;
+    transition: background .15s;
+    position: relative;
   }
-  .split-v::before {
+  :global(.split-v::before) {
     content: ""; position: absolute; top: 0; bottom: 0;
     left: 50%; width: 2px; transform: translateX(-50%);
     background: #2a3548;
   }
-  .split-v:hover, .split-v:active { background: #45567a; }
-  .split-v:hover::before, .split-v:active::before { background: #89b4fa; }
+  :global(.split-v:hover), :global(.split-v[data-active]) { background: #45567a; }
+  :global(.split-v:hover::before), :global(.split-v[data-active]::before) { background: #89b4fa; }
 
-  .split-h {
+  :global(.split-h) {
     background: #1f2733;
     cursor: row-resize;
     height: 8px;
@@ -862,14 +812,14 @@
     transition: background .15s;
     position: relative;
   }
-  .split-h::before {
+  :global(.split-h::before) {
     content: ""; position: absolute; left: 50%; top: 50%;
     transform: translate(-50%, -50%);
     width: 40px; height: 3px; border-radius: 2px;
     background: #45567a;
   }
-  .split-h:hover, .split-h:active { background: #45567a; }
-  .split-h:hover::before, .split-h:active::before { background: #89b4fa; }
+  :global(.split-h:hover), :global(.split-h[data-active]) { background: #45567a; }
+  :global(.split-h:hover::before), :global(.split-h[data-active]::before) { background: #89b4fa; }
   .chart-stub {
     height: 100%;
     display: flex; flex-direction: column;
@@ -979,8 +929,6 @@
     font-weight: 600;
   }
   .bottom-toggle:hover { background: #3a4866; }
-  .bottom-reset { background: transparent; border: 1px solid #2a3548; color: #6c7693; }
-  .bottom-reset:hover { color: #cdd6f4; border-color: #45567a; }
   .bottom-body {
     flex: 1; overflow: auto; padding: .5rem .75rem;
   }

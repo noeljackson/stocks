@@ -128,6 +128,64 @@ impl Store {
     }
 
     /// All open positions in the shape the risk overlay consumes.
+    /// Returns timestamped events for a symbol — thesis state transitions,
+    /// risk alerts, decisions — for chart marker overlays (#57 PR3).
+    pub async fn symbol_events(
+        &self,
+        symbol: &str,
+        lookback_days: i64,
+    ) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query(
+            r#"
+            -- thesis state transitions (one row per state hop)
+            SELECT 'state_transition' AS kind,
+                   tsh.at AS at,
+                   t.thesis_id::text AS thesis_id,
+                   tsh.to_state AS label,
+                   COALESCE(tsh.rationale, '') AS detail
+              FROM thesis_state_history tsh
+              JOIN thesis t USING (thesis_id)
+             WHERE t.symbol = $1 AND tsh.at > now() - ($2 || ' days')::interval
+            UNION ALL
+            -- risk + state-transition alerts
+            SELECT a.kind AS kind,
+                   a.created_at AS at,
+                   COALESCE(a.thesis_id::text, '') AS thesis_id,
+                   COALESCE(a.payload->>'kind', a.kind) AS label,
+                   COALESCE(a.payload->>'reasons', '') AS detail
+              FROM alert a
+             WHERE a.symbol = $1 AND a.created_at > now() - ($2 || ' days')::interval
+            UNION ALL
+            -- recorded decisions
+            SELECT 'decision' AS kind,
+                   d.at AS at,
+                   COALESCE(d.thesis_id::text, '') AS thesis_id,
+                   d.action AS label,
+                   COALESCE(d.user_choice, '') AS detail
+              FROM decision d
+              JOIN thesis t USING (thesis_id)
+             WHERE t.symbol = $1 AND d.at > now() - ($2 || ' days')::interval
+         ORDER BY at ASC"#,
+        )
+        .bind(symbol)
+        .bind(lookback_days.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .context("symbol_events")?;
+        rows.into_iter()
+            .map(|r| {
+                let at: DateTime<Utc> = r.try_get("at")?;
+                Ok(serde_json::json!({
+                    "kind": r.try_get::<String, _>("kind")?,
+                    "time": at.format("%Y-%m-%d").to_string(),
+                    "thesis_id": r.try_get::<String, _>("thesis_id")?,
+                    "label": r.try_get::<String, _>("label")?,
+                    "detail": r.try_get::<String, _>("detail")?,
+                }))
+            })
+            .collect()
+    }
+
     /// Daily candles for `symbol` over the last `lookback_days`, oldest first.
     /// Shaped for lightweight-charts (each row has `time` as ISO date + OHLCV).
     pub async fn candles_for(

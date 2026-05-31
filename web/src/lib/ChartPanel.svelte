@@ -7,16 +7,20 @@
     createChart,
     CandlestickSeries,
     HistogramSeries,
+    createSeriesMarkers,
     type IChartApi,
     type ISeriesApi,
+    type ISeriesMarkersPluginApi,
     type CandlestickData,
     type HistogramData,
     type UTCTimestamp,
+    type SeriesMarker,
   } from "lightweight-charts";
 
   let { symbol = null as string | null } = $props();
 
   type Candle = { time: string; open: number; high: number; low: number; close: number; volume: number };
+  type SymbolEvent = { kind: string; time: string; thesis_id: string; label: string; detail: string };
   type Range = "1M" | "3M" | "6M" | "YTD" | "1Y" | "ALL";
   const RANGES: Range[] = ["1M", "3M", "6M", "YTD", "1Y", "ALL"];
   let range = $state<Range>("6M");
@@ -25,7 +29,9 @@
   let chart: IChartApi | null = null;
   let priceSeries: ISeriesApi<"Candlestick"> | null = null;
   let volSeries: ISeriesApi<"Histogram"> | null = null;
+  let markersApi: ISeriesMarkersPluginApi<UTCTimestamp> | null = null;
   let candles = $state<Candle[] | null>(null);
+  let events = $state<SymbolEvent[]>([]);
   let error = $state<string | null>(null);
   let loading = $state(false);
 
@@ -38,9 +44,13 @@
     loading = true;
     error = null;
     try {
-      const r = await fetch(`/api/candles?symbol=${encodeURIComponent(sym)}&range=${rng}`);
-      if (!r.ok) throw new Error(`candles ${r.status}`);
-      candles = (await r.json()) as Candle[];
+      const [cRes, eRes] = await Promise.all([
+        fetch(`/api/candles?symbol=${encodeURIComponent(sym)}&range=${rng}`),
+        fetch(`/api/symbol-events?symbol=${encodeURIComponent(sym)}&range=${rng}`),
+      ]);
+      if (!cRes.ok) throw new Error(`candles ${cRes.status}`);
+      candles = (await cRes.json()) as Candle[];
+      events = eRes.ok ? ((await eRes.json()) as SymbolEvent[]) : [];
       render();
     } catch (e) {
       error = String(e);
@@ -48,6 +58,47 @@
     } finally {
       loading = false;
     }
+  }
+
+  function eventStyle(ev: SymbolEvent): { color: string; shape: SeriesMarker<UTCTimestamp>["shape"]; position: SeriesMarker<UTCTimestamp>["position"]; text: string } {
+    switch (ev.kind) {
+      case "state_transition": {
+        const promoted = ["actionable", "position_open", "armed"].includes(ev.label);
+        const killed = ["disqualified", "closed"].includes(ev.label);
+        return {
+          color: promoted ? "#a6e3a1" : killed ? "#f38ba8" : "#89b4fa",
+          shape: promoted ? "arrowUp" : "circle",
+          position: promoted ? "belowBar" : "aboveBar",
+          text: ev.label.replace(/_/g, " "),
+        };
+      }
+      case "risk":
+        return { color: "#f9e2af", shape: "square", position: "aboveBar", text: ev.label };
+      case "decision":
+        return {
+          color: ev.detail === "confirmed" ? "#94e2d5" : "#cba6f7",
+          shape: "square",
+          position: "belowBar",
+          text: ev.label,
+        };
+      default:
+        return { color: "#bac2de", shape: "circle", position: "aboveBar", text: ev.kind };
+    }
+  }
+
+  function applyMarkers() {
+    if (!priceSeries || !markersApi) return;
+    const dedup = new Map<string, SeriesMarker<UTCTimestamp>>();
+    for (const e of events) {
+      const t = toUtc(e.time);
+      const sty = eventStyle(e);
+      // Dedup multiple same-day same-kind events to one marker.
+      const k = `${t}-${e.kind}-${sty.text}`;
+      if (!dedup.has(k)) {
+        dedup.set(k, { time: t, position: sty.position, color: sty.color, shape: sty.shape, text: sty.text });
+      }
+    }
+    markersApi.setMarkers([...dedup.values()].sort((a, b) => (a.time as number) - (b.time as number)));
   }
 
   function ensureChart() {
@@ -74,6 +125,7 @@
       scaleMargins: { top: 0.85, bottom: 0 },
       borderColor: "#2a3548",
     });
+    markersApi = createSeriesMarkers(priceSeries, []);
   }
 
   function render() {
@@ -90,6 +142,7 @@
     }));
     priceSeries.setData(cs);
     volSeries.setData(vs);
+    applyMarkers();
     chart.timeScale().fitContent();
   }
 
@@ -103,6 +156,7 @@
       chart = null;
       priceSeries = null;
       volSeries = null;
+      markersApi = null;
     };
   });
 </script>
@@ -119,6 +173,9 @@
       <span class="meta">
         <span class="muted">{candles.length} bars</span>
       </span>
+    {/if}
+    {#if events.length > 0}
+      <span class="meta"><span class="muted">{events.length} events</span></span>
     {/if}
     <span class="range-picker">
       {#each RANGES as r}

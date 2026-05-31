@@ -413,19 +413,32 @@ impl Store {
 
     /// Daily candles for `symbol` over the last `lookback_days`, oldest first.
     /// Shaped for lightweight-charts (each row has `time` as ISO date + OHLCV).
+    ///
+    /// `price_bar` can contain multiple timestamps on the same UTC date when
+    /// backfills and refreshes come from different feeds. The chart library
+    /// requires strictly increasing unique times, so collapse bars to one
+    /// candle per date at the API boundary.
     pub async fn candles_for(
         &self,
         symbol: &str,
         lookback_days: i64,
     ) -> Result<Vec<serde_json::Value>> {
         let rows = sqlx::query(
-            r#"SELECT ts, open::float8 AS open, high::float8 AS high,
-                      low::float8 AS low, close::float8 AS close,
-                      volume::float8 AS volume
-                 FROM price_bar
-                WHERE symbol = $1
-                  AND ts > now() - ($2 || ' days')::interval
-             ORDER BY ts ASC"#,
+            r#"WITH daily AS (
+                 SELECT (date_trunc('day', ts AT TIME ZONE 'UTC'))::date AS day,
+                        (array_agg(open::float8 ORDER BY ts ASC))[1] AS open,
+                        max(high::float8) AS high,
+                        min(low::float8) AS low,
+                        (array_agg(close::float8 ORDER BY ts DESC))[1] AS close,
+                        sum(volume::float8) AS volume
+                   FROM price_bar
+                  WHERE symbol = $1
+                    AND ts > now() - ($2 || ' days')::interval
+               GROUP BY 1
+             )
+             SELECT day, open, high, low, close, volume
+               FROM daily
+              ORDER BY day ASC"#,
         )
         .bind(symbol)
         .bind(lookback_days.to_string())
@@ -434,9 +447,9 @@ impl Store {
         .context("candles_for")?;
         rows.into_iter()
             .map(|r| {
-                let ts: DateTime<Utc> = r.try_get("ts")?;
+                let day: chrono::NaiveDate = r.try_get("day")?;
                 Ok(serde_json::json!({
-                    "time": ts.format("%Y-%m-%d").to_string(),
+                    "time": day.format("%Y-%m-%d").to_string(),
                     "open": r.try_get::<f64, _>("open")?,
                     "high": r.try_get::<f64, _>("high")?,
                     "low": r.try_get::<f64, _>("low")?,

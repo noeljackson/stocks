@@ -59,6 +59,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
             post(reject_candidate),
         )
         .route("/api/discovery-pool", get(list_discovery_pool))
+        .route("/api/system-status", get(get_system_status))
         .route("/api/attention", get(list_attention_items))
         .route("/api/attention/{id}/dismiss", post(dismiss_attention_item))
         .route(
@@ -442,6 +443,233 @@ async fn list_discovery_pool(State(gw): State<Arc<Gateway>>) -> impl IntoRespons
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
+}
+
+/// One JSON snapshot of every key service for #92 Diagnostics panel.
+/// All queries hit indexed columns and return aggregates — designed to be
+/// polled every 30s without blowing up the DB.
+async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse {
+    use sqlx::Row;
+    let pool = &gw.store.pool;
+
+    // ---- ingest sources ----
+    let mut ingest = serde_json::Map::new();
+    // ingest_event-backed sources (fred, edgar, etc)
+    if let Ok(rows) = sqlx::query(
+        r#"SELECT source, MAX(ingested_at) AS last_at,
+                  COUNT(*) FILTER (WHERE ingested_at > now() - interval '24 hours') AS cnt_24h
+             FROM ingest_event GROUP BY source"#,
+    )
+    .fetch_all(pool)
+    .await
+    {
+        for r in rows {
+            let src: String = r.try_get("source").unwrap_or_default();
+            let last: Option<chrono::DateTime<chrono::Utc>> = r.try_get("last_at").ok();
+            let cnt: i64 = r.try_get("cnt_24h").unwrap_or(0);
+            ingest.insert(src, json!({"last_at": last, "count_24h": cnt}));
+        }
+    }
+    // news_article (own table, not via ingest_event)
+    if let Ok(r) = sqlx::query(
+        r#"SELECT MAX(ingested_at) AS last_at,
+                  COUNT(*) FILTER (WHERE ingested_at > now() - interval '24 hours') AS cnt_24h,
+                  COUNT(DISTINCT symbol) FILTER (WHERE ingested_at > now() - interval '24 hours') AS sym_24h
+             FROM news_article"#,
+    )
+    .fetch_one(pool)
+    .await
+    {
+        let last: Option<chrono::DateTime<chrono::Utc>> = r.try_get("last_at").ok();
+        let cnt: i64 = r.try_get("cnt_24h").unwrap_or(0);
+        let sym: i64 = r.try_get("sym_24h").unwrap_or(0);
+        ingest.insert(
+            "news".to_string(),
+            json!({"last_at": last, "count_24h": cnt, "symbols_24h": sym}),
+        );
+    }
+    // estimate_snapshot
+    if let Ok(r) = sqlx::query(
+        r#"SELECT MAX(snapshot_at) AS last_at,
+                  COUNT(*) FILTER (WHERE snapshot_at > now() - interval '24 hours') AS cnt_24h,
+                  COUNT(DISTINCT symbol) FILTER (WHERE snapshot_at > now() - interval '24 hours') AS sym_24h
+             FROM estimate_snapshot"#,
+    )
+    .fetch_one(pool)
+    .await
+    {
+        let last: Option<chrono::DateTime<chrono::Utc>> = r.try_get("last_at").ok();
+        let cnt: i64 = r.try_get("cnt_24h").unwrap_or(0);
+        let sym: i64 = r.try_get("sym_24h").unwrap_or(0);
+        ingest.insert(
+            "estimates".to_string(),
+            json!({"last_at": last, "count_24h": cnt, "symbols_24h": sym}),
+        );
+    }
+
+    // ---- discovery ----
+    let discovery = {
+        let last_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+            "SELECT MAX(proposed_at) FROM discovery_candidate",
+        )
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .flatten();
+        let open: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM discovery_candidate WHERE status = 'proposed'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        let by_signal: Vec<serde_json::Value> = sqlx::query(
+            r#"SELECT signal_name, COUNT(*) AS n
+                 FROM discovery_candidate
+                WHERE status = 'proposed'
+             GROUP BY signal_name ORDER BY n DESC"#,
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            json!({
+                "signal": r.try_get::<String, _>("signal_name").unwrap_or_default(),
+                "count": r.try_get::<i64, _>("n").unwrap_or(0),
+            })
+        })
+        .collect();
+        let pool_size: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM discovery_pool WHERE dropped_at IS NULL",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        json!({
+            "last_pass_at": last_at,
+            "open_candidates": open,
+            "by_signal": by_signal,
+            "pool_size": pool_size,
+        })
+    };
+
+    // ---- cognition (context + thesis) ----
+    let cognition = {
+        let ctx_24h: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM ticker_context WHERE created_at > now() - interval '24 hours'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        let ctx_total: i64 =
+            sqlx::query_scalar("SELECT COUNT(DISTINCT symbol) FROM ticker_context")
+                .fetch_one(pool)
+                .await
+                .unwrap_or(0);
+        let by_state: Vec<serde_json::Value> = sqlx::query(
+            r#"SELECT state, COUNT(*) AS n FROM thesis
+                GROUP BY state ORDER BY n DESC"#,
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            json!({
+                "state": r.try_get::<String, _>("state").unwrap_or_default(),
+                "count": r.try_get::<i64, _>("n").unwrap_or(0),
+            })
+        })
+        .collect();
+        json!({
+            "contexts_24h": ctx_24h,
+            "contexts_total_symbols": ctx_total,
+            "thesis_by_state": by_state,
+        })
+    };
+
+    // ---- attention queue ----
+    let attention = {
+        let open: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM attention_item WHERE status = 'open'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        let by_kind: Vec<serde_json::Value> = sqlx::query(
+            r#"SELECT kind, COUNT(*) AS n FROM attention_item
+                WHERE status = 'open' GROUP BY kind ORDER BY n DESC"#,
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            json!({
+                "kind": r.try_get::<String, _>("kind").unwrap_or_default(),
+                "count": r.try_get::<i64, _>("n").unwrap_or(0),
+            })
+        })
+        .collect();
+        json!({"open_items": open, "by_kind": by_kind})
+    };
+
+    // ---- llm audit ----
+    let llm = {
+        let calls_24h: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_invocation WHERE at > now() - interval '24 hours'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        let avg_ms: Option<f64> = sqlx::query_scalar(
+            "SELECT AVG(latency_ms)::float8 FROM llm_invocation
+              WHERE at > now() - interval '24 hours'",
+        )
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .flatten();
+        let by_prompt: Vec<serde_json::Value> = sqlx::query(
+            r#"SELECT prompt_name, COUNT(*) AS n,
+                      round(AVG(latency_ms))::int AS avg_ms,
+                      MAX(at) AS last_at
+                 FROM llm_invocation
+                WHERE at > now() - interval '24 hours'
+             GROUP BY prompt_name ORDER BY n DESC LIMIT 10"#,
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            let last: Option<chrono::DateTime<chrono::Utc>> = r.try_get("last_at").ok();
+            json!({
+                "prompt": r.try_get::<String, _>("prompt_name").unwrap_or_default(),
+                "count": r.try_get::<i64, _>("n").unwrap_or(0),
+                "avg_ms": r.try_get::<i32, _>("avg_ms").ok(),
+                "last_at": last,
+            })
+        })
+        .collect();
+        json!({
+            "calls_24h": calls_24h,
+            "avg_latency_ms": avg_ms.map(|v| v.round() as i64),
+            "by_prompt": by_prompt,
+        })
+    };
+
+    let body = json!({
+        "as_of": chrono::Utc::now(),
+        "ingest": serde_json::Value::Object(ingest),
+        "discovery": discovery,
+        "cognition": cognition,
+        "attention": attention,
+        "llm": llm,
+    });
+    (StatusCode::OK, Json(body)).into_response()
 }
 
 async fn list_attention_items(

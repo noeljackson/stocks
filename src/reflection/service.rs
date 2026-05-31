@@ -103,41 +103,48 @@ async fn record_prediction(pool: &PgPool, msg: jetstream::Message) -> Result<()>
         return Ok(());
     };
     let parsed_uuid = event.thesis_id.as_deref().and_then(|s| uuid::Uuid::parse_str(s).ok());
-    // Only set the FK when the thesis actually exists — otherwise persist
-    // the prediction with NULL thesis_id so smoke tests + replay don't lose
-    // data. Real-production actionables always reference an existing thesis.
-    let thesis_uuid = match parsed_uuid {
+    // Look up the thesis row when we have a parseable id. Source-of-truth for
+    // forecast + horizon is the thesis, not the actionable payload (which
+    // historically didn't carry forecast at all).
+    let (thesis_uuid, forecast_from_db, horizon_days) = match parsed_uuid {
         Some(u) => {
-            let exists: Option<uuid::Uuid> = sqlx::query_scalar(
-                "SELECT thesis_id FROM thesis WHERE thesis_id = $1",
-            )
-            .bind(u)
-            .fetch_optional(pool)
-            .await
-            .unwrap_or(None);
-            exists
+            let row = sqlx::query("SELECT forecast FROM thesis WHERE thesis_id = $1")
+                .bind(u)
+                .fetch_optional(pool)
+                .await
+                .unwrap_or(None);
+            match row {
+                Some(r) => {
+                    let f: serde_json::Value = r.try_get("forecast").unwrap_or(serde_json::Value::Null);
+                    let days = f.get("horizon_days").and_then(|v| v.as_i64());
+                    (Some(u), Some(f), days)
+                }
+                None => (None, None, None),
+            }
         }
-        None => None,
+        None => (None, None, None),
     };
-    // Default to an empty object so the NOT NULL constraint holds when the
-    // engine fires actionable without a forecast (it shouldn't, but be safe).
-    let forecast = event
-        .forecast
+    // Prefer DB forecast (authoritative); fall back to event-supplied forecast
+    // for smoke tests / replay that publish a synthetic actionable.
+    let forecast = forecast_from_db
+        .or(event.forecast)
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+    let horizon_at = horizon_days.map(|d| Utc::now() + chrono::Duration::days(d));
     if let Err(e) = sqlx::query(
-        r#"INSERT INTO prediction (thesis_id, symbol, kind, claim)
-           VALUES ($1, $2, 'direction', $3)"#,
+        r#"INSERT INTO prediction (thesis_id, symbol, kind, claim, horizon_at)
+           VALUES ($1, $2, 'direction', $3, $4)"#,
     )
     .bind(thesis_uuid)
     .bind(event.symbol.as_deref())
     .bind(&forecast)
+    .bind(horizon_at)
     .execute(pool)
     .await
     {
         warn!(error = %e, thesis = ?event.thesis_id, "insert prediction failed");
         return Err(e).context("insert prediction");
     }
-    info!(thesis_id = ?event.thesis_id, "prediction recorded");
+    info!(thesis_id = ?event.thesis_id, horizon_at = ?horizon_at, "prediction recorded");
     Ok(())
 }
 

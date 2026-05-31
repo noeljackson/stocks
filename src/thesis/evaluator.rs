@@ -314,10 +314,13 @@ async fn update_condition_status(
     Ok(())
 }
 
-const SQL_EVAL_CONVICTION: &str = r#"UPDATE thesis SET conviction_conditions = jsonb_set(jsonb_set(jsonb_set(COALESCE(conviction_conditions,'[]'::jsonb), ARRAY[$1,'status'], $2, false), ARRAY[$1,'last_observed_value'], $3, true), ARRAY[$1,'last_checked_at'], $4, true) WHERE thesis_id=$5"#;
-const SQL_EVAL_TRIGGER: &str = r#"UPDATE thesis SET trigger_conditions = jsonb_set(jsonb_set(jsonb_set(COALESCE(trigger_conditions,'[]'::jsonb), ARRAY[$1,'status'], $2, false), ARRAY[$1,'last_observed_value'], $3, true), ARRAY[$1,'last_checked_at'], $4, true) WHERE thesis_id=$5"#;
-const SQL_EVAL_INVALIDATION: &str = r#"UPDATE thesis SET invalidation_conditions = jsonb_set(jsonb_set(jsonb_set(COALESCE(invalidation_conditions,'[]'::jsonb), ARRAY[$1,'status'], $2, false), ARRAY[$1,'last_observed_value'], $3, true), ARRAY[$1,'last_checked_at'], $4, true) WHERE thesis_id=$5"#;
-const SQL_EVAL_FULFILLMENT: &str = r#"UPDATE thesis SET fulfillment_conditions = jsonb_set(jsonb_set(jsonb_set(COALESCE(fulfillment_conditions,'[]'::jsonb), ARRAY[$1,'status'], $2, false), ARRAY[$1,'last_observed_value'], $3, true), ARRAY[$1,'last_checked_at'], $4, true) WHERE thesis_id=$5"#;
+// create_if_missing = true on `status` too — LLM-drafted conditions don't
+// have a `status` key until the evaluator writes one. Earlier this was
+// false, which silently turned the status update into a no-op (#60).
+const SQL_EVAL_CONVICTION: &str = r#"UPDATE thesis SET conviction_conditions = jsonb_set(jsonb_set(jsonb_set(COALESCE(conviction_conditions,'[]'::jsonb), ARRAY[$1,'status'], $2, true), ARRAY[$1,'last_observed_value'], $3, true), ARRAY[$1,'last_checked_at'], $4, true) WHERE thesis_id=$5"#;
+const SQL_EVAL_TRIGGER: &str = r#"UPDATE thesis SET trigger_conditions = jsonb_set(jsonb_set(jsonb_set(COALESCE(trigger_conditions,'[]'::jsonb), ARRAY[$1,'status'], $2, true), ARRAY[$1,'last_observed_value'], $3, true), ARRAY[$1,'last_checked_at'], $4, true) WHERE thesis_id=$5"#;
+const SQL_EVAL_INVALIDATION: &str = r#"UPDATE thesis SET invalidation_conditions = jsonb_set(jsonb_set(jsonb_set(COALESCE(invalidation_conditions,'[]'::jsonb), ARRAY[$1,'status'], $2, true), ARRAY[$1,'last_observed_value'], $3, true), ARRAY[$1,'last_checked_at'], $4, true) WHERE thesis_id=$5"#;
+const SQL_EVAL_FULFILLMENT: &str = r#"UPDATE thesis SET fulfillment_conditions = jsonb_set(jsonb_set(jsonb_set(COALESCE(fulfillment_conditions,'[]'::jsonb), ARRAY[$1,'status'], $2, true), ARRAY[$1,'last_observed_value'], $3, true), ARRAY[$1,'last_checked_at'], $4, true) WHERE thesis_id=$5"#;
 
 /// Long-running service entry point.
 pub async fn run(pool: PgPool, interval: std::time::Duration) -> Result<()> {

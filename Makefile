@@ -231,6 +231,9 @@ classify-candidates: ## Classify all pending discovery candidates → proposed w
 classify-candidate: ## Classify one pending candidate (CANDIDATE_ID=N make classify-candidate)
 	cd py && $(RUN) .venv/bin/python -m stocks.classify --candidate-id $(CANDIDATE_ID)
 
+smoketest: ## Walk one ticker through the whole pipeline; exit non-zero on first stage that fails (#60)
+	./scripts/smoketest.sh
+
 # Legacy alias (will be removed when context_maintainer becomes a long-running service).
 run-context: refresh-context ## Alias of refresh-context (deprecated)
 

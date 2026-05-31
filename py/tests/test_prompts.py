@@ -70,3 +70,113 @@ def test_python_and_rust_hashes_match():
     loaded = load(repo_root / "prompts").get("echo")
     assert loaded is not None
     assert loaded.hash == expected
+
+
+# ---------- _extract_json + invoke_typed (#28) ----------
+
+
+def test_extract_json_passthrough_clean():
+    from stocks.prompts import _extract_json
+
+    assert _extract_json('{"a":1}') == '{"a":1}'
+
+
+def test_extract_json_strips_fences():
+    from stocks.prompts import _extract_json
+
+    assert _extract_json('```json\n{"a":1}\n```') == '{"a":1}'
+    assert _extract_json('```\n{"a":1}\n```') == '{"a":1}'
+
+
+def test_extract_json_finds_object_in_prose():
+    from stocks.prompts import _extract_json
+
+    s = 'Sure: {"a":1,"b":2} done.'
+    assert _extract_json(s) == '{"a":1,"b":2}'
+
+
+def test_extract_json_handles_arrays():
+    from stocks.prompts import _extract_json
+
+    assert _extract_json('```json\n[1,2,3]\n```') == '[1,2,3]'
+
+
+class _ScriptedProvider:
+    """Test double — returns scripted responses in order."""
+
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = list(responses)
+
+    async def complete(self, _req):  # noqa: ANN001
+        from stocks.llm import Response
+
+        next_body = self.responses.pop(0)
+        return Response(content=next_body, model="scripted")
+
+
+@pytest.mark.asyncio
+async def test_invoke_typed_succeeds_first_try():
+    import pydantic
+
+    from stocks.prompts import Prompt, invoke_typed
+
+    class Demo(pydantic.BaseModel):
+        n: int
+        s: str
+
+    p = Prompt(name="demo", hash="h", template="demo")
+    out = await invoke_typed(
+        provider=_ScriptedProvider(['{"n":42,"s":"ok"}']),
+        recorder=None,
+        prompt=p,
+        vars={},
+        user_message="go",
+        provider_name="scripted",
+        model_cls=Demo,
+    )
+    assert out == Demo(n=42, s="ok")
+
+
+@pytest.mark.asyncio
+async def test_invoke_typed_retries_then_succeeds():
+    import pydantic
+
+    from stocks.prompts import Prompt, invoke_typed
+
+    class Demo(pydantic.BaseModel):
+        n: int
+
+    p = Prompt(name="demo", hash="h", template="demo")
+    out = await invoke_typed(
+        provider=_ScriptedProvider(["not json", '{"n":7}']),
+        recorder=None,
+        prompt=p,
+        vars={},
+        user_message="go",
+        provider_name="scripted",
+        model_cls=Demo,
+    )
+    assert out.n == 7
+
+
+@pytest.mark.asyncio
+async def test_invoke_typed_gives_up_after_max_retries():
+    import pydantic
+
+    from stocks.prompts import Prompt, invoke_typed
+
+    class Demo(pydantic.BaseModel):
+        n: int
+
+    p = Prompt(name="demo", hash="h", template="demo")
+    with pytest.raises(RuntimeError, match="schema parse failed"):
+        await invoke_typed(
+            provider=_ScriptedProvider(["x", "y", "z"]),
+            recorder=None,
+            prompt=p,
+            vars={},
+            user_message="go",
+            provider_name="scripted",
+            model_cls=Demo,
+            max_retries=2,  # → 3 total attempts → all fail
+        )

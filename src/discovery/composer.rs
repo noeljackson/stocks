@@ -38,6 +38,7 @@ impl DiscoveryInterpretationKind {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct PriceExtension {
     pub pct_above_sma: f64,
+    pub sma_days: usize,
     pub rsi14: f64,
     pub pct_from_high: f64,
     pub raw: f64,
@@ -74,6 +75,7 @@ impl PriceExtension {
         let raw = price_extension_raw(pct_above_sma, rsi14, pct_from_high);
         Some(Self {
             pct_above_sma,
+            sma_days: sma_n,
             rsi14,
             pct_from_high,
             raw,
@@ -189,8 +191,8 @@ pub fn compose(
     }
     if let Some(e) = extension {
         parts.push(format!(
-            "extension {:.0}/100, RSI {:.0}, {:+.1}% vs available-window high, {:+.1}% vs SMA",
-            e.raw, e.rsi14, e.pct_from_high, e.pct_above_sma
+            "extension {:.0}/100, RSI {:.0}, {:+.1}% vs available-window high, {:+.1}% vs {}-day SMA",
+            e.raw, e.rsi14, e.pct_from_high, e.pct_above_sma, e.sma_days
         ));
     }
     if ctx.has_actionable_thesis {
@@ -273,6 +275,7 @@ mod tests {
     fn volume_spike_at_high_extension_is_extended_momentum() {
         let ext = PriceExtension {
             pct_above_sma: 28.0,
+            sma_days: 200,
             rsi14: 77.0,
             pct_from_high: 0.0,
             raw: 90.0,
@@ -293,6 +296,7 @@ mod tests {
     fn volume_plus_tight_breakout_is_breakout_confirmation() {
         let ext = PriceExtension {
             pct_above_sma: 6.0,
+            sma_days: 200,
             rsi14: 58.0,
             pct_from_high: -8.0,
             raw: 45.0,
@@ -312,6 +316,7 @@ mod tests {
     fn high_extension_plus_positive_news_is_consensus_arrival() {
         let ext = PriceExtension {
             pct_above_sma: 31.0,
+            sma_days: 200,
             rsi14: 81.0,
             pct_from_high: -0.5,
             raw: 95.0,
@@ -331,6 +336,7 @@ mod tests {
     fn negative_news_at_high_extension_is_possible_exhaustion() {
         let ext = PriceExtension {
             pct_above_sma: 40.0,
+            sma_days: 200,
             rsi14: 72.0,
             pct_from_high: -3.0,
             raw: 78.0,
@@ -350,6 +356,7 @@ mod tests {
     fn actionable_thesis_routes_to_existing_thesis_trigger() {
         let ext = PriceExtension {
             pct_above_sma: 10.0,
+            sma_days: 200,
             rsi14: 62.0,
             pct_from_high: -5.0,
             raw: 55.0,
@@ -371,6 +378,7 @@ mod tests {
     fn weak_volume_only_signal_is_suppressed() {
         let ext = PriceExtension {
             pct_above_sma: 4.0,
+            sma_days: 200,
             rsi14: 54.0,
             pct_from_high: -20.0,
             raw: 22.0,

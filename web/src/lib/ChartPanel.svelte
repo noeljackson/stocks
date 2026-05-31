@@ -7,12 +7,14 @@
     createChart,
     CandlestickSeries,
     HistogramSeries,
+    LineSeries,
     createSeriesMarkers,
     type IChartApi,
     type ISeriesApi,
     type ISeriesMarkersPluginApi,
     type CandlestickData,
     type HistogramData,
+    type LineData,
     type UTCTimestamp,
     type Time,
     type SeriesMarker,
@@ -24,14 +26,22 @@
 
   type Candle = { time: string; open: number; high: number; low: number; close: number; volume: number };
   type SymbolEvent = { kind: string; time: string; thesis_id: string; label: string; detail: string };
-  type Range = "1M" | "3M" | "6M" | "YTD" | "1Y" | "ALL";
-  const RANGES: Range[] = ["1M", "3M", "6M", "YTD", "1Y", "ALL"];
-  let range = $state<Range>("6M");
+  type Range = "200D" | "1Y" | "2Y" | "ALL";
+  const RANGES: Range[] = ["200D", "1Y", "2Y", "ALL"];
+  const SMA_WINDOWS = [20, 50, 100, 200] as const;
+  const SMA_COLORS: Record<(typeof SMA_WINDOWS)[number], string> = {
+    20: "#f9e2af",
+    50: "#89b4fa",
+    100: "#cba6f7",
+    200: "#94e2d5",
+  };
+  let range = $state<Range>("1Y");
 
   let container: HTMLDivElement | null = null;
   let chart: IChartApi | null = null;
   let priceSeries: ISeriesApi<"Candlestick"> | null = null;
   let volSeries: ISeriesApi<"Histogram"> | null = null;
+  const smaSeries = new Map<number, ISeriesApi<"Line">>();
   let markersApi: ISeriesMarkersPluginApi<Time> | null = null;
   let candles = $state<Candle[] | null>(null);
   let events = $state<SymbolEvent[]>([]);
@@ -104,6 +114,23 @@
     markersApi.setMarkers([...dedup.values()].sort((a, b) => (a.time as number) - (b.time as number)));
   }
 
+  function smaData(window: number): LineData[] {
+    if (!candles || candles.length < window) return [];
+    const out: LineData[] = [];
+    let rolling = 0;
+    for (let i = 0; i < candles.length; i += 1) {
+      rolling += candles[i].close;
+      if (i >= window) rolling -= candles[i - window].close;
+      if (i >= window - 1) {
+        out.push({
+          time: toUtc(candles[i].time),
+          value: rolling / window,
+        });
+      }
+    }
+    return out;
+  }
+
   function ensureChart() {
     if (!container || chart) return;
     chart = createChart(container, {
@@ -129,6 +156,17 @@
       scaleMargins: { top: 0.85, bottom: 0 },
       borderColor: "#2a3548",
     });
+    for (const window of SMA_WINDOWS) {
+      const series = chart.addSeries(LineSeries, {
+        color: SMA_COLORS[window],
+        lineWidth: window === 200 ? 2 : 1,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        crosshairMarkerVisible: false,
+        title: `SMA ${window}`,
+      });
+      smaSeries.set(window, series);
+    }
     markersApi = createSeriesMarkers(priceSeries, []);
   }
 
@@ -146,6 +184,9 @@
     }));
     priceSeries.setData(cs);
     volSeries.setData(vs);
+    for (const window of SMA_WINDOWS) {
+      smaSeries.get(window)?.setData(smaData(window));
+    }
     applyMarkers();
     chart.timeScale().fitContent();
   }
@@ -160,6 +201,7 @@
       chart = null;
       priceSeries = null;
       volSeries = null;
+      smaSeries.clear();
       markersApi = null;
     };
   });
@@ -180,6 +222,15 @@
     {/if}
     {#if events.length > 0}
       <span class="meta"><span class="muted">{events.length} events</span></span>
+    {/if}
+    {#if candles && candles.length >= 20}
+      <span class="sma-legend" aria-label="SMA ribbon">
+        {#each SMA_WINDOWS as window}
+          {#if candles.length >= window}
+            <span class="sma-key" style={`--sma-color: ${SMA_COLORS[window]}`}>SMA {window}</span>
+          {/if}
+        {/each}
+      </span>
     {/if}
     <span class="range-picker">
       {#each RANGES as r}
@@ -217,6 +268,18 @@
   }
   .symbol-label { font-size: .95rem; }
   .meta { display: flex; gap: .3rem; align-items: baseline; }
+  .sma-legend {
+    display: flex; gap: .45rem; align-items: baseline; flex-wrap: wrap;
+    font-size: .72rem;
+  }
+  .sma-key {
+    color: #bac2de;
+    display: inline-flex; gap: .25rem; align-items: center;
+  }
+  .sma-key::before {
+    content: ""; width: .9rem; height: 2px; background: var(--sma-color);
+    display: inline-block; border-radius: 2px;
+  }
   .range-picker { margin-left: auto; display: flex; gap: .15rem; }
   .range-picker button {
     background: #11161f; color: #6c7693; border: 1px solid #1f2733;

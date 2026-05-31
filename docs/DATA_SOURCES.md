@@ -54,10 +54,12 @@ This is the SPEC §4 "#1 leading signal for the edge" gap (#18).
 
 | Data | Why | Vendor | Tier / cost | Endpoint | Status |
 |---|---|---|---|---|---|
-| Current consensus EPS/revenue (per fiscal period, forward 5+ yrs) | Baseline for revision detection; `numAnalystsEps` tells us coverage depth | **FMP** | Starter | `/stable/analyst-estimates?symbol=&period=annual` returns revenueLow/High/Avg, ebitda/ebit, netIncome, epsAvg/High/Low, numAnalystsRevenue, numAnalystsEps | not wired |
-| **Estimate revision time-series** (the actual signal) | "Earlier than the crowd" detection — when consensus is being revised up/down before retail sees it | FMP via daily snapshot + diff against prior snapshot (we build this layer) | Starter | snapshot `/stable/analyst-estimates` daily → `estimate_snapshot` table → diff → `estimate_revision` events | not wired (#18) |
+| Current consensus EPS/revenue (per fiscal period, forward 5+ yrs) | Baseline for revision detection; `numAnalystsEps` tells us coverage depth | **FMP** | Starter | `/stable/analyst-estimates?symbol=&period=annual` returns revenueLow/High/Avg, ebitda/ebit, netIncome, epsAvg/High/Low, numAnalystsRevenue, numAnalystsEps | wired — `src/ingest/fmp_estimates.rs` |
+| **Estimate revision time-series** (the actual signal) | "Earlier than the crowd" detection — when consensus is being revised up/down before retail sees it | FMP via daily snapshot + diff against prior snapshot (we build this layer) | Starter | snapshot `/stable/analyst-estimates` daily → `estimate_snapshot` table → diff → `estimate_revision` events | wired — `src/ingest/fmp_estimates_service.rs` |
 | Per-firm rating events (upgrade/downgrade with `gradingCompany`, `newGrade`, `previousGrade`, `priceWhenPosted`) | Discrete catalyst events for discovery + thesis flags. The actual "revisions" data Bloomberg/Refinitiv charge 5-figures/yr for, here for free. | **FMP** | Starter | `/stable/grades-latest-news?limit=` returns global event feed; filter to our universe client-side | not wired (#18) |
 | Aggregate buy/hold/sell counts (monthly buckets per symbol) | Lower-resolution drift sanity check | FMP | Starter | `/stable/grades-historical?symbol=` returns monthly StrongBuy/Buy/Hold/Sell counts | not wired |
+| Analyst price target consensus | Consensus artifact: target high/low/median/consensus helps separate "outside consensus" from "already accepted" | FMP | Starter — verify live key | `/stable/price-target-consensus?symbol=` | not wired (#116) |
+| Analyst recommendations / opinion mix | Buy/hold/sell mix for "what does sell-side already believe?" context | FMP | Starter — verify live key | recommendation endpoints / stock recommendations | not wired (#116) |
 
 ## 4. News + per-article sentiment
 
@@ -67,9 +69,9 @@ sources (RSS, Twitter, future paid feeds) plug into the same pipeline.
 
 | Data | Why | Vendor | Tier / cost | Endpoint | Status |
 |---|---|---|---|---|---|
-| Articles with per-ticker sentiment (pre-scored) | Discovery (catalyst signal), context maintainer narrative refresh, consensus mainstream_coverage component | **Massive** | Stocks Starter $29 (already paid) | `/v2/reference/news?ticker=&order=desc` returns `insights[].sentiment` ∈ {positive, neutral, negative} + `sentiment_reasoning` | not wired (#19) |
-| Additional articles (no upstream sentiment) | Wider coverage; FMP often surfaces articles Massive doesn't (Motley Fool, niche IR sites) | **FMP** | Starter | `/stable/news/stock?symbols=&limit=` returns title/text/publisher/url/publishedDate | not wired (#19) |
-| **Universal sentiment classifier** | Scores any article without an upstream sentiment score; lets future news sources plug in without re-engineering | **z.ai** (Anthropic-compat) via `src/sentiment/` module + `prompts/score-sentiment.md` | per-token (~$0.001/article) | n/a — our own module | not wired (#19, dep of news ingest) |
+| Articles with per-ticker sentiment (pre-scored) | Discovery (catalyst signal), context maintainer narrative refresh, consensus mainstream_coverage component | **Massive** | Stocks Starter $29 (already paid) | `/v2/reference/news?ticker=&order=desc` returns `insights[].sentiment` ∈ {positive, neutral, negative} + `sentiment_reasoning` | wired — `src/ingest/massive_news.rs` |
+| Additional articles (no upstream sentiment) | Wider coverage; FMP often surfaces articles Massive doesn't (Motley Fool, niche IR sites) | **FMP** | Starter | `/stable/news/stock?symbols=&limit=` returns title/text/publisher/url/publishedDate | wired — `src/ingest/fmp_news.rs` |
+| **Universal sentiment classifier** | Scores any article without an upstream sentiment score; lets future news sources plug in without re-engineering | **z.ai** (Anthropic-compat) via `src/sentiment/` module + `prompts/score-sentiment.md` | per-token (~$0.001/article) | n/a — our own module | wired — `src/sentiment/` |
 | Ticker-level intraday news sentiment aggregation (paid uplift) | When Massive's hourly news isn't fast enough | Marketaux Pro | $25–99/mo | `/v1/news/all?entities=&sentiment_gte=&sentiment_lte=` | not wired — evaluate only if free+FMP+Massive set isn't enough |
 
 ## 5. Crowd sentiment

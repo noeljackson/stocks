@@ -105,7 +105,7 @@ Then it composes them with price extension and symbol state:
 ```text
 raw hits
 + distance from available-window high
-+ distance from SMA
++ distance from 200-day SMA, or the longest available SMA when fewer than 200 daily bars exist
 + RSI
 + open/actionable thesis state
 + watchlist membership

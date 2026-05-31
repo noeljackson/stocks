@@ -27,8 +27,31 @@
     return Object.keys(o ?? {}).length === 0;
   }
 
-  function pretty(o: unknown): string {
-    return JSON.stringify(o, null, 2);
+  function titleize(key: string): string {
+    return key
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  function entries(o: Record<string, unknown>): [string, unknown][] {
+    return Object.entries(o ?? {}).filter(([, v]) => v !== null && v !== undefined && v !== "");
+  }
+
+  function isRecord(v: unknown): v is Record<string, unknown> {
+    return !!v && typeof v === "object" && !Array.isArray(v);
+  }
+
+  function isPrimitive(v: unknown): boolean {
+    return ["string", "number", "boolean"].includes(typeof v);
+  }
+
+  function valueText(v: unknown): string {
+    if (typeof v === "number") {
+      return Math.abs(v) >= 1_000_000 ? v.toLocaleString() : String(v);
+    }
+    if (typeof v === "boolean") return v ? "yes" : "no";
+    if (typeof v === "string") return v;
+    return JSON.stringify(v);
   }
 
   async function synthesize() {
@@ -80,7 +103,32 @@
           {#if isEmpty(ctx.structural)}
             <p class="muted">empty</p>
           {:else}
-            <pre>{pretty(ctx.structural)}</pre>
+            <div class="human-band">
+              {#if typeof ctx.structural.summary === "string"}
+                <p class="summary">{ctx.structural.summary}</p>
+              {/if}
+              {#each entries(ctx.structural).filter(([k]) => k !== "summary") as [key, value] (key)}
+                <section class="ctx-section">
+                  <h5>{titleize(key)}</h5>
+                  {#if Array.isArray(value)}
+                    <ul>
+                      {#each value as item}
+                        <li>{isPrimitive(item) ? valueText(item) : JSON.stringify(item)}</li>
+                      {/each}
+                    </ul>
+                  {:else if isRecord(value)}
+                    <dl>
+                      {#each entries(value) as [k, v] (k)}
+                        <dt>{titleize(k)}</dt>
+                        <dd>{isPrimitive(v) ? valueText(v) : JSON.stringify(v)}</dd>
+                      {/each}
+                    </dl>
+                  {:else}
+                    <p>{valueText(value)}</p>
+                  {/if}
+                </section>
+              {/each}
+            </div>
           {/if}
         </div>
       {/if}
@@ -100,7 +148,44 @@
           {#if isEmpty(ctx.narrative)}
             <p class="muted">empty</p>
           {:else}
-            <pre>{pretty(ctx.narrative)}</pre>
+            <div class="human-band">
+              {#if typeof ctx.narrative.summary === "string"}
+                <p class="summary">{ctx.narrative.summary}</p>
+              {/if}
+              {#each entries(ctx.narrative).filter(([k]) => k !== "summary") as [key, value] (key)}
+                <section class="ctx-section">
+                  <h5>{titleize(key)}</h5>
+                  {#if Array.isArray(value)}
+                    <ul>
+                      {#each value as item}
+                        <li>
+                          {#if isRecord(item)}
+                            {#if item.what || item.date}
+                              <strong>{valueText(item.what ?? "Catalyst")}</strong>
+                              {#if item.date}<span class="muted"> · {valueText(item.date)}</span>{/if}
+                              {#if item.matters_because}<p>{valueText(item.matters_because)}</p>{/if}
+                            {:else}
+                              {JSON.stringify(item)}
+                            {/if}
+                          {:else}
+                            {valueText(item)}
+                          {/if}
+                        </li>
+                      {/each}
+                    </ul>
+                  {:else if isRecord(value)}
+                    <dl>
+                      {#each entries(value) as [k, v] (k)}
+                        <dt>{titleize(k)}</dt>
+                        <dd>{isPrimitive(v) ? valueText(v) : JSON.stringify(v)}</dd>
+                      {/each}
+                    </dl>
+                  {:else}
+                    <p>{valueText(value)}</p>
+                  {/if}
+                </section>
+              {/each}
+            </div>
           {/if}
         </div>
       {/if}
@@ -125,7 +210,14 @@
               pipeline once price ingestion lands (#17).
             </p>
           {:else}
-            <pre>{pretty(ctx.market)}</pre>
+            <div class="human-band">
+              {#each entries(ctx.market) as [key, value] (key)}
+                <section class="ctx-section">
+                  <h5>{titleize(key)}</h5>
+                  <p>{isPrimitive(value) ? valueText(value) : JSON.stringify(value)}</p>
+                </section>
+              {/each}
+            </div>
           {/if}
         </div>
       {/if}
@@ -159,10 +251,25 @@
     border: 1px solid #1f2733; border-top: 0;
     margin-top: -0.25rem; margin-bottom: 0.25rem;
   }
-  pre {
-    margin: 0; font-size: 0.75rem; line-height: 1.45; color: #cdd6f4;
-    white-space: pre-wrap; word-break: break-word;
+  .human-band { display: flex; flex-direction: column; gap: 0.65rem; }
+  .summary {
+    margin: 0; color: #d7def7; line-height: 1.45;
+    padding-bottom: 0.55rem; border-bottom: 1px solid #1f2733;
   }
+  .ctx-section { display: flex; flex-direction: column; gap: 0.3rem; }
+  .ctx-section h5 {
+    margin: 0; color: #89b4fa; font-size: 0.76rem;
+  }
+  .ctx-section p { margin: 0; line-height: 1.45; }
+  .ctx-section ul { margin: 0; padding-left: 1.05rem; display: flex; flex-direction: column; gap: 0.35rem; }
+  .ctx-section li { line-height: 1.4; }
+  .ctx-section li p { margin-top: 0.15rem; color: #a6adc8; }
+  .ctx-section dl {
+    display: grid; grid-template-columns: minmax(8rem, 35%) 1fr;
+    gap: 0.25rem 0.75rem; margin: 0;
+  }
+  .ctx-section dt { color: #6c7086; }
+  .ctx-section dd { margin: 0; line-height: 1.4; overflow-wrap: anywhere; }
   .muted { color: #6c7086; font-size: 0.8rem; }
   .muted-chip {
     display: inline-block; padding: 0.05rem 0.4rem; border-radius: 4px;

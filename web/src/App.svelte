@@ -131,6 +131,15 @@
     return signal.replace(/_/g, " ");
   }
 
+  function rawSignals(it: AttentionItem): string[] {
+    const raw = it.source_ref?.raw_signals;
+    return Array.isArray(raw) ? raw.filter((s): s is string => typeof s === "string") : [];
+  }
+
+  function displayReason(text: string): string {
+    return text.replace(/vs SMA\b/g, "vs 200-day SMA");
+  }
+
   // Pretty short relative time ("2m", "3h", "1d", or absolute "3:17 PM").
   function relativeTime(iso: string): string {
     const t = new Date(iso).getTime();
@@ -709,8 +718,8 @@
                 {@const poolMeta = g.symbol ? pool.find((p) => p.symbol === g.symbol) : undefined}
                 {@const tierLabel = ticker ? `T${ticker.tier}` : (poolMeta ? "pool" : "")}
                 {@const reasonMap = (() => {
-                  // Dedupe bullets by signal_name (a ticker can fire the same
-                  // signal repeatedly across discovery passes — show once).
+                  // Dedupe bullets by composed interpretation. Raw detector
+                  // names are kept in source_ref.raw_signals for audit.
                   const seen = new Map<string, string>();
                   for (const it of g.items) {
                     let key: string, text: string;
@@ -719,10 +728,10 @@
                       const sig = pc?.signal_name
                         ?? (it.title.match(/via (\w+)$/)?.[1])
                         ?? "signal";
-                      key = sig;
-                      text = pc ? reasonFor(pc.signal_name, pc.signal_value) : (it.reason ?? sig);
+                      key = `${it.source_ref?.interpretation_kind ?? sig}`;
+                      text = displayReason(it.reason ?? pc?.reasoning ?? reasonFor(sig, pc?.signal_value ?? null));
                     } else {
-                      text = it.reason ?? it.title;
+                      text = displayReason(it.reason ?? it.title);
                       key = text;
                     }
                     if (!seen.has(key)) seen.set(key, text);
@@ -730,7 +739,8 @@
                   return seen;
                 })()}
                 {@const reasons = [...reasonMap.values()]}
-                {@const distinctSignals = reasonMap.size}
+                {@const interpretations = reasonMap.size}
+                {@const rawInputCount = new Set(g.items.flatMap(rawSignals)).size}
                 <li class="att-card sev-{g.severity}">
                   <div class="att-row1">
                     {#if g.symbol}
@@ -744,7 +754,10 @@
                   </div>
                   <div class="att-status muted">
                     {#if g.kind === "candidate_review"}
-                      candidate · {distinctSignals} signal{distinctSignals === 1 ? "" : "s"}
+                      discovery review · {interpretations} interpretation{interpretations === 1 ? "" : "s"}
+                      {#if rawInputCount > 0}
+                        · {rawInputCount} raw input{rawInputCount === 1 ? "" : "s"}
+                      {/if}
                     {:else if g.kind === "thesis_actionable"}
                       thesis ready
                     {:else if g.kind === "risk_review"}
@@ -864,7 +877,7 @@
                     {#if c.signal_value !== null}<span class="muted">value {c.signal_value.toFixed(3)}</span>{/if}
                     <span class="muted">{shortTs(c.proposed_at)}</span>
                   </div>
-                  {#if c.reasoning}<p class="muted disc-reasoning">{c.reasoning}</p>{/if}
+                  {#if c.reasoning}<p class="muted disc-reasoning">{displayReason(c.reasoning)}</p>{/if}
                   {#if c.proposed_lists.length > 0}
                     <div class="disc-lists">
                       {#each c.proposed_lists as p}

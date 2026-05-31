@@ -17,6 +17,7 @@ resources:
   - staler.yaml
   - evaluator.yaml
   - consensus.yaml
+  - reflection.yaml
   - context-maintainer.yaml
 
 labels:

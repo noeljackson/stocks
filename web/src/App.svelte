@@ -3,6 +3,7 @@
   import {
     ackAlert,
     fetchAlerts,
+    fetchCalibration,
     fetchRegime,
     fetchTheses,
     fetchTickerContext,
@@ -10,6 +11,7 @@
     postDecision,
     subscribe,
     type Alert,
+    type Calibration,
     type MarketState,
     type StreamEvent,
     type ThesisDetail,
@@ -23,6 +25,7 @@
   let view = $state<View>("feed");
 
   let regime = $state<MarketState | null>(null);
+  let calibration = $state<Calibration | null>(null);
   let tickers = $state<Ticker[]>([]);
   let alerts = $state<Alert[]>([]);
   let live = $state<StreamEvent[]>([]);
@@ -86,6 +89,7 @@
     fetchAlerts({ unacked: !showAcked }).then((a) => (alerts = a)).catch((e) => (error = String(e)));
     fetchRegime().then((r) => (regime = r)).catch((e) => (error = String(e)));
     fetchTickers().then((t) => (tickers = t)).catch((e) => (error = String(e)));
+    fetchCalibration().then((c) => (calibration = c)).catch(() => {});
   }
 
   // React when the user toggles showAcked.
@@ -171,6 +175,20 @@
       </span>
     {/if}
   </div>
+  {#if calibration}
+    <div class="calibration" title="Forward-only validation (SPEC §9). Brier=0 is perfect calibration; lead-time positive means alert preceded consensus.">
+      <span class="muted">calibration</span>
+      <strong>{calibration.outcomes_scored}</strong>/<span class="muted">{calibration.predictions_total}</span>
+      {#if calibration.mean_brier !== null}
+        <span class="muted">brier</span>
+        <strong>{calibration.mean_brier.toFixed(3)}</strong>
+      {/if}
+      {#if calibration.median_lead_time_days !== null}
+        <span class="muted">median lead</span>
+        <strong>{calibration.median_lead_time_days.toFixed(1)}d</strong>
+      {/if}
+    </div>
+  {/if}
   <span class="status" class:on={connected}>{connected ? "● live" : "○ offline"}</span>
 </header>
 
@@ -365,6 +383,12 @@
   .regime .dot {
     width: 0.6rem; height: 0.6rem; border-radius: 50%; display: inline-block;
   }
+  .calibration {
+    display: flex; align-items: baseline; gap: 0.35rem; font-size: 0.85rem;
+    padding: 0.25rem 0.6rem; background: rgba(180, 190, 254, 0.05);
+    border: 1px solid #1f2733; border-radius: 4px;
+  }
+  .calibration strong { color: #cdd6f4; }
   .regime .capitulation {
     background: rgba(243, 139, 168, 0.2); color: rgb(243, 139, 168);
     padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.7rem; letter-spacing: 0.05em;

@@ -127,6 +127,13 @@ services:
       cargo watch -w src -w Cargo.toml
         -x 'run --bin consensus'
 
+  reflection:
+    <<: *rust-common
+    container_name: stocks-reflection
+    command: >-
+      cargo watch -w src -w Cargo.toml
+        -x 'run --bin reflection'
+
   # Vite dev server with HMR. Browser hits :5173 directly during dev; vite's
   # proxy forwards /api/* and /healthz + /api/stream (SSE) to the gateway
   # container. Production serves the SPA from the rust gateway via rust-embed.

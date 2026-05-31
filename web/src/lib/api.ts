@@ -141,6 +141,20 @@ export async function fetchTickerContext(symbol: string): Promise<TickerContext 
   return (await r.json()) as TickerContext;
 }
 
+export interface Calibration {
+  predictions_total: number;
+  outcomes_scored: number;
+  mean_brier: number | null;
+  mean_lead_time_days: number | null;
+  median_lead_time_days: number | null;
+}
+
+export async function fetchCalibration(days = 90): Promise<Calibration> {
+  const r = await fetch(`/api/calibration?days=${days}`);
+  if (!r.ok) throw new Error(`calibration ${r.status}`);
+  return (await r.json()) as Calibration;
+}
+
 /** subscribe opens the SSE feed; returns a cleanup function. */
 export function subscribe(
   onEvent: (e: StreamEvent) => void,

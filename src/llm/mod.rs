@@ -99,7 +99,7 @@ pub fn new(cfg: &LlmTransport) -> Box<dyn Provider> {
 }
 
 /// Auto-detect logic, exposed for testing.
-pub(crate) fn detect(cfg: &LlmTransport) -> &'static str {
+pub fn detect(cfg: &LlmTransport) -> &'static str {
     if !cfg.anthropic_api_key.is_empty() {
         "anthropic"
     } else if !cfg.openai_base_url.is_empty() && !cfg.openai_api_key.is_empty() {

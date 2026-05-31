@@ -8,8 +8,11 @@ pub mod edgar;
 pub mod fmp;
 pub mod fmp_estimates;
 pub mod fmp_estimates_service;
+pub mod fmp_news;
 pub mod fred;
 pub mod massive;
+pub mod massive_news;
+pub mod news_service;
 pub mod sec;
 pub mod xbrl;
 

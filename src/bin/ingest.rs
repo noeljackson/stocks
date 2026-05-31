@@ -15,7 +15,14 @@ use stocks::ingest::fred::FredAdapter;
 use stocks::ingest::fmp::FmpPriceAdapter;
 use stocks::ingest::fmp_estimates::FmpEstimatesAdapter;
 use stocks::ingest::fmp_estimates_service;
+use stocks::ingest::fmp_news::FmpNewsAdapter;
+use stocks::ingest::massive_news::MassiveNewsAdapter;
+use stocks::ingest::news_service::{self, NewsIngestService, ScorerFn};
 use stocks::ingest::xbrl::XbrlAdapter;
+use stocks::llm::prompts::load;
+use stocks::llm::{self};
+use stocks::sentiment;
+use std::sync::Arc;
 use stocks::platform::{bus::Bus, config::Config, logging, store::Store, subjects};
 use tracing::{error, info};
 
@@ -69,6 +76,83 @@ async fn main() -> Result<()> {
             let interval = Duration::from_secs(6 * 3600);
             if let Err(e) = fmp_estimates_service::run(pool, adapter, interval).await {
                 error!(error = %e, "fmp_estimates service exited");
+            }
+        });
+    }
+
+    // News ingest (#19): poll FMP + Massive news endpoints, dedupe, sentiment
+    // from upstream when present (Massive) else from our LLM classifier (FMP).
+    {
+        let pool = store.pool.clone();
+        let fmp_key = cfg.fmp_api_key.clone();
+        let fmp_base = cfg.fmp_base_url.clone();
+        let m_key = cfg.massive_api_key.clone();
+        let m_base = cfg.massive_base_url.clone();
+        let llm_cfg = cfg.llm();
+        let prompts_dir = std::path::PathBuf::from("prompts");
+        let store_for_recorder = store.clone();
+        tokio::spawn(async move {
+            // Build the scorer closure lazily; only fires if we have an LLM
+            // provider AND the prompt file is readable.
+            let registry = match load(&prompts_dir) {
+                Ok(r) => r,
+                Err(e) => {
+                    error!(error = %e, "news_service: prompts dir unreadable; sentiment scoring disabled");
+                    return;
+                }
+            };
+            let Some(prompt) = registry.get("score-sentiment").cloned() else {
+                error!("news_service: prompts/score-sentiment.md missing; sentiment scoring disabled");
+                return;
+            };
+            let provider: Arc<dyn llm::Provider> = Arc::from(llm::new(&llm_cfg));
+            let provider_name = if llm_cfg.provider.is_empty() {
+                llm::detect(&llm_cfg).to_string()
+            } else {
+                llm_cfg.provider.clone()
+            };
+
+            let scorer: ScorerFn = {
+                let provider = provider.clone();
+                let store = store_for_recorder.clone();
+                let prompt = prompt.clone();
+                let pn = provider_name.clone();
+                Arc::new(move |ticker: &str, title: &str, body: &str| {
+                    let provider = provider.clone();
+                    let store = store.clone();
+                    let prompt = prompt.clone();
+                    let pn = pn.clone();
+                    let ticker = ticker.to_string();
+                    let title = title.to_string();
+                    let body = body.to_string();
+                    Box::pin(async move {
+                        sentiment::score_one(
+                            provider.as_ref(),
+                            Some(&store),
+                            &prompt,
+                            &pn,
+                            &ticker,
+                            &title,
+                            &body,
+                            None,
+                        )
+                        .await
+                    })
+                })
+            };
+
+            let svc = NewsIngestService {
+                pool,
+                fmp: FmpNewsAdapter::new(&fmp_key, &fmp_base),
+                massive: MassiveNewsAdapter::new(&m_key, &m_base),
+                scorer: Some(scorer),
+                prompt_name: prompt.name.clone(),
+                prompt_hash: prompt.hash.clone(),
+                per_ticker_limit: 20,
+            };
+            let interval = Duration::from_secs(2 * 3600);
+            if let Err(e) = news_service::run(svc, interval).await {
+                error!(error = %e, "news_service exited");
             }
         });
     }

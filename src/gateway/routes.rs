@@ -42,6 +42,15 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
             "/api/watchlists/{id}/members/{symbol}",
             axum::routing::delete(remove_watchlist_member),
         )
+        .route("/api/discovery/candidates", get(list_pending_candidates))
+        .route(
+            "/api/discovery/candidates/{id}/confirm",
+            post(confirm_candidate),
+        )
+        .route(
+            "/api/discovery/candidates/{id}/reject",
+            post(reject_candidate),
+        )
         .route("/api/stream", get(stream))
         .route("/api/decisions", post(record_decision))
         .fallback(spa_handler)
@@ -482,5 +491,58 @@ async fn remove_watchlist_member(
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => (StatusCode::NOT_FOUND, "not in this list").into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// ---------- discovery review (#54 phase B / #55) ----------
+
+async fn list_pending_candidates(State(gw): State<Arc<Gateway>>) -> impl IntoResponse {
+    match gw.store.pending_discovery_candidates().await {
+        Ok(v) => (StatusCode::OK, Json(v)).into_response(),
+        Err(e) => {
+            warn!(error = %e, "list_pending_candidates failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfirmCandidateReq {
+    #[serde(default)]
+    watchlist_ids: Vec<uuid::Uuid>,
+}
+
+async fn confirm_candidate(
+    State(gw): State<Arc<Gateway>>,
+    Path(id): Path<i64>,
+    Json(req): Json<ConfirmCandidateReq>,
+) -> impl IntoResponse {
+    if req.watchlist_ids.is_empty() {
+        return (StatusCode::BAD_REQUEST, "watchlist_ids required").into_response();
+    }
+    match gw
+        .store
+        .confirm_discovery_candidate(id, &req.watchlist_ids)
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            warn!(id, error = %e, "confirm_candidate failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn reject_candidate(
+    State(gw): State<Arc<Gateway>>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    match gw.store.reject_discovery_candidate(id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, "no such candidate").into_response(),
+        Err(e) => {
+            warn!(id, error = %e, "reject_candidate failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
     }
 }

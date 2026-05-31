@@ -215,6 +215,50 @@ export async function deleteWatchlist(id: string): Promise<void> {
   if (!r.ok && r.status !== 204) throw new Error(`delete watchlist ${r.status}`);
 }
 
+export interface ProposedList {
+  watchlist_id?: string | null;
+  watchlist_name: string;
+  confidence: string;
+  rationale: string;
+}
+
+export interface SuggestedNewList {
+  name: string;
+  description: string;
+  rationale: string;
+}
+
+export interface PendingCandidate {
+  id: number;
+  symbol: string;
+  signal_name: string;
+  signal_value: number | null;
+  reasoning: string | null;
+  proposed_at: string;
+  proposed_lists: ProposedList[];
+  suggested_new_list: SuggestedNewList | null;
+}
+
+export async function fetchPendingCandidates(): Promise<PendingCandidate[]> {
+  const r = await fetch("/api/discovery/candidates");
+  if (!r.ok) throw new Error(`pending candidates ${r.status}`);
+  return ((await r.json()) as PendingCandidate[] | null) ?? [];
+}
+
+export async function confirmCandidate(id: number, watchlistIds: string[]): Promise<void> {
+  const r = await fetch(`/api/discovery/candidates/${id}/confirm`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ watchlist_ids: watchlistIds }),
+  });
+  if (!r.ok && r.status !== 204) throw new Error(`confirm ${r.status}`);
+}
+
+export async function rejectCandidate(id: number): Promise<void> {
+  const r = await fetch(`/api/discovery/candidates/${id}/reject`, { method: "POST" });
+  if (!r.ok && r.status !== 204) throw new Error(`reject ${r.status}`);
+}
+
 /** subscribe opens the SSE feed; returns a cleanup function. */
 export function subscribe(
   onEvent: (e: StreamEvent) => void,

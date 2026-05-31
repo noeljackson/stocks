@@ -335,9 +335,62 @@
   });
 
   let selectedTicker = $derived(tickerFor(selectedSymbol));
+
+  // ---------- panel sizing + resize ----------
+  // Pixels for the right panel width and the bottom drawer height.
+  // Persisted to localStorage so reloads don't reset.
+  function loadSize(k: string, def: number, min: number, max: number): number {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(k) : null;
+    const n = raw ? parseInt(raw, 10) : NaN;
+    return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : def;
+  }
+  let rightWidth = $state(loadSize("ws.rightWidth", 380, 240, 800));
+  let bottomHeight = $state(loadSize("ws.bottomHeight", 280, 120, 600));
+  $effect(() => {
+    try { localStorage.setItem("ws.rightWidth", String(rightWidth)); } catch {}
+  });
+  $effect(() => {
+    try { localStorage.setItem("ws.bottomHeight", String(bottomHeight)); } catch {}
+  });
+
+  function startResizeRight(e: PointerEvent) {
+    const startX = e.clientX;
+    const startW = rightWidth;
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    const move = (m: PointerEvent) => {
+      const dx = startX - m.clientX;
+      rightWidth = Math.max(240, Math.min(800, startW + dx));
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+  function startResizeBottom(e: PointerEvent) {
+    if (!bottomOpen) return;
+    const startY = e.clientY;
+    const startH = bottomHeight;
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    const move = (m: PointerEvent) => {
+      const dy = startY - m.clientY;
+      bottomHeight = Math.max(120, Math.min(600, startH + dy));
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
 </script>
 
-<div class="workspace" class:bottom-open={bottomOpen}>
+<div
+  class="workspace"
+  class:bottom-open={bottomOpen}
+  style="--right-w: {rightWidth}px; --bottom-h: {bottomOpen ? bottomHeight : 36}px;"
+>
   <!-- Top bar: symbol + regime + connection -->
   <header class="top">
     <div class="brand">stocks <span class="muted">intel</span></div>
@@ -408,6 +461,14 @@
         {/if}
       </div>
     </section>
+
+    <div
+      class="split-v"
+      role="separator"
+      aria-orientation="vertical"
+      title="drag to resize"
+      onpointerdown={startResizeRight}
+    ></div>
 
     <aside class="right">
       <!-- Watchlists nav -->
@@ -549,6 +610,13 @@
 
   <!-- Bottom drawer: workflows -->
   <footer class="bottom">
+    <div
+      class="split-h"
+      role="separator"
+      aria-orientation="horizontal"
+      title="drag to resize"
+      onpointerdown={startResizeBottom}
+    ></div>
     <nav class="bottom-tabs">
       {#each ["events", "discovery", "decisions", "calibration"] as BottomMode[] as m}
         <button class:active={bottomMode === m} onclick={() => (bottomMode = m, bottomOpen = true)}>
@@ -675,11 +743,13 @@
 <style>
   .workspace {
     display: grid;
-    grid-template-rows: 44px auto 1fr auto;
-    height: 100vh;
+    /* Top bar (44) / error bar (auto when present) / main (fills) / bottom (CSS var) */
+    grid-template-rows: 44px auto 1fr var(--bottom-h, 36px);
+    grid-template-columns: 1fr;
+    height: 100dvh; /* dvh handles mobile address-bar resize cleanly */
     background: #0b0e14;
+    overflow: hidden;
   }
-  .workspace.bottom-open { grid-template-rows: 44px auto 1fr 280px; }
 
   /* Top bar */
   .top {
@@ -717,16 +787,30 @@
     color: inherit; cursor: pointer; padding: 0 .35rem;
   }
 
-  /* Main */
+  /* Main: chart fills, splitter, right panel takes --right-w */
   .main {
-    display: grid; grid-template-columns: 1fr 380px;
+    display: grid;
+    grid-template-columns: 1fr 4px var(--right-w, 380px);
     min-height: 0; overflow: hidden;
   }
   .chart-panel {
-    border-right: 1px solid #1f2733;
     overflow: auto;
     padding: 1rem;
+    min-width: 0;
   }
+  .split-v {
+    background: #1f2733;
+    cursor: col-resize;
+    transition: background .15s;
+  }
+  .split-v:hover, .split-v:active { background: #45567a; }
+  .split-h {
+    background: #1f2733;
+    cursor: row-resize;
+    height: 4px;
+    transition: background .15s;
+  }
+  .split-h:hover, .split-h:active { background: #45567a; }
   .chart-stub {
     height: 100%;
     display: flex; flex-direction: column;
@@ -806,17 +890,19 @@
   .meta-list dd { margin: 0; }
   .center-msg { text-align: center; padding: 2rem; }
 
-  /* Bottom drawer */
+  /* Bottom drawer — height is driven by the workspace --bottom-h CSS var */
   .bottom {
-    background: #11161f; border-top: 1px solid #1f2733;
+    background: #11161f;
     display: flex; flex-direction: column;
     overflow: hidden;
+    min-height: 36px;
   }
   .bottom-tabs {
     display: flex; gap: .25rem; padding: .35rem .5rem;
     border-bottom: 1px solid #1f2733;
     height: 36px;
     align-items: center;
+    flex-shrink: 0;
   }
   .bottom-tabs button {
     background: #1b2230; color: #bac2de; border: 1px solid #2a3548;

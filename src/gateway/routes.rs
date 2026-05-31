@@ -58,6 +58,8 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
             "/api/discovery/candidates/{id}/reject",
             post(reject_candidate),
         )
+        .route("/api/attention", get(list_attention_items))
+        .route("/api/attention/{id}/dismiss", post(dismiss_attention_item))
         .route("/api/stream", get(stream))
         .fallback(spa_handler)
         .with_state(gw)
@@ -392,6 +394,50 @@ struct DecisionReq {
     sizing: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct AttentionQuery {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+async fn list_attention_items(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<AttentionQuery>,
+) -> impl IntoResponse {
+    let status = q.status.unwrap_or_else(|| "open".to_string());
+    let limit = q.limit.unwrap_or(100).clamp(1, 500);
+    match gw.store.list_attention(&status, limit).await {
+        Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
+        Err(e) => {
+            warn!(error = %e, "list_attention failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DismissReq {
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+async fn dismiss_attention_item(
+    State(gw): State<Arc<Gateway>>,
+    Path(id): Path<i64>,
+    Json(req): Json<DismissReq>,
+) -> impl IntoResponse {
+    match gw.store.dismiss_attention(id, req.reason.as_deref()).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, "not open").into_response(),
+        Err(e) => {
+            warn!(id, error = %e, "dismiss_attention failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
 async fn record_decision(
     State(gw): State<Arc<Gateway>>,
     Json(req): Json<DecisionReq>,
@@ -417,6 +463,19 @@ async fn record_decision(
     if let Err(e) = result {
         warn!(error = %e, "record_decision failed");
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+
+    // Resolve any open thesis_actionable attention item for this thesis (#86).
+    if let Some(tid) = thesis_uuid {
+        if let Err(e) = gw.store.resolve_attention(
+            "thesis_actionable",
+            Some(tid),
+            None,
+            &format!("decision_recorded:{}", req.action),
+            serde_json::json!({"action": req.action, "user_choice": req.user_choice}),
+        ).await {
+            warn!(error = %e, "attention resolve failed (non-fatal)");
+        }
     }
 
     let env = json!({

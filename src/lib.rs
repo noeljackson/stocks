@@ -19,6 +19,7 @@ pub mod regime;
 pub mod router;
 pub mod risk;
 pub mod goalpost;
+pub mod attention;
 pub mod reflection;
 pub mod sentiment;
 pub mod thesis;

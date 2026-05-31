@@ -168,3 +168,17 @@ absent names = not yet configured.
   `analyst-estimates` → `estimate_snapshot` table → diff against prior →
   emit `estimate_revision` events). Cheaper than Finnhub's pre-computed
   revision feed and we own the audit trail.
+
+**2026-05-31 — Massive Developer 25ms websocket considered, deferred**
+- Massive Stocks Developer ($99/mo) includes a 25ms-latency websocket feed.
+  Considered upgrading from Starter ($29) → Developer ($99) = +$70/mo net
+  after dropping the FMP price overlap.
+- Rejected for now. SPEC §0 says we operate on day-to-week cadence with
+  forward-only end-of-day validation. None of our current signals (discovery
+  volume_anomaly / base_breakout, evaluator XBRL/close, consensus drift,
+  risk overlay) require sub-second data. The analyst-revision flow operates
+  on daily snapshot drift.
+- Revisit when any of these become real priorities:
+  (a) intraday alerting goal ("alert within 1s of a 3x volume spike"),
+  (b) LEAPS execution via #25 IBKR (live bid/ask vs paying the spread),
+  (c) tape-reading signals (unusual options activity, dark pool prints).

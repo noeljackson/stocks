@@ -1,19 +1,15 @@
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
-html, body, #app {
-  margin: 0; padding: 0;
-  height: 100vh;
-  /* dvh also for browsers that shrink for mobile chrome */
-  height: 100dvh;
-  width: 100vw;
-  overflow: hidden;
-}
+html, body, #app { margin: 0; padding: 0; }
 body {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
   font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
   background: #0b0e14;
   color: #cdd6f4;
 }
-/* Workspace is position:fixed inside #app — no flex needed here. */
+/* Workspace is position:fixed — html/#app left alone. */
 
 h1 { font-size: 1.1rem; margin: 0; }
 h2 { font-size: .95rem; margin: 0 0 .5rem; color: #b4befe; }

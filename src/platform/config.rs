@@ -20,6 +20,8 @@ pub struct Config {
     pub fred_api_key: String,
     pub massive_api_key: String,
     pub massive_base_url: String,
+    pub fmp_api_key: String,
+    pub fmp_base_url: String,
     pub anthropic_base_url: String,
     pub anthropic_api_key: String,
     pub anthropic_version: String,
@@ -94,6 +96,8 @@ impl Config {
             // Massive's API is Polygon's behind a different brand; base URL
             // configurable so future-us can swap.
             massive_base_url: get("MASSIVE_BASE_URL", "https://api.massive.com"),
+            fmp_api_key: get("FMP_API_KEY", ""),
+            fmp_base_url: get("FMP_BASE_URL", "https://financialmodelingprep.com"),
             anthropic_base_url: get("ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic"),
             anthropic_api_key: get("ANTHROPIC_API_KEY", ""),
             anthropic_version: get("ANTHROPIC_VERSION", "2023-06-01"),

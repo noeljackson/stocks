@@ -5,6 +5,7 @@
 //! (so re-polling old data is harmless).
 
 pub mod edgar;
+pub mod fmp;
 pub mod fred;
 pub mod massive;
 pub mod sec;

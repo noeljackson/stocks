@@ -24,6 +24,7 @@ Everything else: keep moving.
 ## Project layout (essentials)
 
 - `SPEC.md` — design doc. Single source of truth for what the system is supposed to do.
+- `docs/DATA_SOURCES.md` — single source of truth for **what data the system needs, who we get it from, and the current wiring status**. Edit this *first* when adding or changing a data source.
 - `Cargo.toml` + `src/` — one Rust crate, multiple binaries (gateway/ingest/regime/router/risk/goalpost/staler/devpub/llmsmoke). Shared lib in `src/platform/`, `src/llm/`, `src/thesis/`.
 - `py/` — Python services (context maintainer, thesis engine). Shared `prompts/*.md` registry with Rust.
 - `prompts/*.md` — first-class prompt registry. Filename stem = prompt name. SHA-256 of content = version hash. Every LLM call records `(prompt_name, prompt_hash, tokens, latency)` to the `llm_invocation` table.

@@ -344,13 +344,14 @@
     const n = raw ? parseInt(raw, 10) : NaN;
     return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : def;
   }
-  let rightWidth = $state(loadSize("ws.rightWidth", 380, 240, 800));
-  let bottomHeight = $state(loadSize("ws.bottomHeight", 280, 120, 600));
+  // v2 keys — bumped on default change to drop any stuck values from earlier runs.
+  let rightWidth = $state(loadSize("ws.v2.rightWidth", 360, 240, 800));
+  let bottomHeight = $state(loadSize("ws.v2.bottomHeight", 200, 80, 600));
   $effect(() => {
-    try { localStorage.setItem("ws.rightWidth", String(rightWidth)); } catch {}
+    try { localStorage.setItem("ws.v2.rightWidth", String(rightWidth)); } catch {}
   });
   $effect(() => {
-    try { localStorage.setItem("ws.bottomHeight", String(bottomHeight)); } catch {}
+    try { localStorage.setItem("ws.v2.bottomHeight", String(bottomHeight)); } catch {}
   });
 
   function startResizeRight(e: PointerEvent) {
@@ -369,13 +370,18 @@
     window.addEventListener("pointerup", up);
   }
   function startResizeBottom(e: PointerEvent) {
-    if (!bottomOpen) return;
+    if (!bottomOpen) {
+      // First drag from collapsed state opens the drawer.
+      bottomOpen = true;
+    }
     const startY = e.clientY;
     const startH = bottomHeight;
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     const move = (m: PointerEvent) => {
       const dy = startY - m.clientY;
-      bottomHeight = Math.max(120, Math.min(600, startH + dy));
+      // Clamp to viewport so we never push the drawer past the chart area.
+      const maxH = Math.max(120, window.innerHeight - 200);
+      bottomHeight = Math.max(80, Math.min(maxH, startH + dy));
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
@@ -383,6 +389,10 @@
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+  }
+  function resetBottom() {
+    bottomHeight = 200;
+    bottomOpen = true;
   }
 </script>
 
@@ -625,9 +635,16 @@
           {#if m === "events"}<span class="badge tiny">{live.length}</span>{/if}
         </button>
       {/each}
-      <button class="bottom-toggle" onclick={() => (bottomOpen = !bottomOpen)} title={bottomOpen ? "collapse" : "expand"}>
-        {bottomOpen ? "▾" : "▴"}
+      <button
+        class="bottom-toggle"
+        onclick={() => (bottomOpen = !bottomOpen)}
+        title={bottomOpen ? "collapse drawer" : "expand drawer"}
+      >
+        {bottomOpen ? "▾ hide" : "▴ show"}
       </button>
+      {#if bottomOpen}
+        <button class="bottom-reset" onclick={resetBottom} title="reset drawer height">⟲</button>
+      {/if}
     </nav>
 
     {#if bottomOpen}
@@ -792,7 +809,7 @@
   /* Main: chart fills, splitter, right panel takes --right-w */
   .main {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 4px var(--right-w, 380px);
+    grid-template-columns: minmax(0, 1fr) 6px var(--right-w, 360px);
     min-height: 0;
     height: 100%;
     overflow: hidden;
@@ -807,15 +824,34 @@
     background: #1f2733;
     cursor: col-resize;
     transition: background .15s;
+    /* Wider hit area than the visual; pseudo center bar inside. */
+    position: relative;
+    width: 6px;
+  }
+  .split-v::before {
+    content: ""; position: absolute; top: 0; bottom: 0;
+    left: 50%; width: 2px; transform: translateX(-50%);
+    background: #2a3548;
   }
   .split-v:hover, .split-v:active { background: #45567a; }
+  .split-v:hover::before, .split-v:active::before { background: #89b4fa; }
+
   .split-h {
     background: #1f2733;
     cursor: row-resize;
-    height: 4px;
+    height: 8px;
+    flex-shrink: 0;
     transition: background .15s;
+    position: relative;
+  }
+  .split-h::before {
+    content: ""; position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: 40px; height: 3px; border-radius: 2px;
+    background: #45567a;
   }
   .split-h:hover, .split-h:active { background: #45567a; }
+  .split-h:hover::before, .split-h:active::before { background: #89b4fa; }
   .chart-stub {
     height: 100%;
     display: flex; flex-direction: column;
@@ -919,7 +955,14 @@
     display: flex; gap: .35rem; align-items: center;
   }
   .bottom-tabs button.active { background: #2a3548; border-color: #45567a; color: #cdd6f4; }
-  .bottom-toggle { margin-left: auto; }
+  .bottom-toggle {
+    margin-left: auto;
+    background: #2a3548; color: #cdd6f4; border-color: #45567a;
+    font-weight: 600;
+  }
+  .bottom-toggle:hover { background: #3a4866; }
+  .bottom-reset { background: transparent; border: 1px solid #2a3548; color: #6c7693; }
+  .bottom-reset:hover { color: #cdd6f4; border-color: #45567a; }
   .bottom-body {
     flex: 1; overflow: auto; padding: .5rem .75rem;
   }

@@ -1161,6 +1161,12 @@
               {#if symbolTheses === undefined}
                 <p class="muted">Loading…</p>
               {:else if symbolTheses && symbolTheses.length > 0}
+                {#if activeThesisDirections.length > 1}
+                  <p class="decision-warning">
+                    Conflicting open thesis directions: {activeThesisDirections.join(" / ")}.
+                    Do not treat this symbol as a single clean signal until one thesis is selected or retired.
+                  </p>
+                {/if}
                 {#each symbolTheses as t (t.thesis_id)}
                   <ThesisDetails thesis={t} />
                 {/each}

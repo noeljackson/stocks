@@ -128,6 +128,42 @@ impl Store {
     }
 
     /// All open positions in the shape the risk overlay consumes.
+    /// Daily candles for `symbol` over the last `lookback_days`, oldest first.
+    /// Shaped for lightweight-charts (each row has `time` as ISO date + OHLCV).
+    pub async fn candles_for(
+        &self,
+        symbol: &str,
+        lookback_days: i64,
+    ) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query(
+            r#"SELECT ts, open::float8 AS open, high::float8 AS high,
+                      low::float8 AS low, close::float8 AS close,
+                      volume::float8 AS volume
+                 FROM price_bar
+                WHERE symbol = $1
+                  AND ts > now() - ($2 || ' days')::interval
+             ORDER BY ts ASC"#,
+        )
+        .bind(symbol)
+        .bind(lookback_days.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .context("candles_for")?;
+        rows.into_iter()
+            .map(|r| {
+                let ts: DateTime<Utc> = r.try_get("ts")?;
+                Ok(serde_json::json!({
+                    "time": ts.format("%Y-%m-%d").to_string(),
+                    "open": r.try_get::<f64, _>("open")?,
+                    "high": r.try_get::<f64, _>("high")?,
+                    "low": r.try_get::<f64, _>("low")?,
+                    "close": r.try_get::<f64, _>("close")?,
+                    "volume": r.try_get::<f64, _>("volume")?,
+                }))
+            })
+            .collect()
+    }
+
     pub async fn open_positions_for_risk(&self) -> Result<Vec<crate::risk::Position>> {
         let rows = sqlx::query(
             r#"SELECT p.symbol,

@@ -848,12 +848,6 @@
     background: rgba(180, 190, 254, .02);
     text-align: center;
   }
-  .ticker-meta {
-    display: grid; grid-template-columns: auto auto; gap: .2rem 1rem;
-    margin-top: 1rem; font-size: .85rem;
-  }
-  .ticker-meta dt { color: #6c7693; }
-  .ticker-meta dd { margin: 0; font-weight: 500; }
 
   /* Right panel */
   .right {
@@ -971,7 +965,7 @@
     font-size: .8rem;
   }
   .alerts li.acked { opacity: .5; }
-  .alerts .x, .alert-toolbar .x {
+  .alerts .x {
     margin-left: auto;
     background: #1b2230; color: #cdd6f4; border: 1px solid #2a3548;
     border-radius: 3px; padding: .05rem .35rem; font-size: .7rem; cursor: pointer;
@@ -1041,6 +1035,31 @@
   .badge.conf-high { background: rgba(166, 227, 161, .18); color: rgb(166, 227, 161); }
   .badge.conf-medium { background: rgba(249, 226, 175, .15); color: rgb(249, 226, 175); }
   .badge.conf-low { background: rgba(108, 112, 134, .2); color: #9aa3b8; }
+
+  /* Narrow viewport polish (#57 PR5). At <= 760px wide, stack everything
+     vertically: chart on top, drawer in middle, sidebar at bottom. paneforge
+     gracefully degrades when the outer PaneGroup is flex-column. */
+  @media (max-width: 760px) {
+    :global([data-pane-group][data-direction="horizontal"]) {
+      flex-direction: column !important;
+    }
+    :global(.split-v) {
+      width: auto !important; height: 8px !important;
+      cursor: row-resize !important;
+    }
+    :global(.split-v::before) {
+      top: 50% !important; bottom: auto !important;
+      left: 50% !important;
+      width: 40px !important; height: 3px !important;
+      transform: translate(-50%, -50%) !important;
+    }
+    .top {
+      flex-wrap: wrap; height: auto; padding: .35rem .5rem;
+      gap: .5rem;
+    }
+    .symbol-box input { width: 90px; }
+    .calibration { display: none; }
+  }
 
   .decisions { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .2rem; }
   .decisions li {

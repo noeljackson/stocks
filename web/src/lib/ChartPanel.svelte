@@ -14,7 +14,10 @@
     type CandlestickData,
     type HistogramData,
     type UTCTimestamp,
+    type Time,
     type SeriesMarker,
+    type SeriesMarkerBarPosition,
+    type SeriesMarkerShape,
   } from "lightweight-charts";
 
   let { symbol = null as string | null } = $props();
@@ -29,7 +32,7 @@
   let chart: IChartApi | null = null;
   let priceSeries: ISeriesApi<"Candlestick"> | null = null;
   let volSeries: ISeriesApi<"Histogram"> | null = null;
-  let markersApi: ISeriesMarkersPluginApi<UTCTimestamp> | null = null;
+  let markersApi: ISeriesMarkersPluginApi<Time> | null = null;
   let candles = $state<Candle[] | null>(null);
   let events = $state<SymbolEvent[]>([]);
   let error = $state<string | null>(null);
@@ -60,7 +63,7 @@
     }
   }
 
-  function eventStyle(ev: SymbolEvent): { color: string; shape: SeriesMarker<UTCTimestamp>["shape"]; position: SeriesMarker<UTCTimestamp>["position"]; text: string } {
+  function eventStyle(ev: SymbolEvent): { color: string; shape: SeriesMarkerShape; position: SeriesMarkerBarPosition; text: string } {
     switch (ev.kind) {
       case "state_transition": {
         const promoted = ["actionable", "position_open", "armed"].includes(ev.label);
@@ -88,7 +91,7 @@
 
   function applyMarkers() {
     if (!priceSeries || !markersApi) return;
-    const dedup = new Map<string, SeriesMarker<UTCTimestamp>>();
+    const dedup = new Map<string, SeriesMarker<Time>>();
     for (const e of events) {
       const t = toUtc(e.time);
       const sty = eventStyle(e);

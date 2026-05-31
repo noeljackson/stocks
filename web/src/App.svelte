@@ -780,6 +780,8 @@
   .body {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 6px var(--right-w, 360px);
+    height: 100vh;
+    height: 100dvh;
     min-height: 0;
     overflow: hidden;
   }

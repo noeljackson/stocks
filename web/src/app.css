@@ -1,14 +1,21 @@
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
-html, body, #app { height: 100%; }
+html, body { height: 100%; margin: 0; }
+html, body, #app { min-height: 100dvh; }
 body {
-  margin: 0;
   font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
   background: #0b0e14;
   color: #cdd6f4;
 }
-/* Full-viewport workspace (#57). The shell owns its own grid. */
-#app { display: flex; flex-direction: column; }
+/* The Svelte mount point IS the workspace's flex parent. The shell's outer
+ * div uses flex:1 to fill regardless of how Svelte wraps things. */
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+#app > * { flex: 1 1 auto; min-height: 0; }
+
 h1 { font-size: 1.1rem; margin: 0; }
 h2 { font-size: .95rem; margin: 0 0 .5rem; color: #b4befe; }
 h3 { font-size: .85rem; margin: 0 0 .35rem; color: #b4befe; font-weight: 600; }

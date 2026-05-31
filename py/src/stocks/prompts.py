@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json as _json
 import logging
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
+
+import pydantic
 
 from .llm import Message, Provider, Request, Response
 
@@ -167,6 +170,78 @@ class AsyncpgRecorder:
             request_summary,
             response_summary,
         )
+
+
+# ---------- typed invocation with auto-retry (#28) ----------
+
+T = TypeVar("T", bound=pydantic.BaseModel)
+
+
+def _extract_json(content: str) -> str:
+    """Strip markdown fences + grab first {...} or [...] block.
+    LLMs ignore "no fences" instructions sometimes."""
+    s = content.strip()
+    for fence in ("```json", "```"):
+        if s.startswith(fence):
+            s = s[len(fence):].lstrip()
+            break
+    if s.endswith("```"):
+        s = s[:-3].rstrip()
+    try:
+        _json.loads(s)
+        return s
+    except _json.JSONDecodeError:
+        pass
+    # Fallback: grab first balanced {...} or [...].
+    for open_c, close_c in [("{", "}"), ("[", "]")]:
+        start = s.find(open_c)
+        end = s.rfind(close_c)
+        if 0 <= start < end:
+            return s[start:end + 1]
+    return s
+
+
+async def invoke_typed(  # noqa: UP047 (TypeVar form supports 3.10+; PEP-695 syntax is 3.12+)
+    provider: Provider,
+    recorder: InvocationRecorder | None,
+    prompt: Prompt,
+    vars: Mapping[str, str],
+    user_message: str,
+    provider_name: str,
+    model_cls: type[T],
+    *,
+    model: str = "",
+    max_tokens: int = 0,
+    max_retries: int = 2,
+) -> T:
+    """Like ``invoke``, but parses into ``model_cls`` (a pydantic BaseModel)
+    and retries on validation failure. Mirrors the Rust ``complete_typed``."""
+    current_user = user_message
+    last_err = ""
+    for attempt in range(max_retries + 1):
+        resp = await invoke(
+            provider, recorder, prompt, vars, current_user,
+            provider_name, model=model, max_tokens=max_tokens,
+        )
+        raw = _extract_json(resp.content)
+        try:
+            return model_cls.model_validate_json(raw)
+        except pydantic.ValidationError as e:
+            last_err = str(e)
+            if attempt == max_retries:
+                raise RuntimeError(
+                    f"invoke_typed: schema parse failed after {max_retries} retries: "
+                    f"{last_err} (raw: {raw[:200]!r})"
+                ) from e
+            logger.warning("invoke_typed parse failed (attempt %d): %s", attempt, last_err)
+            current_user = (
+                f"{user_message}\n\n"
+                f"[Previous attempt failed JSON-schema validation with error: "
+                f'"{last_err}". Reply ONLY with valid JSON matching the '
+                f"schema; no prose, no markdown fences.]"
+            )
+    # Unreachable.
+    raise RuntimeError(f"invoke_typed: unreachable retry loop exit ({last_err})")
 
 
 # small helper so tests can run async funcs without pytest-asyncio gymnastics

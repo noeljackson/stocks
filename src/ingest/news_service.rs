@@ -22,7 +22,6 @@ use tracing::{info, warn};
 
 use super::fmp_news::{FmpNewsAdapter, NewsArticle};
 use super::massive_news::MassiveNewsAdapter;
-use super::sec;
 use crate::sentiment::SentimentScore;
 
 /// Identifies a Sentiment-scorer callback. Returns the scored result OR
@@ -54,10 +53,10 @@ pub struct NewsIngestService {
 }
 
 impl NewsIngestService {
-    /// One pass over the universe. Returns (articles_inserted, articles_llm_scored).
+    /// One pass over scan_pool ∪ universe (#104). Returns (inserted, scored).
     pub async fn run_once(&self) -> Result<(usize, usize)> {
-        let universe_owned: Vec<String> =
-            sec::all_seeded().map(|(s, _)| s.to_string()).collect();
+        let store = crate::platform::store::Store { pool: self.pool.clone() };
+        let universe_owned: Vec<String> = store.scan_pool_symbols().await.unwrap_or_default();
         let universe: Vec<&str> = universe_owned.iter().map(String::as_str).collect();
 
         let mut inserted_total = 0;
@@ -89,7 +88,7 @@ impl NewsIngestService {
                 match upsert_article(&self.pool, a, None, None).await {
                     Ok(true) => inserted_total += 1,
                     Ok(false) => {}
-                    Err(e) => warn!(error = %e, "upsert fmp article failed"),
+                    Err(e) => warn!(symbol = symbol, error = ?e, "upsert fmp article failed"),
                 }
             }
             for s in &massive_rows {
@@ -97,7 +96,7 @@ impl NewsIngestService {
                                       s.upstream_rationale.as_deref()).await {
                     Ok(true) => inserted_total += 1,
                     Ok(false) => {}
-                    Err(e) => warn!(error = %e, "upsert massive article failed"),
+                    Err(e) => warn!(symbol = symbol, error = ?e, "upsert massive article failed"),
                 }
             }
             // Pace between symbols to stay under rate limits on either vendor.
@@ -175,6 +174,12 @@ async fn upsert_article(
     upstream_sentiment: Option<&str>,
     upstream_rationale: Option<&str>,
 ) -> Result<bool> {
+    // Coerce to the DB CHECK constraint set; null out anything we don't recognise
+    // (Massive occasionally emits "" / "unknown"), so the LLM scorer fills it in.
+    let upstream_sentiment = upstream_sentiment.and_then(|s| match s {
+        "positive" | "neutral" | "negative" => Some(s),
+        _ => None,
+    });
     let polarity: Option<f64> = upstream_sentiment.map(|s| match s {
         "positive" => 0.5,
         "negative" => -0.5,

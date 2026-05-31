@@ -969,8 +969,10 @@
                 {/each}
               {:else}
                 <p class="muted">
-                  No theses for <strong>{selectedSymbol}</strong>. Run
-                  <code>make draft-thesis SYMBOL={selectedSymbol}</code>.
+                  No theses for <strong>{selectedSymbol}</strong>. The cognition
+                  pipeline drafts one automatically when the context is fresh —
+                  if none appears, the engine honestly declined (insufficient
+                  edge in the available evidence).
                 </p>
               {/if}
             {:else if rightTab === "alerts"}

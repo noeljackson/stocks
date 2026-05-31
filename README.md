@@ -16,10 +16,11 @@ manually. Full design in **[SPEC.md](./SPEC.md)**.
 The system is built around one repeated loop:
 
 ```text
-market/data events
+continuous scan
+  -> fresh evidence
   -> maintained ticker context
   -> structured theses
-  -> risk-gated alerts
+  -> risk-gated attention
   -> human decisions
   -> outcomes/reflection
   -> better future signals/prompts
@@ -30,6 +31,18 @@ record with an edge rationale, forecast, conviction conditions, trigger
 conditions, invalidation conditions, and fulfillment conditions. The system is
 useful only when those objects make the operator faster and more disciplined
 than manual research alone.
+
+The background system should always scan with tiered depth:
+
+```text
+discovery_pool  broad cheap radar over possible symbols
+watchlists      focused radar over symbols the operator cares about
+active theses   deep monitoring, risk checks, and decision support
+```
+
+Routine scans should update evidence, context, freshness, and thesis condition
+state silently. The operator should only be interrupted when the system creates
+an attention item that needs judgment.
 
 Important mental models:
 

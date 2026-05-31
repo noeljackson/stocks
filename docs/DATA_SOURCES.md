@@ -13,17 +13,29 @@ file an issue and link it from the relevant row's "status" column.
 - `not wired` — vendor identified, no key, no code
 - `gap` — known limitation, no fix planned
 
+**Current vendor stack (as of 2026-05-31):**
+- **FMP Starter** ($22/mo) — primary: price/OHLCV, analyst estimates, per-firm rating events, earnings calendar, company news (no sentiment), company profile
+- **Massive Stocks Starter** ($29/mo) — kept for: news with per-article sentiment (where FMP has no equivalent)
+- **SEC EDGAR** (free) — XBRL company facts, insider transactions, 13F holdings
+- **FRED** (free) — macro economic series, credit spreads, VIX history
+- **z.ai** (~cents/call) — LLM provider for cognition layer, plus the universal
+  sentiment classifier (so any news source we add later — RSS, Twitter, future
+  paid feeds — gets sentiment-scored without depending on a vendor's own scorer)
+
 ---
 
 ## 1. Price + market data
 
 | Data | Why | Vendor | Tier / cost | Endpoint | Status |
 |---|---|---|---|---|---|
-| Daily OHLCV bars | Discovery signals (volume_anomaly, base_breakout), evaluator (`SYMBOL.close`), consensus price_extension component | **Massive** | Stocks Starter $29/mo | `/v2/aggs/ticker/{sym}/range/1/day/{from}/{to}?adjusted=true` | wired — `src/ingest/massive.rs` (730d backfill) |
-| Intraday bars (1m/5m) | Not needed yet | Massive | Same plan | `/v2/aggs/ticker/.../range/1/minute/...` | not wired |
-| Options chains | LEAPS thesis instrument selection (#5 epic) | Massive Options Starter $29/mo extra | `/v3/snapshot/options/{underlying}` | not wired |
-| Corporate actions (splits/dividends) | Implicit — Massive serves adjusted close | Massive (built into adjusted prices) | included | implicit |
-| Realtime quotes / websocket | Not needed at v0 (forward-only validation per SPEC §9 uses end-of-day) | Massive websocket | Stocks Developer $99/mo | `/v3/...` | not wired |
+| Daily OHLCV bars | Discovery signals (volume_anomaly, base_breakout), evaluator (`SYMBOL.close`), consensus price_extension component | **FMP** (primary) | Starter $22/mo | `/stable/historical-price-eod/full?symbol=&from=&to=` returns OHLCV + change + vwap. 5+ yrs adjusted history. | wired — `src/ingest/fmp_price.rs` |
+| Intraday bars (1m/5m) | Not needed yet | FMP | Same plan | `/stable/historical-chart/{interval}` | not wired |
+| Options chains | LEAPS thesis instrument selection (#5 epic) | Massive Options Starter $29/mo extra (or FMP has thin coverage — verify before swap) | `/v3/snapshot/options/{underlying}` (Massive) | not wired |
+| Corporate actions (splits/dividends) | Implicit — FMP serves adjusted close | FMP (built into adjusted prices) | included | implicit |
+| Realtime quotes / websocket | Not needed at v0 (forward-only validation per SPEC §9 uses end-of-day) | FMP websocket limited; Massive better | varies | not wired |
+
+**Note:** Massive was the original price source (`src/ingest/massive.rs`); kept in
+the repo for the news+sentiment endpoint but no longer the OHLCV source.
 
 ## 2. Fundamentals
 
@@ -31,7 +43,8 @@ file an issue and link it from the relevant row's "status" column.
 |---|---|---|---|---|---|
 | Company facts (XBRL) | Evaluator metrics (`SYMBOL.gross_margin_pct`, etc.), context maintainer fundamentals block | **SEC EDGAR** | free, public | `/api/xbrl/companyfacts/CIK<N>.json` | wired — `src/ingest/xbrl.rs` (1.9k facts/ticker) |
 | CIK lookup | Resolving ticker → CIK before XBRL pull | SEC EDGAR | free | `/files/company_tickers.json` | wired — `src/ingest/sec.rs` |
-| Earnings calendar | Goalpost dates, horizon_at validation | **Finnhub** (cheap), Massive Benzinga add-on (expensive) | Finnhub free tier OK | `/calendar/earnings?from=&to=` | not wired |
+| Earnings calendar (upcoming + history) | Goalpost dates, horizon_at validation, beat/miss pattern | **FMP** | Starter | `/stable/earnings?symbol=` returns `epsActual/epsEstimated/revenueActual/revenueEstimated/lastUpdated`. `/stable/earnings-calendar?from=&to=` for global upcoming | not wired |
+| Company profile | Cluster classification context, market cap | FMP | Starter | `/stable/profile?symbol=` | not wired |
 | Insider transactions (Form 4/144) | Cross-check LLM context narrative claims | SEC EDGAR | free | `/cgi-bin/browse-edgar?action=getcompany&CIK=...&type=4` | not wired |
 | 13F holdings | Lagged institutional positioning | SEC EDGAR | free | `/cgi-bin/browse-edgar?...&type=13F-HR` | not wired |
 
@@ -41,22 +54,23 @@ This is the SPEC §4 "#1 leading signal for the edge" gap (#18).
 
 | Data | Why | Vendor | Tier / cost | Endpoint | Status |
 |---|---|---|---|---|---|
-| Current consensus EPS/revenue | Baseline for revision detection | FMP, Finnhub | FMP Premium ~$50, Finnhub Estimates add-on ~$50 | FMP: `/stable/financial-estimates`. Finnhub: `/stock/eps-estimate` | not wired (#18) |
-| **Estimate revision time-series** (the actual signal) | "Earlier than the crowd" detection — when consensus is being revised up/down before retail sees it | **Finnhub** has this natively; FMP does not (snapshot only) | Finnhub Estimate add-on ~$50/mo | `/stock/revision?symbol=` (counts of up/down revisions over 7/30/60/90d windows per fiscal period) | not wired (#18) |
-| Per-firm rating changes (upgrades/downgrades) | Discrete catalyst events for discovery + thesis flags | Finnhub | Free tier exposes US stocks (capped); Premium removes cap | `/stock/upgrade-downgrade?symbol=` returns `{gradeTime, fromGrade, toGrade, company, action}` | not wired (#18) |
-| Aggregate buy/hold/sell counts | Lower-resolution sanity check | Finnhub | free | `/stock/recommendation` | not wired |
-
-**Vendor verdict:** Finnhub's revision time-series is the FMP-killer. FMP's estimates
-endpoint returns a snapshot only — their own docs say "historical drift must be
-captured locally over time." If you build the snapshot-and-diff layer yourself,
-either vendor works; if you'd rather just query a revision feed, use Finnhub.
+| Current consensus EPS/revenue (per fiscal period, forward 5+ yrs) | Baseline for revision detection; `numAnalystsEps` tells us coverage depth | **FMP** | Starter | `/stable/analyst-estimates?symbol=&period=annual` returns revenueLow/High/Avg, ebitda/ebit, netIncome, epsAvg/High/Low, numAnalystsRevenue, numAnalystsEps | not wired |
+| **Estimate revision time-series** (the actual signal) | "Earlier than the crowd" detection — when consensus is being revised up/down before retail sees it | FMP via daily snapshot + diff against prior snapshot (we build this layer) | Starter | snapshot `/stable/analyst-estimates` daily → `estimate_snapshot` table → diff → `estimate_revision` events | not wired (#18) |
+| Per-firm rating events (upgrade/downgrade with `gradingCompany`, `newGrade`, `previousGrade`, `priceWhenPosted`) | Discrete catalyst events for discovery + thesis flags. The actual "revisions" data Bloomberg/Refinitiv charge 5-figures/yr for, here for free. | **FMP** | Starter | `/stable/grades-latest-news?limit=` returns global event feed; filter to our universe client-side | not wired (#18) |
+| Aggregate buy/hold/sell counts (monthly buckets per symbol) | Lower-resolution drift sanity check | FMP | Starter | `/stable/grades-historical?symbol=` returns monthly StrongBuy/Buy/Hold/Sell counts | not wired |
 
 ## 4. News + per-article sentiment
 
+Two-source strategy: ingest from both vendors, dedupe by URL/title, sentiment
+populated from upstream when present else scored by our LLM classifier. New
+sources (RSS, Twitter, future paid feeds) plug into the same pipeline.
+
 | Data | Why | Vendor | Tier / cost | Endpoint | Status |
 |---|---|---|---|---|---|
-| Articles with per-ticker sentiment | Discovery (catalyst signal), context maintainer narrative refresh, consensus mainstream_coverage component | **Massive** (already paid for) | included in Stocks Starter $29 | `/v2/reference/news?ticker=&order=desc` returns `insights[].sentiment` ∈ {positive, neutral, negative} + `sentiment_reasoning` | not wired (#19) |
-| Ticker-level intraday news sentiment aggregation (paid uplift) | When Massive's hourly news isn't fast enough | **Marketaux Pro** | $25–99/mo | `/v1/news/all?entities=&sentiment_gte=&sentiment_lte=` | not wired — evaluate only after Massive's wired |
+| Articles with per-ticker sentiment (pre-scored) | Discovery (catalyst signal), context maintainer narrative refresh, consensus mainstream_coverage component | **Massive** | Stocks Starter $29 (already paid) | `/v2/reference/news?ticker=&order=desc` returns `insights[].sentiment` ∈ {positive, neutral, negative} + `sentiment_reasoning` | not wired (#19) |
+| Additional articles (no upstream sentiment) | Wider coverage; FMP often surfaces articles Massive doesn't (Motley Fool, niche IR sites) | **FMP** | Starter | `/stable/news/stock?symbols=&limit=` returns title/text/publisher/url/publishedDate | not wired (#19) |
+| **Universal sentiment classifier** | Scores any article without an upstream sentiment score; lets future news sources plug in without re-engineering | **z.ai** (Anthropic-compat) via `src/sentiment/` module + `prompts/score-sentiment.md` | per-token (~$0.001/article) | n/a — our own module | not wired (#19, dep of news ingest) |
+| Ticker-level intraday news sentiment aggregation (paid uplift) | When Massive's hourly news isn't fast enough | Marketaux Pro | $25–99/mo | `/v1/news/all?entities=&sentiment_gte=&sentiment_lte=` | not wired — evaluate only if free+FMP+Massive set isn't enough |
 
 ## 5. Crowd sentiment
 
@@ -75,7 +89,7 @@ only if it carries signal beyond the free set.
 | StockTwits message volume per ticker | Retail social-chatter spike detection (best-effort — no new API keys being issued) | StockTwits public API | free, ~200 req/hr no auth | `https://api.stocktwits.com/api/2/streams/symbol/{TICKER}.json` | continuous | not wired |
 | Reddit / r/wallstreetbets ticker mentions | Retail meme/momentum signal | Reddit OAuth API (free PRAW) | free, 100 req/min | n/a (PRAW scrape of daily discussion threads) | continuous | not wired |
 | ICI mutual fund / ETF flows | Slow-moving retail+institutional capital flows | ICI | free | `https://www.ici.org/research/stats/flows` + `/etf_flows` | weekly XLS, ~3-day lag | not wired |
-| Marketaux Pro (paid uplift) | Best signal-to-noise among paid sentiment aggregators in our price range; ticker-resolved + intraday | Marketaux | $25 Standard or $99 Pro | `/v1/news/all` with entity + sentiment filters | continuous | not wired — only consider after free stack is in |
+| Marketaux Pro (paid uplift) | Best signal-to-noise among paid sentiment aggregators in our price range; ticker-resolved + intraday | Marketaux | $25 Standard or $99 Pro | `/v1/news/all` with entity + sentiment filters | continuous | not wired — only consider after free + FMP + Massive set isn't enough |
 
 **Won't consider:** RavenPack (starts at five figures/yr), Sentdex (effectively abandoned).
 
@@ -104,15 +118,15 @@ Not market data but worth listing because the smoketest needs it.
 
 | Data | Vendor | Tier / cost | Env var | Status |
 |---|---|---|---|---|
-| LLM completions | **z.ai** (Anthropic-compat, glm-5.1 / glm-4.6) | per-token, ~cents per thesis draft | `ANTHROPIC_API_KEY` (auto-detected as z.ai by base URL) | wired |
+| LLM completions (cognition + universal sentiment scoring) | **z.ai** (Anthropic-compat, glm-5.1 / glm-4.6) | per-token, ~cents per thesis draft, sub-cent per news article scored | `ANTHROPIC_API_KEY` (auto-detected as z.ai by base URL) | wired |
 | (alt) Real Anthropic | Anthropic | per-token | same env var, different value | supported, not used |
 
 ---
 
 ## Currently configured keys (names only)
 
-`ANTHROPIC_API_KEY`, `FRED_API_KEY`, `MASSIVE_API_KEY` — all in Infisical
-`dev` env. Add new keys via `infisical secrets set NAME` — never to `.env`.
+`ANTHROPIC_API_KEY`, `FRED_API_KEY`, `MASSIVE_API_KEY`, `FMP_API_KEY` — all in
+Infisical `dev` env. Add new keys via `infisical secrets set NAME` — never to `.env`.
 
 To check which keys are configured without revealing values:
 
@@ -127,15 +141,30 @@ absent names = not yet configured.
 
 ## Decision log
 
-**2026-05-31 — vendor consolidation analysis**
-- Considered replacing Massive with FMP: rejected. FMP only offers current
-  consensus snapshot, no revision timeline (the reason FMP was on the table).
-- Considered replacing Massive with Finnhub: viable. Finnhub `/stock/revision`
-  is a true revision time-series (the FMP-killer feature). One Finnhub
-  Premium All-In-One (~$50/mo) covers OHLCV + news+sentiment + estimates +
-  rating changes, replacing Massive Starter ($29).
-- Gaps where Massive wins: options chains (LEAPS work), websocket realtime,
-  tick-level data quality reputation. None of these matter for our daily-batch
-  thesis workflow today.
-- **Open question for operator:** stay with Massive ($29, defer estimates) or
-  swap to Finnhub Premium ($50, includes estimates). Doc updated when decided.
+**2026-05-31 — vendor consolidation analysis (initial)**
+- Considered replacing Massive with FMP only: rejected. FMP's earnings endpoint
+  is snapshot only, no native revision timeline.
+- Considered replacing Massive with Finnhub: viable but Finnhub's estimate
+  add-on alone is $75/mo. Total cost worse than alternatives.
+
+**2026-05-31 — FMP probe with live key**
+- FMP Starter unlocks per-symbol queries across our full universe (NVDA, MU,
+  AMD, AMAT, TSM, ANET, VRT, CDNS all returned 200 on `historical-price-eod/full`
+  and `analyst-estimates`).
+- **`grades-latest-news` is the breakthrough** — a global event feed with
+  `newGrade` / `previousGrade` / `gradingCompany` / `priceWhenPosted` per event.
+  This is per-firm rating *revisions* (the rich version Bloomberg/Refinitiv
+  sells for 5-figures/yr), free on FMP Starter, just needs client-side filter
+  to our universe.
+- FMP news lacks per-article sentiment (Massive's has it via `insights[]`).
+
+**2026-05-31 — chosen architecture**
+- FMP Starter primary for price, estimates, grades, earnings calendar
+- Massive kept for news+sentiment specifically
+- Build a generic LLM sentiment classifier (`src/sentiment/`) so any future
+  news source (FMP news, RSS feeds, Twitter, etc.) gets scored through the
+  same path with full audit trail via `llm_invocation`
+- For estimates: build snapshot+diff layer ourselves (daily snapshot of
+  `analyst-estimates` → `estimate_snapshot` table → diff against prior →
+  emit `estimate_revision` events). Cheaper than Finnhub's pre-computed
+  revision feed and we own the audit trail.

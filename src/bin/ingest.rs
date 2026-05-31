@@ -12,7 +12,7 @@ use anyhow::Result;
 use stocks::ingest;
 use stocks::ingest::edgar::EdgarAdapter;
 use stocks::ingest::fred::FredAdapter;
-use stocks::ingest::massive::MassiveAdapter;
+use stocks::ingest::fmp::FmpPriceAdapter;
 use stocks::ingest::xbrl::XbrlAdapter;
 use stocks::platform::{bus::Bus, config::Config, logging, store::Store, subjects};
 use tracing::{error, info};
@@ -26,30 +26,29 @@ async fn main() -> Result<()> {
     let bus = Bus::connect(&cfg.nats_url).await?;
     bus.ensure_stream(subjects::STREAM_INGEST, &["ingest.*"]).await?;
 
-    // Spawn the Massive (price) bulk loop. Daily lookback of 30 days on
-    // each poll keeps re-sync cheap; the table primary key dedups.
+    // FMP (primary price source, #60). Replaces Massive as of 2026-05-31.
+    // Massive adapter is still in the codebase but no longer wired here —
+    // it's reserved for the news+sentiment work (#19) where it's the only
+    // vendor we have with per-article sentiment.
     {
         let store = store.clone();
-        let key = cfg.massive_api_key.clone();
-        let base = cfg.massive_base_url.clone();
+        let key = cfg.fmp_api_key.clone();
+        let base = cfg.fmp_base_url.clone();
         tokio::spawn(async move {
-            let adapter = MassiveAdapter::new(&key, &base);
+            let adapter = FmpPriceAdapter::new(&key, &base);
             let interval = Duration::from_secs(6 * 3600);
             loop {
                 // 2y lookback: covers Donchian-55 base_breakout (#22), full
                 // SMA-200 (consensus #21 price_extension), and gives the
-                // 52w-high baseline. Massive Starter supports 5y; the
-                // (symbol, ts) PK + ON CONFLICT means each subsequent poll
-                // is effectively idempotent — only new bars insert.
+                // 52w-high baseline. FMP Starter supports 5y+; (symbol, ts)
+                // PK + ON CONFLICT means each subsequent poll is idempotent.
                 match adapter.poll_all(730).await {
-                    Ok(rows) if rows.is_empty() => {
-                        // already warned if key missing; otherwise no-op
-                    }
+                    Ok(rows) if rows.is_empty() => {}
                     Ok(rows) => match store.upsert_price_bars(&rows).await {
-                        Ok(inserted) => info!(rows = rows.len(), inserted, "massive pass complete"),
-                        Err(e) => error!(error = %e, "massive persist failed"),
+                        Ok(inserted) => info!(rows = rows.len(), inserted, "fmp price pass complete"),
+                        Err(e) => error!(error = %e, "fmp price persist failed"),
                     },
-                    Err(e) => error!(error = %e, "massive poll failed"),
+                    Err(e) => error!(error = %e, "fmp price poll failed"),
                 }
                 tokio::time::sleep(interval).await;
             }

@@ -15,6 +15,8 @@ use stocks::ingest::fred::FredAdapter;
 use stocks::ingest::fmp::FmpPriceAdapter;
 use stocks::ingest::fmp_estimates::FmpEstimatesAdapter;
 use stocks::ingest::fmp_estimates_service;
+use stocks::ingest::cboe::CboeAdapter;
+use stocks::ingest::crowd_sentiment_service;
 use stocks::ingest::fmp_news::FmpNewsAdapter;
 use stocks::ingest::massive_news::MassiveNewsAdapter;
 use stocks::ingest::news_service::{self, NewsIngestService, ScorerFn};
@@ -76,6 +78,19 @@ async fn main() -> Result<()> {
             let interval = Duration::from_secs(6 * 3600);
             if let Err(e) = fmp_estimates_service::run(pool, adapter, interval).await {
                 error!(error = %e, "fmp_estimates service exited");
+            }
+        });
+    }
+
+    // Crowd sentiment (#20): CBOE put/call + VIX daily CSV → crowd_sentiment.
+    // Feeds the consensus retail_attention component.
+    {
+        let pool = store.pool.clone();
+        tokio::spawn(async move {
+            let adapter = CboeAdapter::new();
+            let interval = Duration::from_secs(6 * 3600);
+            if let Err(e) = crowd_sentiment_service::run(pool, adapter, interval).await {
+                error!(error = %e, "crowd_sentiment service exited");
             }
         });
     }

@@ -4,6 +4,8 @@
 //! [`run`] runner spawns each on its own ticker and dedups via `content_hash`
 //! (so re-polling old data is harmless).
 
+pub mod cboe;
+pub mod crowd_sentiment_service;
 pub mod edgar;
 pub mod fmp;
 pub mod fmp_estimates;

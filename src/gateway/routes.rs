@@ -32,6 +32,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/theses/{thesis_id}/transition", post(transition_thesis))
         .route("/api/ticker-context", get(get_ticker_context))
         .route("/api/candles", get(get_candles))
+        .route("/api/symbol-events", get(get_symbol_events))
         .route("/api/calibration", get(get_calibration))
         .route("/api/watchlists", get(list_watchlists).post(create_watchlist))
         .route("/api/watchlists/{id}", axum::routing::delete(delete_watchlist))
@@ -253,6 +254,33 @@ async fn get_candles(
         Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
         Err(e) => {
             warn!(symbol = %sym, error = %e, "get_candles failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn get_symbol_events(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<CandlesQuery>,
+) -> impl IntoResponse {
+    let Some(sym) = q.symbol else {
+        return (StatusCode::BAD_REQUEST, "symbol query param required").into_response();
+    };
+    use chrono::Datelike;
+    let lookback_days: i64 = match q.range.as_deref().unwrap_or("6M") {
+        "1M" => 35, "3M" => 100, "6M" => 200,
+        "YTD" => {
+            let today = chrono::Utc::now().date_naive();
+            let jan1 = chrono::NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap_or(today);
+            (today - jan1).num_days().max(1)
+        }
+        "1Y" => 380, "ALL" => 365 * 30,
+        _ => 200,
+    };
+    match gw.store.symbol_events(&sym, lookback_days).await {
+        Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
+        Err(e) => {
+            warn!(symbol = %sym, error = %e, "get_symbol_events failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }

@@ -106,22 +106,152 @@ fn compute_rsi14(closes_desc: &[f64]) -> f64 {
     100.0 - (100.0 / (1.0 + rs))
 }
 
-// ---------- degraded stubs (return zero with attribution) ----------
+// ---------- pure scoring functions for the data-driven components ----------
 
+/// Score from estimate revisions over a lookback window.
+/// The MORE one-directional revision activity, the HIGHER consensus is being
+/// "saturated" (everyone's catching on → we're getting closer to the late-
+/// crowd line per SPEC §0). Mixed/coverage_change revisions don't count.
+///
+/// Saturation curve: 0 net revisions → 0; 1 → 30; 3 → 60; 5+ → 100.
+/// Negative `net` (more down than up) gives a negative-signed raw score —
+/// the consensus computation treats absolute magnitude as "saturation".
 #[must_use]
-pub fn coverage_expansion_stub() -> ComponentScore {
-    ComponentScore { name: "coverage_expansion", raw: 0.0, weighted: 0.0, status: "no_data" }
+pub fn estimate_revision_saturation_raw(up_count: u32, down_count: u32) -> f64 {
+    let net = (up_count as i32) - (down_count as i32);
+    let abs = net.unsigned_abs() as f64;
+    let saturation = if abs >= 5.0 { 100.0 } else { abs * 20.0 };
+    if net >= 0 {
+        saturation
+    } else {
+        -saturation
+    }
 }
 
+/// Score from news coverage breadth over a lookback window.
+/// More distinct publishers mentioning a ticker = closer to mainstream
+/// attention. Curve: 1 publisher → 20; 3 → 60; 5+ → 100.
 #[must_use]
-pub fn estimate_revision_saturation_stub() -> ComponentScore {
-    ComponentScore { name: "estimate_revision_saturation", raw: 0.0, weighted: 0.0, status: "no_data" }
+pub fn mainstream_coverage_raw(distinct_publishers: u32) -> f64 {
+    let p = distinct_publishers as f64;
+    if p >= 5.0 { 100.0 } else { p * 20.0 }
 }
 
+/// Score from rate of new publishers picking up the story (delta vs prior
+/// window). New_pubs is "publishers in last N days who didn't cover in prior
+/// N days." Curve: 0 → 0; 2 → 40; 5+ → 100.
 #[must_use]
-pub fn mainstream_coverage_stub() -> ComponentScore {
-    ComponentScore { name: "mainstream_coverage", raw: 0.0, weighted: 0.0, status: "no_data" }
+pub fn coverage_expansion_raw(new_publishers: u32) -> f64 {
+    let p = new_publishers as f64;
+    if p >= 5.0 { 100.0 } else { p * 20.0 }
 }
+
+// ---------- async scorers (DB I/O) — read from the new tables ----------
+
+/// Net up-vs-down revisions in the last 14 days → saturation curve.
+/// Returns no_data if there are zero revisions for this symbol in the window.
+pub async fn estimate_revision_saturation(pool: &PgPool, symbol: &str) -> Result<ComponentScore> {
+    let row = sqlx::query(
+        r#"SELECT
+             count(*) FILTER (WHERE direction = 'up')   AS up_count,
+             count(*) FILTER (WHERE direction = 'down') AS down_count,
+             count(*) AS total
+           FROM estimate_revision
+          WHERE symbol = $1
+            AND direction IN ('up','down')
+            AND detected_at > now() - interval '14 days'"#,
+    )
+    .bind(symbol)
+    .fetch_one(pool)
+    .await?;
+    let up: i64 = row.try_get("up_count")?;
+    let down: i64 = row.try_get("down_count")?;
+    let total: i64 = row.try_get("total")?;
+    if total == 0 {
+        return Ok(ComponentScore {
+            name: "estimate_revision_saturation",
+            raw: 0.0,
+            weighted: 0.0,
+            status: "no_data",
+        });
+    }
+    let raw = estimate_revision_saturation_raw(up as u32, down as u32);
+    Ok(ComponentScore {
+        name: "estimate_revision_saturation",
+        raw,
+        weighted: 0.0,
+        status: "ok",
+    })
+}
+
+/// Distinct publishers carrying news on this ticker in the last 7 days.
+pub async fn mainstream_coverage(pool: &PgPool, symbol: &str) -> Result<ComponentScore> {
+    let row = sqlx::query(
+        r#"SELECT COUNT(DISTINCT publisher) AS pubs
+             FROM news_article
+            WHERE symbol = $1
+              AND publisher IS NOT NULL
+              AND published_at > now() - interval '7 days'"#,
+    )
+    .bind(symbol)
+    .fetch_one(pool)
+    .await?;
+    let pubs: i64 = row.try_get("pubs")?;
+    if pubs == 0 {
+        return Ok(ComponentScore {
+            name: "mainstream_coverage",
+            raw: 0.0,
+            weighted: 0.0,
+            status: "no_data",
+        });
+    }
+    let raw = mainstream_coverage_raw(pubs as u32);
+    Ok(ComponentScore { name: "mainstream_coverage", raw, weighted: 0.0, status: "ok" })
+}
+
+/// Publishers in the last 7d that didn't cover the same ticker in the prior 7d.
+/// Captures the "story is spreading" velocity.
+pub async fn coverage_expansion(pool: &PgPool, symbol: &str) -> Result<ComponentScore> {
+    let row = sqlx::query(
+        r#"WITH recent AS (
+              SELECT DISTINCT publisher FROM news_article
+               WHERE symbol = $1 AND publisher IS NOT NULL
+                 AND published_at > now() - interval '7 days'
+           ), prior AS (
+              SELECT DISTINCT publisher FROM news_article
+               WHERE symbol = $1 AND publisher IS NOT NULL
+                 AND published_at > now() - interval '14 days'
+                 AND published_at <= now() - interval '7 days'
+           )
+           SELECT count(*) AS new_pubs FROM recent
+             WHERE publisher NOT IN (SELECT publisher FROM prior)"#,
+    )
+    .bind(symbol)
+    .fetch_one(pool)
+    .await?;
+    let new_pubs: i64 = row.try_get("new_pubs")?;
+    // No-data only when there are literally zero articles either window —
+    // 0 new in 7d when prior window had some is meaningful (story cooling off).
+    let total: i64 = sqlx::query_scalar(
+        r#"SELECT count(*) FROM news_article
+            WHERE symbol = $1 AND published_at > now() - interval '14 days'"#,
+    )
+    .bind(symbol)
+    .fetch_one(pool)
+    .await?;
+    if total == 0 {
+        return Ok(ComponentScore {
+            name: "coverage_expansion",
+            raw: 0.0,
+            weighted: 0.0,
+            status: "no_data",
+        });
+    }
+    let raw = coverage_expansion_raw(new_pubs as u32);
+    Ok(ComponentScore { name: "coverage_expansion", raw, weighted: 0.0, status: "ok" })
+}
+
+// ---------- degraded stubs (retail_attention waits on #20) ----------
 
 #[must_use]
 pub fn retail_attention_stub() -> ComponentScore {
@@ -177,15 +307,43 @@ mod tests {
     }
 
     #[test]
-    fn degraded_stubs_attribute_no_data() {
-        for s in [
-            coverage_expansion_stub(),
-            estimate_revision_saturation_stub(),
-            mainstream_coverage_stub(),
-            retail_attention_stub(),
-        ] {
-            assert_eq!(s.raw, 0.0);
-            assert_eq!(s.status, "no_data");
-        }
+    fn retail_attention_stub_attributes_no_data() {
+        let s = retail_attention_stub();
+        assert_eq!(s.raw, 0.0);
+        assert_eq!(s.status, "no_data");
+    }
+
+    #[test]
+    fn estimate_saturation_curve_increases_with_net() {
+        assert_eq!(estimate_revision_saturation_raw(0, 0), 0.0);
+        assert_eq!(estimate_revision_saturation_raw(1, 0), 20.0);
+        assert_eq!(estimate_revision_saturation_raw(3, 0), 60.0);
+        assert_eq!(estimate_revision_saturation_raw(5, 0), 100.0);
+        assert_eq!(estimate_revision_saturation_raw(10, 0), 100.0, "clamps at 100");
+    }
+
+    #[test]
+    fn estimate_saturation_signs_negative_when_down_dominates() {
+        assert_eq!(estimate_revision_saturation_raw(0, 3), -60.0);
+        // Mixed cancels: 3 up + 3 down = net 0 → 0
+        assert_eq!(estimate_revision_saturation_raw(3, 3), 0.0);
+        // 1 up + 4 down → net -3 → -60
+        assert_eq!(estimate_revision_saturation_raw(1, 4), -60.0);
+    }
+
+    #[test]
+    fn mainstream_coverage_curve_scales_with_publishers() {
+        assert_eq!(mainstream_coverage_raw(0), 0.0);
+        assert_eq!(mainstream_coverage_raw(1), 20.0);
+        assert_eq!(mainstream_coverage_raw(3), 60.0);
+        assert_eq!(mainstream_coverage_raw(5), 100.0);
+        assert_eq!(mainstream_coverage_raw(100), 100.0, "clamps at 100");
+    }
+
+    #[test]
+    fn coverage_expansion_curve_scales_with_new_publishers() {
+        assert_eq!(coverage_expansion_raw(0), 0.0);
+        assert_eq!(coverage_expansion_raw(2), 40.0);
+        assert_eq!(coverage_expansion_raw(5), 100.0);
     }
 }

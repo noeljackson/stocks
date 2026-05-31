@@ -90,17 +90,22 @@ async fn score_symbol(
     symbol: &str,
     cfg: &Config,
 ) -> Result<super::Score> {
-    // Compute each component (real or degraded) then apply weights.
+    // Compute each component. Three were stubs until we got the inputs in
+    // PRs #18/#19 — now they read from estimate_revision and news_article.
+    // retail_attention still waits on #20 (crowd sentiment).
     let pe_raw = components::price_extension(pool, symbol).await?;
     let pe = weight(pe_raw, cfg.weights.price_extension);
 
-    let coverage = weight(components::coverage_expansion_stub(), cfg.weights.coverage_expansion);
+    let coverage = weight(
+        components::coverage_expansion(pool, symbol).await?,
+        cfg.weights.coverage_expansion,
+    );
     let estimate = weight(
-        components::estimate_revision_saturation_stub(),
+        components::estimate_revision_saturation(pool, symbol).await?,
         cfg.weights.estimate_revision_saturation,
     );
     let mainstream = weight(
-        components::mainstream_coverage_stub(),
+        components::mainstream_coverage(pool, symbol).await?,
         cfg.weights.mainstream_coverage,
     );
     let retail = weight(components::retail_attention_stub(), cfg.weights.retail_attention);

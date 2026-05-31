@@ -127,7 +127,49 @@ impl FmpPriceAdapter {
         Ok(to_rows(symbol, &parsed))
     }
 
-    /// Poll every seeded Tier-1 ticker + benchmarks. Caller persists.
+    /// Poll a list of symbols using per-ticker incremental backfill:
+    /// - First-ever sight (no existing bars) → 5y backfill
+    /// - Subsequent polls → 30d window (idempotent on (symbol, ts) PK)
+    ///
+    /// `existing_min_ts_by_symbol` lets the caller pass the oldest bar we
+    /// already have per symbol (cheap one-shot query). When the entry is
+    /// absent OR `None`, we treat the symbol as cold and pull 5y.
+    pub async fn poll_symbols(
+        &self,
+        symbols: &[String],
+        existing_min_ts_by_symbol: &std::collections::HashMap<String, Option<chrono::DateTime<Utc>>>,
+    ) -> Result<Vec<PriceBarRow>> {
+        if self.api_key.is_empty() {
+            if !self.warned_no_key.swap(true, Ordering::Relaxed) {
+                warn!("fmp: FMP_API_KEY not set; skipping price ingest");
+            }
+            return Ok(Vec::new());
+        }
+        let mut all = Vec::new();
+        let five_years = 365 * 5;
+        for sym in symbols {
+            let cold = !matches!(existing_min_ts_by_symbol.get(sym), Some(Some(_)));
+            let lookback_days = if cold { five_years } else { 30 };
+            match self.fetch_one(sym, lookback_days).await {
+                Ok(rows) => {
+                    tracing::info!(
+                        symbol = %sym, bars = rows.len(), cold,
+                        lookback_days,
+                        "fmp bars fetched"
+                    );
+                    all.extend(rows);
+                }
+                Err(e) => {
+                    tracing::warn!(symbol = %sym, error = %e, "fmp fetch failed; continuing");
+                }
+            }
+            // 200ms = 5 req/s. Safe under FMP Starter's 300/min cap.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        Ok(all)
+    }
+
+    /// Legacy seeded-list path (used by integration tests). Prefer poll_symbols.
     pub async fn poll_all(&self, lookback_days: i64) -> Result<Vec<PriceBarRow>> {
         if self.api_key.is_empty() {
             if !self.warned_no_key.swap(true, Ordering::Relaxed) {
@@ -141,16 +183,9 @@ impl FmpPriceAdapter {
             .chain(BENCHMARKS.iter().copied())
             .collect();
         for sym in symbols {
-            match self.fetch_one(sym, lookback_days).await {
-                Ok(rows) => {
-                    tracing::info!(symbol = sym, bars = rows.len(), "fmp bars fetched");
-                    all.extend(rows);
-                }
-                Err(e) => {
-                    tracing::warn!(symbol = sym, error = %e, "fmp fetch failed; continuing");
-                }
+            if let Ok(rows) = self.fetch_one(sym, lookback_days).await {
+                all.extend(rows);
             }
-            // 200ms = 5 req/s. Safe under FMP Starter's 300/min cap.
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
         Ok(all)

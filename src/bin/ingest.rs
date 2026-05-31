@@ -37,10 +37,9 @@ async fn main() -> Result<()> {
     let bus = Bus::connect(&cfg.nats_url).await?;
     bus.ensure_stream(subjects::STREAM_INGEST, &["ingest.*"]).await?;
 
-    // FMP (primary price source, #60). Replaces Massive as of 2026-05-31.
-    // Massive adapter is still in the codebase but no longer wired here —
-    // it's reserved for the news+sentiment work (#19) where it's the only
-    // vendor we have with per-article sentiment.
+    // FMP price ingest (#60, #88). Per-ticker incremental backfill: 5y on
+    // first sight, 30d on subsequent polls. Pool = discovery_pool ∪ ticker
+    // (so both scan-pool members AND active universe get bars).
     {
         let store = store.clone();
         let key = cfg.fmp_api_key.clone();
@@ -49,19 +48,42 @@ async fn main() -> Result<()> {
             let adapter = FmpPriceAdapter::new(&key, &base);
             let interval = Duration::from_secs(6 * 3600);
             loop {
-                // 2y lookback: covers Donchian-55 base_breakout (#22), full
-                // SMA-200 (consensus #21 price_extension), and gives the
-                // 52w-high baseline. FMP Starter supports 5y+; (symbol, ts)
-                // PK + ON CONFLICT means each subsequent poll is idempotent.
-                match adapter.poll_all(730).await {
-                    Ok(rows) if rows.is_empty() => {}
-                    Ok(rows) => match store.upsert_price_bars(&rows).await {
-                        Ok(inserted) => info!(rows = rows.len(), inserted, "fmp price pass complete"),
-                        Err(e) => error!(error = %e, "fmp price persist failed"),
-                    },
-                    Err(e) => error!(error = %e, "fmp price poll failed"),
+                // Pool ∪ active tickers ∪ benchmarks
+                let mut symbols: std::collections::BTreeSet<String> = Default::default();
+                if let Ok(p) = store.discovery_pool_symbols().await {
+                    symbols.extend(p);
+                }
+                for bench in ["SPY", "QQQ", "SMH", "VIXY"] {
+                    symbols.insert(bench.to_string());
+                }
+                let symbols: Vec<String> = symbols.into_iter().collect();
+                if !symbols.is_empty() {
+                    let oldest = store.oldest_bar_per_symbol(&symbols).await.unwrap_or_default();
+                    match adapter.poll_symbols(&symbols, &oldest).await {
+                        Ok(rows) if rows.is_empty() => {}
+                        Ok(rows) => match store.upsert_price_bars(&rows).await {
+                            Ok(inserted) => info!(symbols = symbols.len(), rows = rows.len(), inserted, "fmp price pass complete"),
+                            Err(e) => error!(error = %e, "fmp price persist failed"),
+                        },
+                        Err(e) => error!(error = %e, "fmp price poll failed"),
+                    }
                 }
                 tokio::time::sleep(interval).await;
+            }
+        });
+    }
+
+    // FMP screener (#88): refresh discovery_pool nightly so the scanner has
+    // a broad investible candidate set, not just our hand-curated universe.
+    {
+        let pool = store.pool.clone();
+        let key = cfg.fmp_api_key.clone();
+        let base = cfg.fmp_base_url.clone();
+        tokio::spawn(async move {
+            let adapter = stocks::ingest::fmp_screener::FmpScreenerAdapter::new(&key, &base);
+            let interval = Duration::from_secs(24 * 3600);
+            if let Err(e) = stocks::ingest::discovery_pool_service::run(pool, adapter, interval).await {
+                error!(error = %e, "discovery_pool service exited");
             }
         });
     }

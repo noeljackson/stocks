@@ -4,7 +4,8 @@
 //! Decisions record what the human chose.
 //!
 //! Producers (services that create attention items):
-//! - discovery scanner → candidate_review on each fresh discovery_candidate
+//! - discovery scanner → candidate_review on composed discovery candidates
+//! - discovery scanner → thesis_actionable when a hit belongs to an existing thesis
 //! - gateway transition endpoint → thesis_actionable when state → actionable
 //! - risk service → risk_review on veto/warning
 //! - staler service → context_stale + invalidation_hit (future)
@@ -54,7 +55,16 @@ pub mod source {
 /// Builds the standard title for a candidate_review item.
 #[must_use]
 pub fn title_for_candidate(symbol: &str, signal_name: &str) -> String {
-    format!("{symbol} candidate via {signal_name}")
+    let label = match signal_name {
+        "early_accumulation" => "possible early accumulation",
+        "breakout_confirmation" => "breakout confirmation",
+        "extended_momentum" => "extended momentum review",
+        "consensus_arrival" => "consensus arrival review",
+        "possible_exhaustion" => "possible exhaustion review",
+        "existing_thesis_trigger" => "existing thesis trigger",
+        _ => return format!("{symbol} candidate via {signal_name}"),
+    };
+    format!("{symbol}: {label}")
 }
 
 #[must_use]
@@ -78,32 +88,64 @@ mod tests {
 
     #[test]
     fn titles_format_consistently() {
-        assert_eq!(title_for_candidate("MU", "volume_anomaly"),
-                   "MU candidate via volume_anomaly");
-        assert_eq!(title_for_thesis_actionable("NVDA"),
-                   "NVDA thesis ready to act on");
-        assert_eq!(title_for_risk_review("MU", true,
-                       &["single_name_delta_notional_pct".into(),
-                         "cash_floor_pct".into()]),
-                   "MU risk veto: single_name_delta_notional_pct, cash_floor_pct");
-        assert_eq!(title_for_risk_review("MU", false, &[]),
-                   "MU risk warning");
+        assert_eq!(
+            title_for_candidate("MU", "volume_anomaly"),
+            "MU candidate via volume_anomaly"
+        );
+        assert_eq!(
+            title_for_candidate("MU", "extended_momentum"),
+            "MU: extended momentum review"
+        );
+        assert_eq!(
+            title_for_thesis_actionable("NVDA"),
+            "NVDA thesis ready to act on"
+        );
+        assert_eq!(
+            title_for_risk_review(
+                "MU",
+                true,
+                &[
+                    "single_name_delta_notional_pct".into(),
+                    "cash_floor_pct".into()
+                ]
+            ),
+            "MU risk veto: single_name_delta_notional_pct, cash_floor_pct"
+        );
+        assert_eq!(title_for_risk_review("MU", false, &[]), "MU risk warning");
     }
 
     #[test]
     fn constants_match_check_constraint() {
         // belt-and-braces: every kind/severity/source matches what the
         // migration's CHECK constraint accepts.
-        for k in [kind::CANDIDATE_REVIEW, kind::CONTEXT_STALE, kind::THESIS_INCOMPLETE,
-                  kind::THESIS_ACTIONABLE, kind::RISK_REVIEW, kind::INVALIDATION_HIT,
-                  kind::OUTCOME_READY] {
+        for k in [
+            kind::CANDIDATE_REVIEW,
+            kind::CONTEXT_STALE,
+            kind::THESIS_INCOMPLETE,
+            kind::THESIS_ACTIONABLE,
+            kind::RISK_REVIEW,
+            kind::INVALIDATION_HIT,
+            kind::OUTCOME_READY,
+        ] {
             assert!(!k.is_empty());
         }
-        for s in [severity::INFO, severity::REVIEW, severity::DECISION, severity::BLOCKED] {
+        for s in [
+            severity::INFO,
+            severity::REVIEW,
+            severity::DECISION,
+            severity::BLOCKED,
+        ] {
             assert!(!s.is_empty());
         }
-        for s in [source::DISCOVERY, source::THESIS, source::RISK, source::CONTEXT,
-                  source::CONSENSUS, source::REFLECTION, source::SYSTEM] {
+        for s in [
+            source::DISCOVERY,
+            source::THESIS,
+            source::RISK,
+            source::CONTEXT,
+            source::CONSENSUS,
+            source::REFLECTION,
+            source::SYSTEM,
+        ] {
             assert!(!s.is_empty());
         }
     }

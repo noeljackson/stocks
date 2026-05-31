@@ -53,7 +53,9 @@ history.
    Keep each ticker's structural, narrative, and market context fresh
 
 4. Discover
-   Scan a broader universe for cheap early signals and propose watchlist adds
+   Scan a broader universe for cheap raw signals, compose those facts into an
+   operator-facing interpretation, and propose watchlist adds only when the
+   interpretation deserves review
 
 5. Draft/evaluate thesis
    Convert context + technicals + regime into a falsifiable thesis object
@@ -79,6 +81,11 @@ Attention      = "look here now"
 Decision       = what the human chose
 Outcome        = whether it was right
 ```
+
+The canonical object lifecycle and attention-kind map lives in
+[`docs/LIFECYCLE.md`](LIFECYCLE.md). When changing discovery, attention,
+thesis transitions, decisions, positions, or outcomes, update that map in the
+same PR.
 
 ## Scan tiers
 

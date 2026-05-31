@@ -8,8 +8,9 @@
 //!   - estimate_revision_inflection  STUB (needs #18)
 //!   - filing_news_cluster  STUB (needs #19)
 
-pub mod signals;
+pub mod composer;
 pub mod service;
+pub mod signals;
 
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +18,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SignalHit {
     pub symbol: String,
-    pub signal_name: &'static str,
+    pub signal_name: String,
     pub value: f64,
     pub reasoning: String,
 }

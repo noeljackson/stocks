@@ -1,6 +1,5 @@
 //! Discovery service — walks the universe, runs enabled signal detectors,
-//! upserts discovery_candidate rows for fresh hits, emits discovery.candidate
-//! on the MARKET stream.
+//! composes them into operator-facing interpretations, and emits attention.
 
 use std::time::Duration;
 
@@ -8,12 +7,16 @@ use anyhow::{Context, Result};
 use sqlx::{Row, postgres::PgPool};
 use tracing::{info, warn};
 
-use super::{Config, SignalHit, signals};
+use super::{
+    Config, SignalHit,
+    composer::{self, ComposedSignal, PriceExtension, SignalContext},
+    signals,
+};
 use crate::platform::bus::Bus;
 use crate::platform::subjects;
 
-/// One pass: for every active symbol, run all enabled signals; persist hits
-/// as discovery_candidate rows; publish discovery.candidate per hit.
+/// One pass: for every active symbol, run all enabled signals; persist
+/// candidate-worthy hits and publish discovery.candidate for new candidates.
 pub async fn run_once(pool: &PgPool, bus: &Bus) -> Result<usize> {
     // Load active config.
     let row = sqlx::query(
@@ -47,11 +50,20 @@ pub async fn run_once(pool: &PgPool, bus: &Bus) -> Result<usize> {
         match scan_one(pool, symbol, &cfg).await {
             Ok(hits) => {
                 for hit in hits {
-                    if let Err(e) = persist(pool, &hit, &version.to_string()).await {
-                        warn!(symbol = %hit.symbol, signal = hit.signal_name, error = %e, "persist failed");
+                    let should_publish_candidate = match persist(pool, &hit, &version.to_string())
+                        .await
+                    {
+                        Ok(should_publish_candidate) => should_publish_candidate,
+                        Err(e) => {
+                            warn!(symbol = %hit.symbol, signal = hit.signal_name, error = %e, "persist failed");
+                            continue;
+                        }
+                    };
+                    total_hits += 1;
+                    if !should_publish_candidate {
+                        info!(symbol = %hit.symbol, signal = hit.signal_name, value = hit.value, "discovery hit routed to existing thesis");
                         continue;
                     }
-                    total_hits += 1;
                     let payload = serde_json::json!({
                         "symbol": hit.symbol,
                         "signal_name": hit.signal_name,
@@ -60,7 +72,10 @@ pub async fn run_once(pool: &PgPool, bus: &Bus) -> Result<usize> {
                         "config_version": version,
                     });
                     if let Err(e) = bus
-                        .publish(subjects::DISCOVERY_CANDIDATE, payload.to_string().as_bytes())
+                        .publish(
+                            subjects::DISCOVERY_CANDIDATE,
+                            payload.to_string().as_bytes(),
+                        )
                         .await
                     {
                         warn!(error = %e, "publish discovery.candidate failed (non-fatal)");
@@ -74,12 +89,12 @@ pub async fn run_once(pool: &PgPool, bus: &Bus) -> Result<usize> {
     Ok(total_hits)
 }
 
-async fn scan_one(pool: &PgPool, symbol: &str, cfg: &Config) -> Result<Vec<SignalHit>> {
+async fn scan_one(pool: &PgPool, symbol: &str, cfg: &Config) -> Result<Vec<ComposedSignal>> {
     // Pull recent bars once; share across signal evaluators.
     let rows = sqlx::query(
         r#"SELECT close::float8 AS close, volume::float8 AS volume
              FROM price_bar WHERE symbol = $1
-            ORDER BY ts DESC LIMIT 60"#,
+            ORDER BY ts DESC LIMIT 260"#,
     )
     .bind(symbol)
     .fetch_all(pool)
@@ -96,7 +111,7 @@ async fn scan_one(pool: &PgPool, symbol: &str, cfg: &Config) -> Result<Vec<Signa
         if let Some(mult) = signals::volume_anomaly(&volumes, 3.0) {
             hits.push(SignalHit {
                 symbol: symbol.to_string(),
-                signal_name: "volume_anomaly",
+                signal_name: "volume_anomaly".to_string(),
                 value: mult,
                 reasoning: format!("volume {:.1}x 20-day avg", mult),
             });
@@ -106,7 +121,7 @@ async fn scan_one(pool: &PgPool, symbol: &str, cfg: &Config) -> Result<Vec<Signa
         if let Some(pct) = signals::base_breakout(&closes, 55, 8.0) {
             hits.push(SignalHit {
                 symbol: symbol.to_string(),
-                signal_name: "base_breakout",
+                signal_name: "base_breakout".to_string(),
                 value: pct,
                 reasoning: format!("close {:.2}% above prior 55-day high after tight base", pct),
             });
@@ -130,7 +145,7 @@ async fn scan_one(pool: &PgPool, symbol: &str, cfg: &Config) -> Result<Vec<Signa
         if let Some(net) = signals::estimate_revision_velocity(up as u32, down as u32, 3) {
             hits.push(SignalHit {
                 symbol: symbol.to_string(),
-                signal_name: "estimate_revision_velocity",
+                signal_name: "estimate_revision_velocity".to_string(),
                 value: net,
                 reasoning: format!(
                     "{} net revisions in last 14d ({}↑ {}↓)",
@@ -167,11 +182,16 @@ async fn scan_one(pool: &PgPool, symbol: &str, cfg: &Config) -> Result<Vec<Signa
         let prior_n: i64 = row.try_get("pn")?;
         let prior_avg: f64 = row.try_get("pa")?;
         if let Some(shift) = signals::news_sentiment_shift(
-            recent_avg, recent_n as u32, prior_avg, prior_n as u32, 0.3, 3,
+            recent_avg,
+            recent_n as u32,
+            prior_avg,
+            prior_n as u32,
+            0.3,
+            3,
         ) {
             hits.push(SignalHit {
                 symbol: symbol.to_string(),
-                signal_name: "news_sentiment_shift",
+                signal_name: "news_sentiment_shift".to_string(),
                 value: shift,
                 reasoning: format!(
                     "polarity drift {:+.2} ({}→{} articles, {:+.2}→{:+.2} avg)",
@@ -180,20 +200,71 @@ async fn scan_one(pool: &PgPool, symbol: &str, cfg: &Config) -> Result<Vec<Signa
             });
         }
     }
-    Ok(hits)
+    let ctx = load_signal_context(pool, symbol).await?;
+    let composed = composer::compose(
+        symbol,
+        &hits,
+        PriceExtension::from_closes_desc(&closes),
+        &ctx,
+    );
+    if composed.is_none() && !hits.is_empty() {
+        supersede_raw_open_candidates(pool, symbol, &hits, "suppressed_low_quality_noise").await?;
+    }
+    Ok(composed.into_iter().collect())
 }
 
-/// Idempotent. Skips when an OPEN candidate (status='proposed') already
-/// exists for (symbol, signal_name) — re-firing the same signal at 5-minute
-/// intervals would otherwise create dozens of duplicate rows per ticker
-/// (#105). Once the operator confirms or rejects, a fresh firing CAN create
-/// a new candidate.
+async fn load_signal_context(pool: &PgPool, symbol: &str) -> Result<SignalContext> {
+    let row = sqlx::query(
+        r#"SELECT
+             EXISTS (
+               SELECT 1 FROM thesis
+                WHERE symbol = $1
+                  AND state NOT IN ('closed', 'disqualified')
+             ) AS has_open_thesis,
+             (
+               SELECT thesis_id FROM thesis
+                WHERE symbol = $1
+                  AND state IN ('armed', 'actionable', 'position_open')
+                ORDER BY updated_at DESC
+                LIMIT 1
+             ) AS actionable_thesis_id,
+             EXISTS (
+               SELECT 1 FROM watchlist_member
+                WHERE symbol = $1
+             ) AS is_watchlisted"#,
+    )
+    .bind(symbol)
+    .fetch_one(pool)
+    .await
+    .context("load_signal_context")?;
+    let actionable_thesis_id: Option<uuid::Uuid> = row.try_get("actionable_thesis_id")?;
+    Ok(SignalContext {
+        has_open_thesis: row.try_get("has_open_thesis")?,
+        has_actionable_thesis: actionable_thesis_id.is_some(),
+        actionable_thesis_id,
+        is_watchlisted: row.try_get("is_watchlisted")?,
+    })
+}
+
+/// Idempotent. Returns whether this hit should also publish discovery.candidate.
+/// Skips when an OPEN candidate (status='proposed') already exists for
+/// (symbol, signal_name) — re-firing the same signal at 5-minute intervals
+/// would otherwise create dozens of duplicate rows per ticker (#105). Once the
+/// operator confirms or rejects, a fresh firing CAN create a new candidate.
 ///
 /// On insert, also fires an attention_item(candidate_review) so the operator
 /// surface (#86) picks it up immediately. The attention table's partial
 /// unique on (kind, candidate_id) WHERE status='open' dedups across runs.
-async fn persist(pool: &PgPool, hit: &SignalHit, config_version: &str) -> Result<()> {
+async fn persist(pool: &PgPool, hit: &ComposedSignal, config_version: &str) -> Result<bool> {
     use crate::attention::{kind, severity, source, title_for_candidate};
+    if hit.kind == composer::DiscoveryInterpretationKind::ExistingThesisTrigger {
+        if let Some(thesis_id) = hit.thesis_id {
+            persist_existing_thesis_trigger(pool, hit, config_version, thesis_id).await?;
+            return Ok(false);
+        }
+    }
+    supersede_stale_open_candidates(pool, hit).await?;
+    refresh_open_attention_title(pool, hit).await?;
     let row = sqlx::query(
         r#"INSERT INTO discovery_candidate
                  (symbol, signal_name, signal_value, reasoning, config_version)
@@ -208,7 +279,7 @@ async fn persist(pool: &PgPool, hit: &SignalHit, config_version: &str) -> Result
            RETURNING id"#,
     )
     .bind(&hit.symbol)
-    .bind(hit.signal_name)
+    .bind(&hit.signal_name)
     .bind(hit.value)
     .bind(&hit.reasoning)
     .bind(config_version)
@@ -219,6 +290,9 @@ async fn persist(pool: &PgPool, hit: &SignalHit, config_version: &str) -> Result
         let source_ref = serde_json::json!({
             "candidate_id": id,
             "signal_value": hit.value,
+            "interpretation_kind": hit.kind,
+            "raw_signals": hit.raw_signals,
+            "price_extension": hit.price_extension,
             "config_version": config_version,
         });
         if let Err(e) = sqlx::query(
@@ -231,7 +305,7 @@ async fn persist(pool: &PgPool, hit: &SignalHit, config_version: &str) -> Result
         .bind(&hit.symbol)
         .bind(id)
         .bind(severity::REVIEW)
-        .bind(title_for_candidate(&hit.symbol, hit.signal_name))
+        .bind(title_for_candidate(&hit.symbol, &hit.signal_name))
         .bind(&hit.reasoning)
         .bind(source::DISCOVERY)
         .bind(source_ref)
@@ -241,6 +315,178 @@ async fn persist(pool: &PgPool, hit: &SignalHit, config_version: &str) -> Result
             tracing::warn!(error = %e, "attention candidate_review insert failed (non-fatal)");
         }
     }
+    Ok(true)
+}
+
+async fn persist_existing_thesis_trigger(
+    pool: &PgPool,
+    hit: &ComposedSignal,
+    config_version: &str,
+    thesis_id: uuid::Uuid,
+) -> Result<()> {
+    use crate::attention::{kind, severity, source, title_for_thesis_actionable};
+    supersede_stale_open_candidates(pool, hit).await?;
+    let source_ref = serde_json::json!({
+        "signal_value": hit.value,
+        "interpretation_kind": hit.kind,
+        "raw_signals": hit.raw_signals,
+        "price_extension": hit.price_extension,
+        "config_version": config_version,
+    });
+    sqlx::query(
+        r#"INSERT INTO attention_item
+             (kind, symbol, thesis_id, severity, title, reason, source, source_ref)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+           ON CONFLICT DO NOTHING"#,
+    )
+    .bind(kind::THESIS_ACTIONABLE)
+    .bind(&hit.symbol)
+    .bind(thesis_id)
+    .bind(severity::DECISION)
+    .bind(title_for_thesis_actionable(&hit.symbol))
+    .bind(&hit.reasoning)
+    .bind(source::DISCOVERY)
+    .bind(&source_ref)
+    .execute(pool)
+    .await
+    .context("insert existing thesis trigger attention")?;
+    sqlx::query(
+        r#"UPDATE attention_item
+              SET title = $3,
+                  reason = $4,
+                  source_ref = source_ref || $5::jsonb
+            WHERE kind = $1
+              AND thesis_id = $2
+              AND status = 'open'"#,
+    )
+    .bind(kind::THESIS_ACTIONABLE)
+    .bind(thesis_id)
+    .bind(title_for_thesis_actionable(&hit.symbol))
+    .bind(&hit.reasoning)
+    .bind(serde_json::json!({ "latest_discovery_trigger": source_ref }))
+    .execute(pool)
+    .await
+    .context("refresh existing thesis trigger attention")?;
+    Ok(())
+}
+
+async fn refresh_open_attention_title(pool: &PgPool, hit: &ComposedSignal) -> Result<()> {
+    use crate::attention::{kind, title_for_candidate};
+    sqlx::query(
+        r#"UPDATE attention_item ai
+              SET title = $3,
+                  reason = $4
+             FROM discovery_candidate dc
+            WHERE ai.candidate_id = dc.id
+              AND ai.kind = $5
+              AND ai.status = 'open'
+              AND dc.status = 'proposed'
+              AND dc.symbol = $1
+              AND dc.signal_name = $2"#,
+    )
+    .bind(&hit.symbol)
+    .bind(&hit.signal_name)
+    .bind(title_for_candidate(&hit.symbol, &hit.signal_name))
+    .bind(&hit.reasoning)
+    .bind(kind::CANDIDATE_REVIEW)
+    .execute(pool)
+    .await
+    .context("refresh_open_attention_title")?;
+    Ok(())
+}
+
+async fn supersede_stale_open_candidates(pool: &PgPool, hit: &ComposedSignal) -> Result<()> {
+    use crate::attention::kind;
+    let other_composed = [
+        "early_accumulation",
+        "breakout_confirmation",
+        "extended_momentum",
+        "consensus_arrival",
+        "possible_exhaustion",
+        "existing_thesis_trigger",
+    ]
+    .into_iter()
+    .filter(|name| *name != hit.signal_name)
+    .map(String::from)
+    .collect::<Vec<_>>();
+    let raw_signals = hit.raw_signals.clone();
+    sqlx::query(
+        r#"WITH stale AS (
+             UPDATE discovery_candidate
+                SET status = 'superseded'
+              WHERE symbol = $1
+                AND status = 'proposed'
+                AND (
+                  signal_name = ANY($2::text[])
+                  OR signal_name = ANY($3::text[])
+                )
+              RETURNING id
+           )
+           UPDATE attention_item ai
+              SET status = 'dismissed',
+                  resolved_at = COALESCE(resolved_at, now()),
+                  resolution_kind = 'superseded_by_composed_discovery',
+                  resolution_ref = jsonb_build_object(
+                    'symbol', $1,
+                    'signal_name', $4,
+                    'raw_signals', to_jsonb($2::text[])
+                  )
+             FROM stale
+            WHERE ai.candidate_id = stale.id
+              AND ai.kind = $5
+              AND ai.status = 'open'"#,
+    )
+    .bind(&hit.symbol)
+    .bind(&raw_signals)
+    .bind(&other_composed)
+    .bind(&hit.signal_name)
+    .bind(kind::CANDIDATE_REVIEW)
+    .execute(pool)
+    .await
+    .context("supersede_stale_open_candidates")?;
+    Ok(())
+}
+
+async fn supersede_raw_open_candidates(
+    pool: &PgPool,
+    symbol: &str,
+    raw_hits: &[SignalHit],
+    reason: &str,
+) -> Result<()> {
+    use crate::attention::kind;
+    let raw_signals = raw_hits
+        .iter()
+        .map(|hit| hit.signal_name.clone())
+        .collect::<Vec<_>>();
+    sqlx::query(
+        r#"WITH stale AS (
+             UPDATE discovery_candidate
+                SET status = 'superseded'
+              WHERE symbol = $1
+                AND status = 'proposed'
+                AND signal_name = ANY($2::text[])
+              RETURNING id
+           )
+           UPDATE attention_item ai
+              SET status = 'dismissed',
+                  resolved_at = COALESCE(resolved_at, now()),
+                  resolution_kind = $3,
+                  resolution_ref = jsonb_build_object(
+                    'symbol', $1,
+                    'raw_signals', to_jsonb($2::text[])
+                  )
+             FROM stale
+            WHERE ai.candidate_id = stale.id
+              AND ai.kind = $4
+              AND ai.status = 'open'"#,
+    )
+    .bind(symbol)
+    .bind(&raw_signals)
+    .bind(reason)
+    .bind(kind::CANDIDATE_REVIEW)
+    .execute(pool)
+    .await
+    .context("supersede_raw_open_candidates")?;
     Ok(())
 }
 
@@ -248,7 +494,10 @@ async fn persist(pool: &PgPool, hit: &SignalHit, config_version: &str) -> Result
 pub async fn run(pool: PgPool, bus: Bus, interval: Duration) -> Result<()> {
     bus.ensure_stream(subjects::STREAM_MARKET, &["regime.*", "discovery.*"])
         .await?;
-    info!(interval_secs = interval.as_secs(), "discovery scanner started");
+    info!(
+        interval_secs = interval.as_secs(),
+        "discovery scanner started"
+    );
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {

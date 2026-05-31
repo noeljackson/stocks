@@ -185,19 +185,52 @@ async fn scan_one(pool: &PgPool, symbol: &str, cfg: &Config) -> Result<Vec<Signa
 
 /// Idempotent within a (symbol, signal, second) tuple — UNIQUE constraint
 /// on (symbol, signal_name, proposed_at) catches re-runs.
+///
+/// On insert, also fire an attention_item(candidate_review) so the operator
+/// surface (#86) picks it up immediately. The attention table's partial
+/// unique on (kind, candidate_id) WHERE status='open' dedups across runs.
 async fn persist(pool: &PgPool, hit: &SignalHit, config_version: &str) -> Result<()> {
-    sqlx::query(
+    use crate::attention::{kind, severity, source, title_for_candidate};
+    let row = sqlx::query(
         r#"INSERT INTO discovery_candidate (symbol, signal_name, signal_value, reasoning, config_version)
            VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT DO NOTHING"#,
+           ON CONFLICT DO NOTHING
+           RETURNING id"#,
     )
     .bind(&hit.symbol)
     .bind(hit.signal_name)
     .bind(hit.value)
     .bind(&hit.reasoning)
     .bind(config_version)
-    .execute(pool)
+    .fetch_optional(pool)
     .await?;
+    if let Some(row) = row {
+        let id: i64 = row.try_get("id")?;
+        let source_ref = serde_json::json!({
+            "candidate_id": id,
+            "signal_value": hit.value,
+            "config_version": config_version,
+        });
+        if let Err(e) = sqlx::query(
+            r#"INSERT INTO attention_item
+                 (kind, symbol, candidate_id, severity, title, reason, source, source_ref)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+               ON CONFLICT DO NOTHING"#,
+        )
+        .bind(kind::CANDIDATE_REVIEW)
+        .bind(&hit.symbol)
+        .bind(id)
+        .bind(severity::REVIEW)
+        .bind(title_for_candidate(&hit.symbol, hit.signal_name))
+        .bind(&hit.reasoning)
+        .bind(source::DISCOVERY)
+        .bind(source_ref)
+        .execute(pool)
+        .await
+        {
+            tracing::warn!(error = %e, "attention candidate_review insert failed (non-fatal)");
+        }
+    }
     Ok(())
 }
 

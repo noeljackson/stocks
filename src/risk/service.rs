@@ -128,6 +128,37 @@ async fn on_actionable(store: &Store, bus: &Bus, data: &[u8]) -> Result<()> {
         veto = decision.veto,
         "risk verdict"
     );
+    // Attention item (#86). Vetos are 'blocked' (can't proceed without
+    // override); warnings are 'review'.
+    let thesis_uuid = uuid::Uuid::parse_str(&a.thesis_id).ok();
+    let sev = if decision.veto { "blocked" } else { "review" };
+    let title = if decision.veto {
+        format!("{} risk veto: {}", a.symbol, decision.reasons.join(", "))
+    } else {
+        format!("{} risk warning", a.symbol)
+    };
+    if let Err(e) = sqlx::query(
+        r#"INSERT INTO attention_item
+             (kind, symbol, thesis_id, severity, title, reason, source, source_ref)
+           VALUES ('risk_review', $1, $2, $3, $4, $5, 'risk', $6::jsonb)
+           ON CONFLICT DO NOTHING"#,
+    )
+    .bind(&a.symbol)
+    .bind(thesis_uuid)
+    .bind(sev)
+    .bind(title)
+    .bind(decision.warnings.join("; "))
+    .bind(serde_json::json!({
+        "veto": decision.veto,
+        "reasons": decision.reasons,
+        "warnings": decision.warnings,
+        "config_version": cfg_ver,
+    }))
+    .execute(&store.pool)
+    .await
+    {
+        tracing::warn!(error = %e, "attention risk_review insert failed (non-fatal)");
+    }
     Ok(())
 }
 

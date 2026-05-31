@@ -171,6 +171,141 @@ impl Store {
     }
 
     /// All open positions in the shape the risk overlay consumes.
+    // ---------- attention_item (#86) ----------
+
+    /// Upsert an attention item. The partial-unique indexes mean a second
+    /// open item for the same (kind, candidate_id) / (kind, thesis_id) /
+    /// (kind, symbol) will collide; we no-op on conflict so producers can
+    /// fire freely without dedup logic in each call site.
+    pub async fn upsert_attention(
+        &self,
+        kind: &str,
+        symbol: Option<&str>,
+        thesis_id: Option<uuid::Uuid>,
+        candidate_id: Option<i64>,
+        severity: &str,
+        title: &str,
+        reason: Option<&str>,
+        source: &str,
+        source_ref: serde_json::Value,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"INSERT INTO attention_item
+                 (kind, symbol, thesis_id, candidate_id, severity, title,
+                  reason, source, source_ref)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+               ON CONFLICT DO NOTHING"#,
+        )
+        .bind(kind)
+        .bind(symbol)
+        .bind(thesis_id)
+        .bind(candidate_id)
+        .bind(severity)
+        .bind(title)
+        .bind(reason)
+        .bind(source)
+        .bind(source_ref)
+        .execute(&self.pool)
+        .await
+        .context("upsert_attention")?;
+        Ok(())
+    }
+
+    /// Resolve attention items matching a filter. Idempotent (resolves only
+    /// items still 'open'). Returns how many rows transitioned.
+    pub async fn resolve_attention(
+        &self,
+        kind: &str,
+        thesis_id: Option<uuid::Uuid>,
+        candidate_id: Option<i64>,
+        resolution_kind: &str,
+        resolution_ref: serde_json::Value,
+    ) -> Result<u64> {
+        let res = sqlx::query(
+            r#"UPDATE attention_item
+                  SET status = 'resolved', resolved_at = now(),
+                      resolution_kind = $4, resolution_ref = $5::jsonb
+                WHERE status = 'open'
+                  AND kind = $1
+                  AND ($2::uuid IS NULL OR thesis_id = $2)
+                  AND ($3::bigint IS NULL OR candidate_id = $3)"#,
+        )
+        .bind(kind)
+        .bind(thesis_id)
+        .bind(candidate_id)
+        .bind(resolution_kind)
+        .bind(resolution_ref)
+        .execute(&self.pool)
+        .await
+        .context("resolve_attention")?;
+        Ok(res.rows_affected())
+    }
+
+    /// Mark items as dismissed (operator chose "not relevant"). Same filter
+    /// shape as resolve_attention.
+    pub async fn dismiss_attention(&self, id: i64, reason: Option<&str>) -> Result<bool> {
+        let res = sqlx::query(
+            r#"UPDATE attention_item
+                  SET status = 'dismissed', resolved_at = now(),
+                      resolution_kind = 'dismissed',
+                      resolution_ref = jsonb_build_object('reason', COALESCE($2::text, ''))
+                WHERE id = $1 AND status = 'open'"#,
+        )
+        .bind(id)
+        .bind(reason)
+        .execute(&self.pool)
+        .await
+        .context("dismiss_attention")?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Open attention items, severity-then-recency ordering.
+    pub async fn list_attention(
+        &self,
+        status: &str,
+        limit: i64,
+    ) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query(
+            r#"SELECT id, kind, symbol, thesis_id, candidate_id, severity,
+                      status, title, reason, source, source_ref,
+                      created_at, resolved_at, resolution_kind
+                 FROM attention_item
+                WHERE status = $1
+             ORDER BY
+                CASE severity WHEN 'blocked' THEN 0 WHEN 'decision' THEN 1
+                              WHEN 'review' THEN 2 ELSE 3 END,
+                created_at DESC
+                LIMIT $2"#,
+        )
+        .bind(status)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("list_attention")?;
+        rows.into_iter()
+            .map(|r| {
+                let created_at: DateTime<Utc> = r.try_get("created_at")?;
+                let resolved_at: Option<DateTime<Utc>> = r.try_get("resolved_at")?;
+                Ok(serde_json::json!({
+                    "id": r.try_get::<i64, _>("id")?,
+                    "kind": r.try_get::<String, _>("kind")?,
+                    "symbol": r.try_get::<Option<String>, _>("symbol")?,
+                    "thesis_id": r.try_get::<Option<uuid::Uuid>, _>("thesis_id")?,
+                    "candidate_id": r.try_get::<Option<i64>, _>("candidate_id")?,
+                    "severity": r.try_get::<String, _>("severity")?,
+                    "status": r.try_get::<String, _>("status")?,
+                    "title": r.try_get::<String, _>("title")?,
+                    "reason": r.try_get::<Option<String>, _>("reason")?,
+                    "source": r.try_get::<String, _>("source")?,
+                    "source_ref": r.try_get::<serde_json::Value, _>("source_ref")?,
+                    "created_at": created_at,
+                    "resolved_at": resolved_at,
+                    "resolution_kind": r.try_get::<Option<String>, _>("resolution_kind")?,
+                }))
+            })
+            .collect()
+    }
+
     /// Recent decisions for a given symbol — joins through thesis to filter.
     pub async fn decisions_for_symbol(&self, symbol: &str) -> Result<Vec<serde_json::Value>> {
         let rows = sqlx::query(
@@ -543,6 +678,50 @@ impl Store {
         .execute(&mut *tx)
         .await
         .context("insert state history")?;
+        // Attention queue producers/resolvers (#86) for state transitions.
+        // Entering 'actionable' fires thesis_actionable; leaving 'actionable'
+        // (forward to position_open OR backward to disqualified) resolves it.
+        use crate::platform::domain::ThesisState;
+        if matches!(to, ThesisState::Actionable) {
+            // Look up the symbol for the title.
+            let symbol: String = sqlx::query_scalar(
+                "SELECT symbol FROM thesis WHERE thesis_id = $1",
+            )
+            .bind(thesis_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap_or_default();
+            sqlx::query(
+                r#"INSERT INTO attention_item
+                     (kind, symbol, thesis_id, severity, title, reason, source, source_ref)
+                   VALUES ('thesis_actionable', $1, $2, 'decision', $3, $4, 'thesis',
+                           jsonb_build_object('from', $5::text, 'to', 'actionable'))
+                   ON CONFLICT DO NOTHING"#,
+            )
+            .bind(&symbol)
+            .bind(thesis_id)
+            .bind(format!("{symbol} thesis ready to act on"))
+            .bind(if rationale.is_empty() { None } else { Some(rationale) })
+            .bind(from.as_str())
+            .execute(&mut *tx)
+            .await
+            .context("attention thesis_actionable")?;
+        }
+        if matches!(from, ThesisState::Actionable) {
+            sqlx::query(
+                r#"UPDATE attention_item
+                      SET status = 'resolved', resolved_at = now(),
+                          resolution_kind = 'thesis_advanced',
+                          resolution_ref = jsonb_build_object('to', $2::text)
+                    WHERE status = 'open' AND kind = 'thesis_actionable'
+                      AND thesis_id = $1"#,
+            )
+            .bind(thesis_id)
+            .bind(to.as_str())
+            .execute(&mut *tx)
+            .await
+            .context("attention thesis_actionable resolve")?;
+        }
         tx.commit().await.context("commit tx")?;
         Ok(())
     }
@@ -762,18 +941,47 @@ impl Store {
         .bind(candidate_id)
         .execute(&mut *tx)
         .await?;
+        // Resolve the matching attention item (#86) inside the same tx so
+        // queue + candidate status stay consistent.
+        sqlx::query(
+            r#"UPDATE attention_item
+                  SET status = 'resolved', resolved_at = now(),
+                      resolution_kind = 'candidate_confirmed',
+                      resolution_ref = jsonb_build_object('watchlist_ids', $2::text[])
+                WHERE status = 'open'
+                  AND kind = 'candidate_review'
+                  AND candidate_id = $1"#,
+        )
+        .bind(candidate_id)
+        .bind(watchlist_ids.iter().map(uuid::Uuid::to_string).collect::<Vec<_>>())
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await.context("commit tx")?;
         Ok(())
     }
 
     pub async fn reject_discovery_candidate(&self, candidate_id: i64) -> Result<bool> {
+        let mut tx = self.pool.begin().await.context("begin tx")?;
         let res = sqlx::query(
             "UPDATE discovery_candidate SET status = 'rejected', decided_at = now() WHERE id = $1",
         )
         .bind(candidate_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .context("reject_discovery_candidate")?;
+        // Dismiss the matching attention item.
+        sqlx::query(
+            r#"UPDATE attention_item
+                  SET status = 'dismissed', resolved_at = now(),
+                      resolution_kind = 'candidate_rejected'
+                WHERE status = 'open'
+                  AND kind = 'candidate_review'
+                  AND candidate_id = $1"#,
+        )
+        .bind(candidate_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await.context("commit reject_discovery_candidate")?;
         Ok(res.rows_affected() > 0)
     }
 

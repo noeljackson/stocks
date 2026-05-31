@@ -225,6 +225,12 @@ sharpen-thesis: ## Sharpen pass: LLM proposes structured conditions (THESIS_ID=<
 challenge-thesis: ## Challenge pass: LLM finds weak spots, flags for review (THESIS_ID=<uuid>)
 	cd py && $(RUN) .venv/bin/python -m stocks.challenge $(THESIS_ID)
 
+classify-candidates: ## Classify all pending discovery candidates → proposed watchlist(s) (#55)
+	cd py && $(RUN) .venv/bin/python -m stocks.classify --all
+
+classify-candidate: ## Classify one pending candidate (CANDIDATE_ID=N make classify-candidate)
+	cd py && $(RUN) .venv/bin/python -m stocks.classify --candidate-id $(CANDIDATE_ID)
+
 # Legacy alias (will be removed when context_maintainer becomes a long-running service).
 run-context: refresh-context ## Alias of refresh-context (deprecated)
 

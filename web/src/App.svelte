@@ -3,9 +3,11 @@
   import {
     ackAlert,
     addToWatchlist,
+    confirmCandidate,
     createWatchlist,
     fetchAlerts,
     fetchCalibration,
+    fetchPendingCandidates,
     fetchRegime,
     fetchTheses,
     fetchTickerContext,
@@ -13,11 +15,13 @@
     fetchWatchlistMembers,
     fetchWatchlists,
     postDecision,
+    rejectCandidate,
     removeFromWatchlist,
     subscribe,
     type Alert,
     type Calibration,
     type MarketState,
+    type PendingCandidate,
     type StreamEvent,
     type ThesisDetail,
     type Ticker,
@@ -28,7 +32,7 @@
   import ContextPanel from "./lib/ContextPanel.svelte";
   import ThesisDetails from "./lib/ThesisDetails.svelte";
 
-  type View = "feed" | "tickers" | "watchlists" | "decisions";
+  type View = "feed" | "tickers" | "watchlists" | "discovery" | "decisions";
   let view = $state<View>("feed");
 
   let regime = $state<MarketState | null>(null);
@@ -46,6 +50,61 @@
   let newListName = $state("");
   let newListDescription = $state("");
   let addSymbolFor = $state<Record<string, string>>({});
+
+  // Discovery review state (#54 phase B / #55)
+  let pending = $state<PendingCandidate[]>([]);
+  // candidate.id -> set of selected watchlist UUIDs to confirm to
+  let chosenLists = $state<Record<number, Record<string, boolean>>>({});
+
+  async function refreshPending() {
+    try {
+      pending = await fetchPendingCandidates();
+      // Seed the selection map: any proposed list with a known watchlist_id
+      // gets pre-checked (medium/high confidence). Low-conf left unchecked.
+      const fresh: Record<number, Record<string, boolean>> = {};
+      for (const c of pending) {
+        fresh[c.id] = chosenLists[c.id] ?? {};
+        for (const p of c.proposed_lists) {
+          if (p.watchlist_id && fresh[c.id][p.watchlist_id] === undefined) {
+            fresh[c.id][p.watchlist_id] = p.confidence !== "low";
+          }
+        }
+      }
+      chosenLists = fresh;
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  function toggleChoice(candId: number, wlId: string) {
+    const inner = { ...(chosenLists[candId] ?? {}) };
+    inner[wlId] = !inner[wlId];
+    chosenLists = { ...chosenLists, [candId]: inner };
+  }
+
+  async function confirmOne(candId: number) {
+    const inner = chosenLists[candId] ?? {};
+    const ids = Object.entries(inner).filter(([, v]) => v).map(([k]) => k);
+    if (ids.length === 0) {
+      error = "Pick at least one watchlist before confirming.";
+      return;
+    }
+    try {
+      await confirmCandidate(candId, ids);
+      await Promise.all([refreshPending(), refreshWatchlists()]);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function rejectOne(candId: number) {
+    try {
+      await rejectCandidate(candId);
+      await refreshPending();
+    } catch (e) {
+      error = String(e);
+    }
+  }
 
   async function refreshWatchlists() {
     try {
@@ -163,6 +222,7 @@
     fetchTickers().then((t) => (tickers = t)).catch((e) => (error = String(e)));
     fetchCalibration().then((c) => (calibration = c)).catch(() => {});
     refreshWatchlists();
+    refreshPending();
   }
 
   // React when the user toggles showAcked.
@@ -272,6 +332,9 @@
   </button>
   <button class:active={view === "watchlists"} onclick={() => (view = "watchlists")}>
     Watchlists <span class="badge">{watchlists.length}</span>
+  </button>
+  <button class:active={view === "discovery"} onclick={() => (view = "discovery")}>
+    Discovery <span class="badge">{pending.length}</span>
   </button>
   <button class:active={view === "decisions"} onclick={() => (view = "decisions")}>Decision</button>
 </nav>
@@ -490,6 +553,74 @@
         {/if}
       </section>
     </div>
+  {:else if view === "discovery"}
+    <h2>Discovery review <span class="muted">({pending.length} pending)</span></h2>
+    <p class="muted">
+      Cheap-wide signals (volume anomalies, base breakouts, …) propose tickers.
+      The LLM suggests which existing watchlist(s) each one fits. You confirm or reject.
+    </p>
+    {#if pending.length === 0}
+      <p class="muted">
+        Nothing pending. Run <code>make run-discovery</code> to scan, then
+        <code>make classify-candidates</code> to populate suggestions.
+      </p>
+    {/if}
+    <ul class="disc-list">
+      {#each pending as c (c.id)}
+        <li class="disc-card">
+          <div class="disc-hdr">
+            <strong>{c.symbol}</strong>
+            <span class="badge">{c.signal_name}</span>
+            {#if c.signal_value !== null}
+              <span class="muted">value {c.signal_value.toFixed(3)}</span>
+            {/if}
+            <span class="muted">{shortTs(c.proposed_at)}</span>
+          </div>
+          {#if c.reasoning}
+            <p class="muted disc-reasoning">{c.reasoning}</p>
+          {/if}
+          {#if c.proposed_lists.length === 0 && !c.suggested_new_list}
+            <p class="muted">No LLM classification yet — run <code>make classify-candidates</code>.</p>
+          {/if}
+          {#if c.proposed_lists.length > 0}
+            <div class="disc-lists">
+              {#each c.proposed_lists as p}
+                {#if p.watchlist_id}
+                  <label class="disc-pick">
+                    <input
+                      type="checkbox"
+                      checked={chosenLists[c.id]?.[p.watchlist_id] ?? false}
+                      onchange={() => p.watchlist_id && toggleChoice(c.id, p.watchlist_id)}
+                    />
+                    <span class="wl-name">{p.watchlist_name}</span>
+                    <span class="badge conf-{p.confidence}">{p.confidence}</span>
+                    <span class="muted disc-rat">{p.rationale}</span>
+                  </label>
+                {:else}
+                  <div class="disc-pick disabled">
+                    <span class="wl-name">{p.watchlist_name}</span>
+                    <span class="badge warning">list missing</span>
+                    <span class="muted disc-rat">{p.rationale}</span>
+                  </div>
+                {/if}
+              {/each}
+            </div>
+          {/if}
+          {#if c.suggested_new_list}
+            <div class="disc-newlist">
+              <span class="badge">propose new</span>
+              <strong>{c.suggested_new_list.name}</strong>
+              <span class="muted">— {c.suggested_new_list.description}</span>
+              <div class="muted disc-rat">{c.suggested_new_list.rationale}</div>
+            </div>
+          {/if}
+          <div class="disc-actions">
+            <button onclick={() => confirmOne(c.id)}>Confirm → selected lists</button>
+            <button class="reject" onclick={() => rejectOne(c.id)}>Reject</button>
+          </div>
+        </li>
+      {/each}
+    </ul>
   {:else}
     <h2>Record a decision</h2>
     <p class="muted">
@@ -653,5 +784,36 @@
   .member-table { width: 100%; }
   .member-table th, .member-table td {
     text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid #1f2733;
+  }
+
+  /* Discovery review (#54 phase B / #55) */
+  .disc-list { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 0.75rem; }
+  .disc-card {
+    background: #11161f; border: 1px solid #1f2733; border-radius: 6px;
+    padding: 0.75rem;
+  }
+  .disc-hdr { display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap; }
+  .disc-reasoning { margin: 0.4rem 0 0.6rem 0; font-size: 0.85rem; }
+  .disc-lists { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.4rem; }
+  .disc-pick {
+    display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap;
+    padding: 0.35rem 0.5rem; border: 1px solid #1f2733; border-radius: 4px;
+    cursor: pointer;
+  }
+  .disc-pick.disabled { cursor: not-allowed; opacity: 0.6; }
+  .wl-name { font-weight: 500; }
+  .disc-rat { flex: 1; font-size: 0.78rem; }
+  .badge.conf-high { background: rgba(166, 227, 161, 0.18); color: rgb(166, 227, 161); }
+  .badge.conf-medium { background: rgba(249, 226, 175, 0.15); color: rgb(249, 226, 175); }
+  .badge.conf-low { background: rgba(108, 112, 134, 0.2); color: #9aa3b8; }
+  .disc-newlist {
+    background: rgba(180, 190, 254, 0.05); border: 1px dashed #2a3548;
+    border-radius: 4px; padding: 0.4rem 0.55rem; margin-bottom: 0.5rem;
+    display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: baseline;
+  }
+  .disc-actions { display: flex; gap: 0.4rem; margin-top: 0.4rem; }
+  .disc-actions .reject {
+    background: rgba(243, 139, 168, 0.1); border-color: rgba(243, 139, 168, 0.3);
+    color: rgb(243, 139, 168);
   }
 </style>

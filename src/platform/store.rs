@@ -426,6 +426,96 @@ impl Store {
         Ok(out)
     }
 
+    /// List pending discovery candidates with their LLM classification (if any).
+    /// Used by the review UI in #54 phase B.
+    pub async fn pending_discovery_candidates(&self) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query(
+            r#"SELECT dc.id, dc.symbol, dc.signal_name, dc.signal_value, dc.reasoning,
+                      dc.proposed_at,
+                      COALESCE(dcl.proposed_lists, '[]'::jsonb) AS proposed_lists,
+                      dcl.suggested_new_list
+                 FROM discovery_candidate dc
+                 LEFT JOIN discovery_classification dcl ON dcl.candidate_id = dc.id
+                WHERE dc.status = 'proposed'
+             ORDER BY dc.proposed_at DESC
+                LIMIT 100"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("pending_discovery_candidates")?;
+        rows.into_iter()
+            .map(|r| {
+                let signal_value: Option<f64> = r.try_get("signal_value").ok();
+                Ok(serde_json::json!({
+                    "id": r.try_get::<i64, _>("id")?,
+                    "symbol": r.try_get::<String, _>("symbol")?,
+                    "signal_name": r.try_get::<String, _>("signal_name")?,
+                    "signal_value": signal_value,
+                    "reasoning": r.try_get::<Option<String>, _>("reasoning").ok(),
+                    "proposed_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("proposed_at")?,
+                    "proposed_lists": r.try_get::<serde_json::Value, _>("proposed_lists")?,
+                    "suggested_new_list": r
+                        .try_get::<Option<serde_json::Value>, _>("suggested_new_list")
+                        .unwrap_or(None),
+                }))
+            })
+            .collect()
+    }
+
+    /// Confirm a candidate to one or more watchlists. Updates status, adds
+    /// the symbol to each list (idempotent), records timestamp.
+    pub async fn confirm_discovery_candidate(
+        &self,
+        candidate_id: i64,
+        watchlist_ids: &[uuid::Uuid],
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await.context("begin tx")?;
+        let row =
+            sqlx::query("SELECT symbol, signal_name FROM discovery_candidate WHERE id = $1")
+                .bind(candidate_id)
+                .fetch_one(&mut *tx)
+                .await
+                .context("load candidate")?;
+        let symbol: String = row.try_get("symbol")?;
+        let signal_name: String = row.try_get("signal_name")?;
+        let added_by = format!("discovery:{signal_name}");
+        // Ensure ticker exists (tier=2 default for fresh discoveries).
+        sqlx::query("INSERT INTO ticker (symbol, tier) VALUES ($1, 2) ON CONFLICT DO NOTHING")
+            .bind(&symbol)
+            .execute(&mut *tx)
+            .await?;
+        for id in watchlist_ids {
+            sqlx::query(
+                r#"INSERT INTO watchlist_member (watchlist_id, symbol, added_by)
+                   VALUES ($1, $2, $3) ON CONFLICT DO NOTHING"#,
+            )
+            .bind(id)
+            .bind(&symbol)
+            .bind(&added_by)
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query(
+            "UPDATE discovery_candidate SET status = 'confirmed', decided_at = now() WHERE id = $1",
+        )
+        .bind(candidate_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await.context("commit tx")?;
+        Ok(())
+    }
+
+    pub async fn reject_discovery_candidate(&self, candidate_id: i64) -> Result<bool> {
+        let res = sqlx::query(
+            "UPDATE discovery_candidate SET status = 'rejected', decided_at = now() WHERE id = $1",
+        )
+        .bind(candidate_id)
+        .execute(&self.pool)
+        .await
+        .context("reject_discovery_candidate")?;
+        Ok(res.rows_affected() > 0)
+    }
+
     /// All watchlists with member counts (#54). Most-recent first; system
     /// lists rendered with a chip in the UI.
     pub async fn list_watchlists(&self) -> Result<Vec<Watchlist>> {

@@ -328,7 +328,10 @@ impl Store {
     pub async fn decisions_for_symbol(&self, symbol: &str) -> Result<Vec<serde_json::Value>> {
         let rows = sqlx::query(
             r#"SELECT d.decision_id, d.thesis_id, d.action, d.user_choice,
-                      d.sizing, d.at
+                      d.sizing, d.at, t.state AS thesis_state,
+                      t.forecast->>'direction' AS thesis_direction,
+                      COALESCE(d.sizing->>'side', '') AS side,
+                      COALESCE(d.sizing->>'instrument', t.instrument) AS instrument
                  FROM decision d
                  JOIN thesis t USING (thesis_id)
                 WHERE t.symbol = $1
@@ -347,6 +350,10 @@ impl Store {
                     "action": r.try_get::<String, _>("action")?,
                     "user_choice": r.try_get::<Option<String>, _>("user_choice")?,
                     "sizing": r.try_get::<Option<serde_json::Value>, _>("sizing")?,
+                    "thesis_state": r.try_get::<String, _>("thesis_state")?,
+                    "thesis_direction": r.try_get::<Option<String>, _>("thesis_direction")?,
+                    "side": r.try_get::<String, _>("side")?,
+                    "instrument": r.try_get::<Option<String>, _>("instrument")?,
                     "at": at,
                 }))
             })
@@ -385,7 +392,15 @@ impl Store {
             SELECT 'decision' AS kind,
                    d.at AS at,
                    COALESCE(d.thesis_id::text, '') AS thesis_id,
-                   d.action AS label,
+                   CASE
+                     WHEN d.action = 'enter' AND COALESCE(d.sizing->>'side', '') <> ''
+                       THEN d.action || ' ' || (d.sizing->>'side')
+                     WHEN d.action = 'enter' AND t.forecast->>'direction' = 'down'
+                       THEN 'enter bearish'
+                     WHEN d.action = 'enter' AND t.forecast->>'direction' = 'up'
+                       THEN 'enter bullish'
+                     ELSE d.action
+                   END AS label,
                    COALESCE(d.user_choice, '') AS detail
               FROM decision d
               JOIN thesis t USING (thesis_id)

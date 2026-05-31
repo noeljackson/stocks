@@ -18,6 +18,7 @@ resources:
   - evaluator.yaml
   - consensus.yaml
   - reflection.yaml
+  - discovery.yaml
   - context-maintainer.yaml
 
 labels:

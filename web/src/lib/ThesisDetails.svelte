@@ -35,6 +35,9 @@
     thesis.immutable_original?.edge_rationale !== undefined &&
     thesis.immutable_original.edge_rationale !== thesis.edge_rationale
   );
+  let forecastDirection = $derived(forecastField("direction"));
+  let forecastMagnitude = $derived(forecastField("magnitude_rough"));
+  let forecastHorizon = $derived(forecastField("horizon_event"));
 
   // Substance checklist (#10): which structural slots are filled.
   let sub = $derived(thesis.substance);
@@ -57,6 +60,11 @@
     return c.assertion ?? "(no assertion)";
   }
 
+  function forecastField(name: string): string | null {
+    const v = thesis.forecast?.[name];
+    return typeof v === "string" && v.length > 0 ? v : null;
+  }
+
   function shortTs(s: string): string {
     return new Date(s).toLocaleString();
   }
@@ -73,9 +81,23 @@
     {#if thesis.instrument}
       <span class="meta">instrument: <strong>{thesis.instrument}</strong></span>
     {/if}
+    {#if forecastDirection}
+      <span class="direction-badge dir-{forecastDirection}">
+        {forecastDirection === "down" ? "bearish thesis" : forecastDirection === "up" ? "bullish thesis" : forecastDirection}
+      </span>
+    {/if}
     <span class="meta">v{thesis.version}</span>
     <span class="meta muted">updated {shortTs(thesis.updated_at)}</span>
   </div>
+
+  {#if forecastDirection || forecastMagnitude || forecastHorizon}
+    <div class="forecast-strip dir-{forecastDirection ?? 'unknown'}">
+      <strong>Forecast</strong>
+      {#if forecastDirection}<span>{forecastDirection}</span>{/if}
+      {#if forecastMagnitude}<span>{forecastMagnitude}</span>{/if}
+      {#if forecastHorizon}<span class="muted">{forecastHorizon}</span>{/if}
+    </div>
+  {/if}
 
   {#if sub}
     <div class="substance" class:skeleton={sub.blocked_at !== null}>
@@ -194,6 +216,25 @@
     color: #0a0d14; padding: 0.1rem 0.5rem; border-radius: 4px;
     font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;
   }
+  .direction-badge {
+    padding: 0.1rem 0.5rem; border-radius: 4px;
+    font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;
+  }
+  .direction-badge.dir-up {
+    background: rgba(166, 227, 161, 0.16); color: rgb(166, 227, 161);
+  }
+  .direction-badge.dir-down {
+    background: rgba(243, 139, 168, 0.16); color: rgb(243, 139, 168);
+  }
+  .forecast-strip {
+    display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap;
+    border: 1px solid #1f2733; border-radius: 4px;
+    padding: 0.4rem 0.6rem; margin-bottom: 0.75rem;
+    background: rgba(180, 190, 254, 0.05); color: #cdd6f4;
+    font-size: 0.82rem;
+  }
+  .forecast-strip.dir-up { border-left: 3px solid rgb(166, 227, 161); }
+  .forecast-strip.dir-down { border-left: 3px solid rgb(243, 139, 168); }
   .meta { font-size: 0.8rem; color: #bac2de; }
   .muted { color: #6c7086; }
   h4 { font-size: 0.85rem; color: #bac2de; margin: 0.75rem 0 0.25rem 0; }

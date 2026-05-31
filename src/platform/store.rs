@@ -516,16 +516,24 @@ impl Store {
     /// List pending discovery candidates with their LLM classification (if any).
     /// Used by the review UI in #54 phase B.
     pub async fn pending_discovery_candidates(&self) -> Result<Vec<serde_json::Value>> {
+        // Dedupe by (symbol, signal_name) — show only the most recent proposed
+        // candidate per signal. Schema allows multiple rows per (sym, sig)
+        // because the same signal can re-fire on different days, but the
+        // user only wants one entry in the review queue per pending signal.
         let rows = sqlx::query(
-            r#"SELECT dc.id, dc.symbol, dc.signal_name, dc.signal_value, dc.reasoning,
-                      dc.proposed_at,
-                      COALESCE(dcl.proposed_lists, '[]'::jsonb) AS proposed_lists,
-                      dcl.suggested_new_list
-                 FROM discovery_candidate dc
-                 LEFT JOIN discovery_classification dcl ON dcl.candidate_id = dc.id
-                WHERE dc.status = 'proposed'
-             ORDER BY dc.proposed_at DESC
-                LIMIT 100"#,
+            r#"SELECT * FROM (
+                  SELECT DISTINCT ON (dc.symbol, dc.signal_name)
+                         dc.id, dc.symbol, dc.signal_name, dc.signal_value, dc.reasoning,
+                         dc.proposed_at,
+                         COALESCE(dcl.proposed_lists, '[]'::jsonb) AS proposed_lists,
+                         dcl.suggested_new_list
+                    FROM discovery_candidate dc
+                    LEFT JOIN discovery_classification dcl ON dcl.candidate_id = dc.id
+                   WHERE dc.status = 'proposed'
+                ORDER BY dc.symbol, dc.signal_name, dc.proposed_at DESC
+               ) latest
+            ORDER BY proposed_at DESC
+               LIMIT 100"#,
         )
         .fetch_all(&self.pool)
         .await

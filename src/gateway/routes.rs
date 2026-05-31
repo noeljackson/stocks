@@ -32,6 +32,16 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/theses/{thesis_id}/transition", post(transition_thesis))
         .route("/api/ticker-context", get(get_ticker_context))
         .route("/api/calibration", get(get_calibration))
+        .route("/api/watchlists", get(list_watchlists).post(create_watchlist))
+        .route("/api/watchlists/{id}", axum::routing::delete(delete_watchlist))
+        .route(
+            "/api/watchlists/{id}/members",
+            get(list_watchlist_members).post(add_watchlist_member),
+        )
+        .route(
+            "/api/watchlists/{id}/members/{symbol}",
+            axum::routing::delete(remove_watchlist_member),
+        )
         .route("/api/stream", get(stream))
         .route("/api/decisions", post(record_decision))
         .fallback(spa_handler)
@@ -371,4 +381,106 @@ async fn spa_handler(
             .into_response();
     }
     (StatusCode::NOT_FOUND, "not built").into_response()
+}
+
+// ---------- watchlists (#54) ----------
+
+async fn list_watchlists(State(gw): State<Arc<Gateway>>) -> impl IntoResponse {
+    match gw.store.list_watchlists().await {
+        Ok(v) => (StatusCode::OK, Json(v)).into_response(),
+        Err(e) => {
+            warn!(error = %e, "list_watchlists failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateWatchlistReq {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    color: Option<String>,
+}
+
+async fn create_watchlist(
+    State(gw): State<Arc<Gateway>>,
+    Json(req): Json<CreateWatchlistReq>,
+) -> impl IntoResponse {
+    if req.name.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "name required").into_response();
+    }
+    match gw
+        .store
+        .create_watchlist(req.name.trim(), req.description.as_deref(), req.color.as_deref())
+        .await
+    {
+        Ok(id) => (StatusCode::CREATED, Json(serde_json::json!({"id": id}))).into_response(),
+        Err(e) => {
+            warn!(name = %req.name, error = %e, "create_watchlist failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn delete_watchlist(
+    State(gw): State<Arc<Gateway>>,
+    Path(id): Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    match gw.store.delete_watchlist(id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, "no such non-system watchlist").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn list_watchlist_members(
+    State(gw): State<Arc<Gateway>>,
+    Path(id): Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    match gw.store.list_watchlist_members(id).await {
+        Ok(v) => (StatusCode::OK, Json(v)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AddMemberReq {
+    symbol: String,
+    #[serde(default = "default_added_by")]
+    added_by: String,
+}
+
+fn default_added_by() -> String {
+    "user".to_string()
+}
+
+async fn add_watchlist_member(
+    State(gw): State<Arc<Gateway>>,
+    Path(id): Path<uuid::Uuid>,
+    Json(req): Json<AddMemberReq>,
+) -> impl IntoResponse {
+    let symbol = req.symbol.trim().to_uppercase();
+    if symbol.is_empty() {
+        return (StatusCode::BAD_REQUEST, "symbol required").into_response();
+    }
+    match gw.store.add_to_watchlist(id, &symbol, &req.added_by).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            warn!(id = %id, symbol = %symbol, error = %e, "add_watchlist_member failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn remove_watchlist_member(
+    State(gw): State<Arc<Gateway>>,
+    Path((id, symbol)): Path<(uuid::Uuid, String)>,
+) -> impl IntoResponse {
+    match gw.store.remove_from_watchlist(id, &symbol.to_uppercase()).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, "not in this list").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }

@@ -104,6 +104,28 @@ pub struct TickerRow {
     pub open_theses: i64,
 }
 
+/// User-curated multi-list ticker organization (#54).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Watchlist {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub color: Option<String>,
+    pub is_system: bool,
+    pub created_at: DateTime<Utc>,
+    /// Member count (denormalized into the response so the UI can render a
+    /// chip without N+1 fetches).
+    pub member_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchlistMember {
+    pub watchlist_id: Uuid,
+    pub symbol: String,
+    pub added_at: DateTime<Utc>,
+    pub added_by: Option<String>,
+}
+
 /// A single thesis condition — the canonical shape used by the thesis engine,
 /// goalpost detector, staleness service, and (future) condition evaluator.
 ///

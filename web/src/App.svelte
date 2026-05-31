@@ -759,13 +759,13 @@
 
 <style>
   .workspace {
+    /* Locked to viewport edges — no dependency on any parent chain. */
+    position: fixed;
+    inset: 0;
     display: grid;
     /* Top bar (44) / error bar (auto when present) / main (fills) / bottom (CSS var) */
     grid-template-rows: 44px auto minmax(0, 1fr) var(--bottom-h, 36px);
     grid-template-columns: 1fr;
-    width: 100%;
-    height: 100%;
-    min-height: 100dvh;
     background: #0b0e14;
     overflow: hidden;
   }

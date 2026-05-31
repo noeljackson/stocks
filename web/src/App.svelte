@@ -11,7 +11,10 @@
     createWatchlist,
     fetchAlerts,
     fetchCalibration,
+    fetchAttention,
+    dismissAttention,
     fetchDecisions,
+    fetchDiscoveryPool,
     fetchPendingCandidates,
     fetchRegime,
     fetchTheses,
@@ -24,10 +27,12 @@
     removeFromWatchlist,
     subscribe,
     type Alert,
+    type AttentionItem,
     type Calibration,
     type DecisionRow,
     type MarketState,
     type PendingCandidate,
+    type PoolMember,
     type StreamEvent,
     type ThesisDetail,
     type Ticker,
@@ -42,12 +47,12 @@
 
   // ---------- workspace state ----------
   type RightTab = "overview" | "context" | "theses" | "alerts" | "decisions";
-  type BottomMode = "events" | "discovery" | "decisions" | "calibration";
+  type BottomMode = "attention" | "events" | "discovery" | "decisions" | "calibration";
 
   let selectedSymbol = $state<string | null>(null);
   let selectedWatchlistId = $state<string | null>(null);
   let rightTab = $state<RightTab>("overview");
-  let bottomMode = $state<BottomMode>("events");
+  let bottomMode = $state<BottomMode>("attention");
   let bottomOpen = $state(true);
 
   // ---------- global data ----------
@@ -61,6 +66,23 @@
   let pending = $state<PendingCandidate[]>([]);
   let watchlists = $state<Watchlist[]>([]);
   let watchlistMembers = $state<Record<string, WatchlistMember[]>>({});
+  let pool = $state<PoolMember[]>([]);
+  let attention = $state<AttentionItem[]>([]);
+  let attentionFilter = $state<string>("all");
+
+  async function refreshAttention() {
+    try {
+      attention = await fetchAttention("open");
+    } catch {}
+  }
+  async function dismissOne(id: number, reason?: string) {
+    try {
+      await dismissAttention(id, reason);
+      await refreshAttention();
+    } catch (e) {
+      error = String(e);
+    }
+  }
 
   // ---------- selected-symbol-scoped data ----------
   let symbolContext = $state<TickerContext | null | undefined>(undefined);
@@ -95,13 +117,35 @@
     created_at: "",
     member_count: tickers.length,
   });
-  let allWatchlists = $derived<Watchlist[]>([...watchlists, universeList]);
+  let allWatchlists = $derived<Watchlist[]>([...watchlists, universeList, poolList]);
   let universeMembers = $derived<WatchlistMember[]>(
     tickers.map((t) => ({
       watchlist_id: UNIVERSE_ID,
       symbol: t.symbol,
       added_at: t.added_at,
       added_by: "system",
+    })),
+  );
+
+  // Discovery pool pseudo-list (#88) — broad investible names from FMP screener.
+  // Bigger than the active universe; clicking a pool member loads its chart
+  // and (sparse) context so the operator can decide whether to promote.
+  const POOL_ID = "__pool__";
+  let poolList = $derived<Watchlist>({
+    id: POOL_ID,
+    name: "Discovery pool",
+    description: "Broad scan pool (FMP screener)",
+    color: "#cba6f7",
+    is_system: true,
+    created_at: "",
+    member_count: pool.length,
+  });
+  let poolMembers = $derived<WatchlistMember[]>(
+    pool.map((p) => ({
+      watchlist_id: POOL_ID,
+      symbol: p.symbol,
+      added_at: p.first_seen_at,
+      added_by: "pool",
     })),
   );
 
@@ -136,6 +180,7 @@
 
   function membersFor(listId: string): WatchlistMember[] {
     if (listId === UNIVERSE_ID) return universeMembers;
+    if (listId === POOL_ID) return poolMembers;
     return watchlistMembers[listId] ?? [];
   }
 
@@ -174,7 +219,7 @@
   async function toggleListExpanded(id: string) {
     const open = !expandedListIds[id];
     expandedListIds = { ...expandedListIds, [id]: open };
-    if (open && id !== UNIVERSE_ID && !watchlistMembers[id]) {
+    if (open && id !== UNIVERSE_ID && id !== POOL_ID && !watchlistMembers[id]) {
       try {
         const m = await fetchWatchlistMembers(id);
         watchlistMembers = { ...watchlistMembers, [id]: m };
@@ -312,6 +357,8 @@
     fetchCalibration().then((c) => (calibration = c)).catch(() => {});
     refreshWatchlists();
     refreshPending();
+    refreshAttention();
+    fetchDiscoveryPool().then((p) => (pool = p)).catch(() => {});
   }
 
   $effect(() => {
@@ -345,6 +392,13 @@
         }
         if (e.kind === "state_transition" || e.kind === "risk") {
           fetchAlerts({ unacked: !showAcked }).then((a) => (alerts = a)).catch(() => {});
+          refreshAttention();
+        }
+        // Discovery hits also produce attention items; refresh on any
+        // discovery.* subject too.
+        if (e.subject?.startsWith("discovery.")) {
+          refreshAttention();
+          refreshPending();
         }
       },
       (open) => (connected = open),
@@ -434,7 +488,7 @@
         >
           <footer class="bottom">
     <nav class="bottom-tabs">
-      {#each ["events", "discovery", "decisions", "calibration"] as BottomMode[] as m}
+      {#each ["attention", "events", "discovery", "decisions", "calibration"] as BottomMode[] as m}
         <button
           class:active={bottomMode === m}
           onclick={() => { bottomMode = m; if (!bottomOpen) bottomPane?.expand(); }}
@@ -455,7 +509,75 @@
 
     {#if bottomOpen}
       <div class="bottom-body">
-        {#if bottomMode === "events"}
+        {#if bottomMode === "attention"}
+          <div class="att-toolbar">
+            <span class="muted">{attention.length} open</span>
+            <span class="att-filters">
+              {#each ["all", "candidate_review", "thesis_actionable", "risk_review"] as f}
+                <button class:active={attentionFilter === f} onclick={() => (attentionFilter = f)}>
+                  {f === "all" ? "all" : f.replace(/_/g, " ")}
+                </button>
+              {/each}
+            </span>
+            <button class="reset" onclick={refreshAttention} title="reload">⟲</button>
+          </div>
+          {#if attention.length === 0}
+            <p class="muted">No open attention. The system is quiet.</p>
+          {:else}
+            {@const filtered = attention.filter((a) => attentionFilter === "all" || a.kind === attentionFilter)}
+            <ul class="att-list">
+              {#each filtered as a (a.id)}
+                <li class="att-card sev-{a.severity}">
+                  <div class="att-hdr">
+                    <span class="badge tiny sev-{a.severity}">{a.severity}</span>
+                    <span class="badge tiny">{a.kind.replace(/_/g, " ")}</span>
+                    {#if a.symbol}
+                      <strong class="link-symbol" onclick={() => a.symbol && selectSymbol(a.symbol)}>{a.symbol}</strong>
+                    {/if}
+                    <span class="att-title">{a.title}</span>
+                    <span class="muted">{shortTs(a.created_at)}</span>
+                  </div>
+                  {#if a.reason}<p class="muted att-reason">{a.reason}</p>{/if}
+                  <div class="att-actions">
+                    {#if a.kind === "candidate_review" && a.candidate_id}
+                      {@const pc = pending.find((p) => p.id === a.candidate_id)}
+                      {#if pc}
+                        <div class="att-inline-lists">
+                          {#each pc.proposed_lists as p}
+                            {#if p.watchlist_id}
+                              <label class="att-pick">
+                                <input
+                                  type="checkbox"
+                                  checked={chosenLists[pc.id]?.[p.watchlist_id] ?? false}
+                                  onchange={() => p.watchlist_id && toggleChoice(pc.id, p.watchlist_id)}
+                                />
+                                {p.watchlist_name}
+                                <span class="badge tiny conf-{p.confidence}">{p.confidence}</span>
+                              </label>
+                            {/if}
+                          {/each}
+                        </div>
+                        <button class="confirm" onclick={() => confirmOne(pc.id)}>Confirm → lists</button>
+                        <button class="reject" onclick={() => rejectOne(pc.id)}>Reject</button>
+                      {:else}
+                        <button class="reject" onclick={() => dismissOne(a.id, "candidate stale")}>Dismiss</button>
+                      {/if}
+                    {:else if a.kind === "thesis_actionable"}
+                      <button class="confirm" onclick={() => { if (a.thesis_id) { decThesisId = a.thesis_id; bottomMode = "decisions"; } }}>
+                        Record decision →
+                      </button>
+                      <button class="reject" onclick={() => dismissOne(a.id, "skip")}>Skip</button>
+                    {:else if a.kind === "risk_review"}
+                      <button class="reject" onclick={() => dismissOne(a.id, "ack")}>Acknowledge</button>
+                    {:else}
+                      <button class="reject" onclick={() => dismissOne(a.id)}>Dismiss</button>
+                    {/if}
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        {:else if bottomMode === "events"}
           {#if live.length === 0}
             <p class="muted">Waiting for events…</p>
           {:else}
@@ -590,7 +712,7 @@
                 {#if w.is_system}<span class="badge tiny">sys</span>{/if}
               </div>
               {#if open}
-                {#if w.id !== UNIVERSE_ID}
+                {#if w.id !== UNIVERSE_ID && w.id !== POOL_ID}
                   <form
                     onsubmit={(e) => { e.preventDefault(); addMember(w.id); }}
                     class="wl-add-sym"
@@ -610,7 +732,7 @@
                       onclick={() => selectSymbol(m.symbol)}
                     >
                       <strong>{m.symbol}</strong>
-                      {#if w.id !== UNIVERSE_ID}
+                      {#if w.id !== UNIVERSE_ID && w.id !== POOL_ID}
                         <button
                           class="rm"
                           onclick={(e) => { e.stopPropagation(); removeMember(w.id, m.symbol); }}
@@ -1035,6 +1157,51 @@
   .badge.conf-high { background: rgba(166, 227, 161, .18); color: rgb(166, 227, 161); }
   .badge.conf-medium { background: rgba(249, 226, 175, .15); color: rgb(249, 226, 175); }
   .badge.conf-low { background: rgba(108, 112, 134, .2); color: #9aa3b8; }
+  .badge.sev-blocked  { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
+  .badge.sev-decision { background: rgba(137,180,250,.18); color: rgb(137,180,250); }
+  .badge.sev-review   { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
+  .badge.sev-info     { background: rgba(108,112,134,.2);  color: #9aa3b8; }
+
+  /* Attention queue (#86) */
+  .att-toolbar { display: flex; gap: .5rem; align-items: baseline; margin-bottom: .4rem; flex-wrap: wrap; }
+  .att-filters { display: flex; gap: .25rem; flex-wrap: wrap; }
+  .att-filters button {
+    background: #11161f; color: #6c7693; border: 1px solid #1f2733;
+    border-radius: 3px; padding: .12rem .45rem; font: inherit; font-size: .7rem;
+    cursor: pointer; text-transform: lowercase;
+  }
+  .att-filters button.active { background: #2a3548; color: #cdd6f4; border-color: #45567a; }
+  .att-toolbar .reset {
+    margin-left: auto;
+    background: transparent; color: #6c7693; border: 1px solid #2a3548; border-radius: 3px;
+    cursor: pointer; padding: 0 .35rem; font: inherit; font-size: .8rem;
+  }
+  .att-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .35rem; }
+  .att-card {
+    background: #0a0d14; border: 1px solid #1f2733; border-radius: 4px;
+    padding: .4rem .55rem;
+    border-left: 3px solid #2a3548;
+  }
+  .att-card.sev-blocked  { border-left-color: rgb(243,139,168); }
+  .att-card.sev-decision { border-left-color: rgb(137,180,250); }
+  .att-card.sev-review   { border-left-color: rgb(249,226,175); }
+  .att-hdr { display: flex; gap: .35rem; align-items: baseline; flex-wrap: wrap; font-size: .8rem; }
+  .att-title { flex: 1; }
+  .att-reason { margin: .3rem 0 .4rem; font-size: .75rem; }
+  .att-inline-lists { display: flex; flex-direction: column; gap: .15rem; margin-bottom: .3rem; }
+  .att-pick {
+    display: flex; align-items: baseline; gap: .35rem;
+    padding: .15rem .35rem; border: 1px solid #1f2733; border-radius: 3px;
+    font-size: .75rem; cursor: pointer;
+  }
+  .att-actions { display: flex; gap: .3rem; flex-wrap: wrap; }
+  .att-actions button {
+    background: #1b2230; color: #cdd6f4; border: 1px solid #2a3548;
+    border-radius: 3px; padding: .2rem .55rem; font: inherit; font-size: .75rem; cursor: pointer;
+  }
+  .att-actions .confirm:hover { background: #1f3a26; border-color: #2d5235; }
+  .att-actions .reject { background: rgba(243,139,168,.08); border-color: rgba(243,139,168,.3); color: rgb(243,139,168); }
+  .att-actions .reject:hover { background: rgba(243,139,168,.15); }
 
   /* Narrow viewport polish (#57 PR5). At <= 760px wide, stack everything
      vertically: chart on top, drawer in middle, sidebar at bottom. paneforge

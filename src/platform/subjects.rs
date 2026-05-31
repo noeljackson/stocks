@@ -16,6 +16,7 @@ pub const REGIME_CAPITULATION: &str = "regime.capitulation";
 
 // Discovery.
 pub const DISCOVERY_CANDIDATE: &str = "discovery.candidate";
+pub const DISCOVERY_CONFIRMED: &str = "discovery.confirmed";
 
 // Thesis lifecycle.
 pub const THESIS_ACTIONABLE: &str = "thesis.actionable";

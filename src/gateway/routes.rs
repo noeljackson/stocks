@@ -58,6 +58,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
             "/api/discovery/candidates/{id}/reject",
             post(reject_candidate),
         )
+        .route("/api/discovery-pool", get(list_discovery_pool))
         .route("/api/attention", get(list_attention_items))
         .route("/api/attention/{id}/dismiss", post(dismiss_attention_item))
         .route("/api/stream", get(stream))
@@ -402,6 +403,43 @@ struct AttentionQuery {
     limit: Option<i64>,
 }
 
+async fn list_discovery_pool(State(gw): State<Arc<Gateway>>) -> impl IntoResponse {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        r#"SELECT symbol, company_name, sector, industry, market_cap, first_seen_at
+             FROM discovery_pool
+            WHERE dropped_at IS NULL
+         ORDER BY market_cap DESC NULLS LAST, symbol"#,
+    )
+    .fetch_all(&gw.store.pool)
+    .await;
+    match rows {
+        Ok(rows) => {
+            let out: Vec<serde_json::Value> = rows
+                .into_iter()
+                .map(|r| {
+                    let first_seen: chrono::DateTime<chrono::Utc> = r
+                        .try_get("first_seen_at")
+                        .unwrap_or_else(|_| chrono::Utc::now());
+                    serde_json::json!({
+                        "symbol": r.try_get::<String, _>("symbol").unwrap_or_default(),
+                        "company_name": r.try_get::<Option<String>, _>("company_name").ok().flatten(),
+                        "sector": r.try_get::<Option<String>, _>("sector").ok().flatten(),
+                        "industry": r.try_get::<Option<String>, _>("industry").ok().flatten(),
+                        "market_cap": r.try_get::<Option<i64>, _>("market_cap").ok().flatten(),
+                        "first_seen_at": first_seen,
+                    })
+                })
+                .collect();
+            (StatusCode::OK, Json(out)).into_response()
+        }
+        Err(e) => {
+            warn!(error = %e, "list_discovery_pool failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
 async fn list_attention_items(
     State(gw): State<Arc<Gateway>>,
     Query(q): Query<AttentionQuery>,
@@ -737,17 +775,36 @@ async fn confirm_candidate(
     if req.watchlist_ids.is_empty() {
         return (StatusCode::BAD_REQUEST, "watchlist_ids required").into_response();
     }
-    match gw
+    // Look up the candidate's symbol so we can fire discovery.confirmed.
+    let symbol: Option<String> =
+        sqlx::query_scalar("SELECT symbol FROM discovery_candidate WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&gw.store.pool)
+            .await
+            .ok()
+            .flatten();
+    if let Err(e) = gw
         .store
         .confirm_discovery_candidate(id, &req.watchlist_ids)
         .await
     {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => {
-            warn!(id, error = %e, "confirm_candidate failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        warn!(id, error = %e, "confirm_candidate failed");
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    // Auto-kick cognition pipeline (#100) by publishing discovery.confirmed.
+    // The cognition service consumes this and runs context+thesis for the
+    // newly-promoted ticker — no manual `make refresh-context` step needed.
+    if let Some(sym) = symbol {
+        let payload = serde_json::json!({
+            "candidate_id": id,
+            "symbol": sym,
+            "watchlist_ids": req.watchlist_ids,
+        });
+        if let Err(e) = gw.bus.publish(subjects::DISCOVERY_CONFIRMED, payload.to_string().as_bytes()).await {
+            warn!(error = %e, "publish discovery.confirmed failed (non-fatal)");
         }
     }
+    StatusCode::NO_CONTENT.into_response()
 }
 
 async fn reject_candidate(

@@ -29,14 +29,23 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/regime", get(get_regime))
         .route("/api/tickers", get(list_tickers))
         .route("/api/theses", get(list_theses))
-        .route("/api/theses/{thesis_id}/transition", post(transition_thesis))
+        .route(
+            "/api/theses/{thesis_id}/transition",
+            post(transition_thesis),
+        )
         .route("/api/ticker-context", get(get_ticker_context))
         .route("/api/candles", get(get_candles))
         .route("/api/symbol-events", get(get_symbol_events))
         .route("/api/decisions", get(get_decisions).post(record_decision))
         .route("/api/calibration", get(get_calibration))
-        .route("/api/watchlists", get(list_watchlists).post(create_watchlist))
-        .route("/api/watchlists/{id}", axum::routing::delete(delete_watchlist))
+        .route(
+            "/api/watchlists",
+            get(list_watchlists).post(create_watchlist),
+        )
+        .route(
+            "/api/watchlists/{id}",
+            axum::routing::delete(delete_watchlist),
+        )
         .route(
             "/api/watchlists/{id}/members",
             get(list_watchlist_members).post(add_watchlist_member),
@@ -45,10 +54,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
             "/api/watchlists/{id}/members/{symbol}",
             axum::routing::delete(remove_watchlist_member),
         )
-        .route(
-            "/api/portfolio",
-            get(get_portfolio).put(put_portfolio),
-        )
+        .route("/api/portfolio", get(get_portfolio).put(put_portfolio))
         .route("/api/discovery/candidates", get(list_pending_candidates))
         .route(
             "/api/discovery/candidates/{id}/confirm",
@@ -121,7 +127,11 @@ async fn transition_thesis(
         }
     };
     let Some(t) = theses.into_iter().next() else {
-        return (StatusCode::NOT_FOUND, format!("thesis {thesis_id} not found")).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            format!("thesis {thesis_id} not found"),
+        )
+            .into_response();
     };
 
     // 2. Build the SubstanceInput from the loaded thesis.
@@ -144,7 +154,10 @@ async fn transition_thesis(
     // 3. Check legality + substance.
     if let Err(missing) = substance::promotion_allowed(t.state, req.to, &sub_input) {
         let body = TransitionErr {
-            error: if missing.first().is_some_and(|s| s.starts_with("illegal transition")) {
+            error: if missing
+                .first()
+                .is_some_and(|s| s.starts_with("illegal transition"))
+            {
                 missing[0].clone()
             } else {
                 format!("blocked by missing substance: {}", missing.join(", "))
@@ -167,8 +180,12 @@ async fn transition_thesis(
     // 5. Emit the matching thesis.* event so downstream services (and the
     //    SSE feed) see it.
     let topic = match req.to {
-        crate::platform::domain::ThesisState::Actionable => crate::platform::subjects::THESIS_ACTIONABLE,
-        crate::platform::domain::ThesisState::Disqualified => crate::platform::subjects::THESIS_INVALIDATED,
+        crate::platform::domain::ThesisState::Actionable => {
+            crate::platform::subjects::THESIS_ACTIONABLE
+        }
+        crate::platform::domain::ThesisState::Disqualified => {
+            crate::platform::subjects::THESIS_INVALIDATED
+        }
         crate::platform::domain::ThesisState::Closed => crate::platform::subjects::THESIS_FULFILLED,
         _ => crate::platform::subjects::THESIS_UPDATED,
     };
@@ -184,11 +201,14 @@ async fn transition_thesis(
         warn!(error = %e, "transition publish failed (best-effort)");
     }
 
-    (StatusCode::OK, Json(serde_json::json!({
-        "thesis_id": thesis_id,
-        "from": t.state,
-        "to": req.to,
-    })))
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "thesis_id": thesis_id,
+            "from": t.state,
+            "to": req.to,
+        })),
+    )
         .into_response()
 }
 
@@ -232,9 +252,111 @@ async fn get_ticker_context(
 #[derive(Debug, Deserialize, Default)]
 struct CandlesQuery {
     symbol: Option<String>,
-    /// 200D / 1Y / 2Y / ALL — defaults to 1Y when omitted.
+    /// 1D / 5D / 1M / 3M / 6M / 200D / 1Y / 2Y / ALL.
     #[serde(default)]
     range: Option<String>,
+    /// 1m / 3m / 5m / 15m / 30m / 1h / 2h / 4h / 1D / 1W / 3W / 1M.
+    #[serde(default)]
+    interval: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ChartInterval {
+    label: &'static str,
+    native: Option<&'static str>,
+    bucket_minutes: i64,
+}
+
+impl ChartInterval {
+    fn parse(raw: Option<&str>) -> Self {
+        match raw.unwrap_or("1D") {
+            "1m" => Self {
+                label: "1m",
+                native: Some("1min"),
+                bucket_minutes: 1,
+            },
+            "3m" => Self {
+                label: "3m",
+                native: Some("1min"),
+                bucket_minutes: 3,
+            },
+            "5m" => Self {
+                label: "5m",
+                native: Some("5min"),
+                bucket_minutes: 5,
+            },
+            "15m" => Self {
+                label: "15m",
+                native: Some("15min"),
+                bucket_minutes: 15,
+            },
+            "30m" => Self {
+                label: "30m",
+                native: Some("30min"),
+                bucket_minutes: 30,
+            },
+            "1h" => Self {
+                label: "1h",
+                native: Some("1hour"),
+                bucket_minutes: 60,
+            },
+            "2h" => Self {
+                label: "2h",
+                native: Some("1hour"),
+                bucket_minutes: 120,
+            },
+            "4h" => Self {
+                label: "4h",
+                native: Some("4hour"),
+                bucket_minutes: 240,
+            },
+            "1W" => Self {
+                label: "1W",
+                native: None,
+                bucket_minutes: 0,
+            },
+            "3W" => Self {
+                label: "3W",
+                native: None,
+                bucket_minutes: 0,
+            },
+            "1M" => Self {
+                label: "1M",
+                native: None,
+                bucket_minutes: 0,
+            },
+            _ => Self {
+                label: "1D",
+                native: None,
+                bucket_minutes: 0,
+            },
+        }
+    }
+
+    fn is_intraday(self) -> bool {
+        self.native.is_some()
+    }
+}
+
+fn chart_lookback_days(range: Option<&str>, interval: ChartInterval) -> i64 {
+    match range.unwrap_or(if interval.is_intraday() { "5D" } else { "1Y" }) {
+        "1D" => 2,
+        "5D" => 7,
+        "1M" => 35,
+        "3M" => 100,
+        "6M" => 200,
+        "200D" => 320,
+        "1Y" => 380,
+        "2Y" => 760,
+        "ALL" => 365 * 30,
+        _ => {
+            if interval.is_intraday() {
+                7
+            } else {
+                380
+            }
+        }
+    }
 }
 
 async fn get_candles(
@@ -244,14 +366,55 @@ async fn get_candles(
     let Some(sym) = q.symbol else {
         return (StatusCode::BAD_REQUEST, "symbol query param required").into_response();
     };
-    let lookback_days: i64 = match q.range.as_deref().unwrap_or("1Y") {
-        "200D" => 320,
-        "1Y" => 380,
-        "2Y" => 760,
-        "ALL" => 365 * 30,
-        _ => 380,
-    };
-    match gw.store.candles_for(&sym, lookback_days).await {
+    let interval = ChartInterval::parse(q.interval.as_deref());
+    let lookback_days = chart_lookback_days(q.range.as_deref(), interval);
+    if let Some(native) = interval.native {
+        if !gw.fmp_intraday.configured() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "FMP_API_KEY required for intraday chart bars",
+            )
+                .into_response();
+        }
+        match gw.store.latest_intraday_bar_ts(&sym, native).await {
+            Ok(latest) => {
+                let stale = latest
+                    .map(|ts| chrono::Utc::now() - ts > chrono::Duration::minutes(30))
+                    .unwrap_or(true);
+                if stale {
+                    match gw.fmp_intraday.fetch_one(&sym, native, lookback_days).await {
+                        Ok(rows) => {
+                            if let Err(e) = gw.store.upsert_intraday_price_bars(&rows).await {
+                                warn!(symbol = %sym, interval = native, error = %e, "persist intraday bars failed");
+                            }
+                        }
+                        Err(e) => {
+                            warn!(symbol = %sym, interval = native, error = %e, "fetch intraday bars failed");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(symbol = %sym, interval = native, error = %e, "latest_intraday_bar_ts failed")
+            }
+        }
+        match gw
+            .store
+            .intraday_candles_for(&sym, native, lookback_days, interval.bucket_minutes)
+            .await
+        {
+            Ok(rows) => return (StatusCode::OK, Json(rows)).into_response(),
+            Err(e) => {
+                warn!(symbol = %sym, interval = native, error = %e, "get intraday candles failed");
+                return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            }
+        }
+    }
+    match gw
+        .store
+        .candles_for(&sym, lookback_days, interval.label)
+        .await
+    {
         Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
         Err(e) => {
             warn!(symbol = %sym, error = %e, "get_candles failed");
@@ -283,13 +446,8 @@ async fn get_symbol_events(
     let Some(sym) = q.symbol else {
         return (StatusCode::BAD_REQUEST, "symbol query param required").into_response();
     };
-    let lookback_days: i64 = match q.range.as_deref().unwrap_or("1Y") {
-        "200D" => 320,
-        "1Y" => 380,
-        "2Y" => 760,
-        "ALL" => 365 * 30,
-        _ => 380,
-    };
+    let interval = ChartInterval::parse(q.interval.as_deref());
+    let lookback_days = chart_lookback_days(q.range.as_deref(), interval);
     match gw.store.symbol_events(&sym, lookback_days).await {
         Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
         Err(e) => {
@@ -320,10 +478,7 @@ async fn list_alerts(
     }
 }
 
-async fn ack_alert(
-    State(gw): State<Arc<Gateway>>,
-    Path(id): Path<i64>,
-) -> impl IntoResponse {
+async fn ack_alert(State(gw): State<Arc<Gateway>>, Path(id): Path<i64>) -> impl IntoResponse {
     match gw.store.acknowledge_alert(id).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => (StatusCode::NOT_FOUND, format!("alert {id} not found")).into_response(),
@@ -498,14 +653,13 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
 
     // ---- discovery ----
     let discovery = {
-        let last_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
-            "SELECT MAX(proposed_at) FROM discovery_candidate",
-        )
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .flatten();
+        let last_at: Option<chrono::DateTime<chrono::Utc>> =
+            sqlx::query_scalar("SELECT MAX(proposed_at) FROM discovery_candidate")
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten()
+                .flatten();
         let open: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM discovery_candidate WHERE status = 'proposed'",
         )
@@ -529,12 +683,11 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
             })
         })
         .collect();
-        let pool_size: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM discovery_pool WHERE dropped_at IS NULL",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
+        let pool_size: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM discovery_pool WHERE dropped_at IS NULL")
+                .fetch_one(pool)
+                .await
+                .unwrap_or(0);
         json!({
             "last_pass_at": last_at,
             "open_candidates": open,
@@ -580,12 +733,11 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
 
     // ---- attention queue ----
     let attention = {
-        let open: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM attention_item WHERE status = 'open'",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
+        let open: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM attention_item WHERE status = 'open'")
+                .fetch_one(pool)
+                .await
+                .unwrap_or(0);
         let by_kind: Vec<serde_json::Value> = sqlx::query(
             r#"SELECT kind, COUNT(*) AS n FROM attention_item
                 WHERE status = 'open' GROUP BY kind ORDER BY n DESC"#,
@@ -714,7 +866,11 @@ async fn record_decision(
     )
     .bind(thesis_uuid)
     .bind(&req.action)
-    .bind(if req.user_choice.is_empty() { None } else { Some(&req.user_choice) })
+    .bind(if req.user_choice.is_empty() {
+        None
+    } else {
+        Some(&req.user_choice)
+    })
     .bind(sizing)
     .execute(&gw.store.pool)
     .await;
@@ -726,13 +882,17 @@ async fn record_decision(
 
     // Resolve any open thesis_actionable attention item for this thesis (#86).
     if let Some(tid) = thesis_uuid {
-        if let Err(e) = gw.store.resolve_attention(
-            "thesis_actionable",
-            Some(tid),
-            None,
-            &format!("decision_recorded:{}", req.action),
-            serde_json::json!({"action": req.action, "user_choice": req.user_choice}),
-        ).await {
+        if let Err(e) = gw
+            .store
+            .resolve_attention(
+                "thesis_actionable",
+                Some(tid),
+                None,
+                &format!("decision_recorded:{}", req.action),
+                serde_json::json!({"action": req.action, "user_choice": req.user_choice}),
+            )
+            .await
+        {
             warn!(error = %e, "attention resolve failed (non-fatal)");
         }
     }
@@ -753,10 +913,7 @@ async fn record_decision(
     StatusCode::NO_CONTENT.into_response()
 }
 
-async fn spa_handler(
-    State(gw): State<Arc<Gateway>>,
-    uri: axum::http::Uri,
-) -> impl IntoResponse {
+async fn spa_handler(State(gw): State<Arc<Gateway>>, uri: axum::http::Uri) -> impl IntoResponse {
     // Dev mode: anything that ISN'T an /api route lands here. Bounce the
     // browser to the live Vite dev server so :8080 stops competing with :5173.
     // API paths reach their dedicated handlers and never hit this fallback.
@@ -827,7 +984,11 @@ async fn create_watchlist(
     }
     match gw
         .store
-        .create_watchlist(req.name.trim(), req.description.as_deref(), req.color.as_deref())
+        .create_watchlist(
+            req.name.trim(),
+            req.description.as_deref(),
+            req.color.as_deref(),
+        )
         .await
     {
         Ok(id) => (StatusCode::CREATED, Json(serde_json::json!({"id": id}))).into_response(),
@@ -892,7 +1053,11 @@ async fn remove_watchlist_member(
     State(gw): State<Arc<Gateway>>,
     Path((id, symbol)): Path<(uuid::Uuid, String)>,
 ) -> impl IntoResponse {
-    match gw.store.remove_from_watchlist(id, &symbol.to_uppercase()).await {
+    match gw
+        .store
+        .remove_from_watchlist(id, &symbol.to_uppercase())
+        .await
+    {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => (StatusCode::NOT_FOUND, "not in this list").into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -945,7 +1110,11 @@ async fn put_portfolio(
     Json(req): Json<PutPortfolioReq>,
 ) -> impl IntoResponse {
     if req.account_size_usd.is_none() && req.high_water_mark_usd.is_none() {
-        return (StatusCode::BAD_REQUEST, "at least one of account_size_usd / high_water_mark_usd required").into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            "at least one of account_size_usd / high_water_mark_usd required",
+        )
+            .into_response();
     }
     if let Some(v) = req.account_size_usd
         && v <= 0.0
@@ -993,9 +1162,6 @@ async fn confirm_candidate(
     Path(id): Path<i64>,
     Json(req): Json<ConfirmCandidateReq>,
 ) -> impl IntoResponse {
-    if req.watchlist_ids.is_empty() {
-        return (StatusCode::BAD_REQUEST, "watchlist_ids required").into_response();
-    }
     // Look up the candidate's symbol so we can fire discovery.confirmed.
     let symbol: Option<String> =
         sqlx::query_scalar("SELECT symbol FROM discovery_candidate WHERE id = $1")
@@ -1021,7 +1187,14 @@ async fn confirm_candidate(
             "symbol": sym,
             "watchlist_ids": req.watchlist_ids,
         });
-        if let Err(e) = gw.bus.publish(subjects::DISCOVERY_CONFIRMED, payload.to_string().as_bytes()).await {
+        if let Err(e) = gw
+            .bus
+            .publish(
+                subjects::DISCOVERY_CONFIRMED,
+                payload.to_string().as_bytes(),
+            )
+            .await
+        {
             warn!(error = %e, "publish discovery.confirmed failed (non-fatal)");
         }
     }
@@ -1044,7 +1217,10 @@ async fn trigger_refresh_context(
     let payload = serde_json::json!({"symbol": sym, "source": "ui-refresh"});
     if let Err(e) = gw
         .bus
-        .publish(subjects::DISCOVERY_CONFIRMED, payload.to_string().as_bytes())
+        .publish(
+            subjects::DISCOVERY_CONFIRMED,
+            payload.to_string().as_bytes(),
+        )
         .await
     {
         warn!(symbol = %sym, error = %e, "publish refresh-context failed");

@@ -101,16 +101,12 @@
       const inner = chosenLists[cid] ?? {};
       for (const [wlId, on] of Object.entries(inner)) if (on) lists.add(wlId);
     }
-    if (lists.size === 0) {
-      error = "Pick at least one watchlist before confirming.";
-      return;
-    }
     const ids = [...lists];
     try {
-      // First candidate's confirm promotes the ticker + adds to lists; the
-      // rest are idempotent (ON CONFLICT DO NOTHING on watchlist_member).
+      // Confirm always promotes the ticker. Optional checked lists add
+      // watchlist memberships; empty list selection means Universe only.
       for (const cid of candidateIds) await confirmCandidate(cid, ids);
-      await Promise.all([refreshAttention(), refreshPending(), refreshWatchlists()]);
+      await Promise.all([refreshAttention(), refreshPending(), refreshWatchlists(), fetchTickers().then((t) => (tickers = t))]);
     } catch (e) {
       error = String(e);
     }
@@ -406,13 +402,9 @@
   async function confirmOne(candId: number) {
     const inner = chosenLists[candId] ?? {};
     const ids = Object.entries(inner).filter(([, v]) => v).map(([k]) => k);
-    if (ids.length === 0) {
-      error = "Pick at least one watchlist before confirming.";
-      return;
-    }
     try {
       await confirmCandidate(candId, ids);
-      await Promise.all([refreshPending(), refreshWatchlists()]);
+      await Promise.all([refreshPending(), refreshWatchlists(), fetchTickers().then((t) => (tickers = t))]);
     } catch (e) {
       error = String(e);
     }

@@ -1,7 +1,6 @@
 <script lang="ts">
-  // ChartPanel — daily candles via lightweight-charts (#57 PR2).
-  // Renders OHLC + volume in the workspace's chart pane. Range buttons
-  // hit /api/candles?symbol=&range= to swap data without re-mounting.
+  // ChartPanel — TradingView-style interval controls over lightweight-charts.
+  // Renders OHLC + volume in the workspace chart pane.
   import { onMount } from "svelte";
   import {
     createChart,
@@ -26,8 +25,11 @@
 
   type Candle = { time: string; open: number; high: number; low: number; close: number; volume: number };
   type SymbolEvent = { kind: string; time: string; thesis_id: string; label: string; detail: string };
-  type Range = "200D" | "1Y" | "2Y" | "ALL";
-  const RANGES: Range[] = ["200D", "1Y", "2Y", "ALL"];
+  type Interval = "1m" | "3m" | "5m" | "15m" | "30m" | "1h" | "2h" | "4h" | "1D" | "1W" | "3W" | "1M";
+  type Range = "1D" | "5D" | "1M" | "3M" | "6M" | "200D" | "1Y" | "2Y" | "ALL";
+  const INTERVALS: Interval[] = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1D", "1W", "3W", "1M"];
+  const RANGES: Range[] = ["1D", "5D", "1M", "3M", "6M", "200D", "1Y", "2Y", "ALL"];
+  const INTRADAY_INTERVALS = new Set<Interval>(["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h"]);
   const SMA_WINDOWS = [20, 50, 100, 200] as const;
   const SMA_COLORS: Record<(typeof SMA_WINDOWS)[number], string> = {
     20: "#f9e2af",
@@ -35,6 +37,7 @@
     100: "#cba6f7",
     200: "#94e2d5",
   };
+  let interval = $state<Interval>("1D");
   let range = $state<Range>("1Y");
 
   let container: HTMLDivElement | null = null;
@@ -50,18 +53,37 @@
 
   function toUtc(time: string): UTCTimestamp {
     // lightweight-charts wants seconds since epoch for time-based charts.
-    return Math.floor(new Date(time + "T00:00:00Z").getTime() / 1000) as UTCTimestamp;
+    const stamp = time.includes("T") ? time : `${time}T00:00:00Z`;
+    return Math.floor(new Date(stamp).getTime() / 1000) as UTCTimestamp;
   }
 
-  async function load(sym: string, rng: Range) {
+  function isIntraday(i: Interval) {
+    return INTRADAY_INTERVALS.has(i);
+  }
+
+  function chooseInterval(next: Interval) {
+    interval = next;
+    if (isIntraday(next) && !["1D", "5D", "1M"].includes(range)) {
+      range = "5D";
+    } else if (!isIntraday(next) && ["1D", "5D"].includes(range)) {
+      range = "1Y";
+    }
+  }
+
+  function smaLabel(window: number) {
+    if (interval === "1D") return `SMA ${window}D`;
+    return `SMA ${window} bars`;
+  }
+
+  async function load(sym: string, rng: Range, intv: Interval) {
     loading = true;
     error = null;
     try {
       const [cRes, eRes] = await Promise.all([
-        fetch(`/api/candles?symbol=${encodeURIComponent(sym)}&range=${rng}`),
-        fetch(`/api/symbol-events?symbol=${encodeURIComponent(sym)}&range=${rng}`),
+        fetch(`/api/candles?symbol=${encodeURIComponent(sym)}&range=${rng}&interval=${encodeURIComponent(intv)}`),
+        fetch(`/api/symbol-events?symbol=${encodeURIComponent(sym)}&range=${rng}&interval=${encodeURIComponent(intv)}`),
       ]);
-      if (!cRes.ok) throw new Error(`candles ${cRes.status}`);
+      if (!cRes.ok) throw new Error(await cRes.text() || `candles ${cRes.status}`);
       candles = (await cRes.json()) as Candle[];
       events = eRes.ok ? ((await eRes.json()) as SymbolEvent[]) : [];
       render();
@@ -138,7 +160,7 @@
       layout: { background: { color: "#0b0e14" }, textColor: "#bac2de" },
       localization: { locale: "en-US" },
       grid: { vertLines: { color: "#1f2733" }, horzLines: { color: "#1f2733" } },
-      timeScale: { borderColor: "#2a3548", timeVisible: false, rightOffset: 4 },
+      timeScale: { borderColor: "#2a3548", timeVisible: isIntraday(interval), rightOffset: 4 },
       rightPriceScale: { borderColor: "#2a3548" },
       crosshair: { mode: 0 }, // Normal
     });
@@ -163,7 +185,7 @@
         priceLineVisible: false,
         lastValueVisible: true,
         crosshairMarkerVisible: false,
-        title: `SMA ${window}`,
+        title: smaLabel(window),
       });
       smaSeries.set(window, series);
     }
@@ -184,7 +206,9 @@
     }));
     priceSeries.setData(cs);
     volSeries.setData(vs);
+    chart.timeScale().applyOptions({ timeVisible: isIntraday(interval), secondsVisible: false });
     for (const window of SMA_WINDOWS) {
+      smaSeries.get(window)?.applyOptions({ title: smaLabel(window) });
       smaSeries.get(window)?.setData(smaData(window));
     }
     applyMarkers();
@@ -192,7 +216,7 @@
   }
 
   $effect(() => {
-    if (symbol) load(symbol, range);
+    if (symbol) load(symbol, range, interval);
   });
 
   onMount(() => {
@@ -227,12 +251,17 @@
       <span class="sma-legend" aria-label="SMA ribbon">
         {#each SMA_WINDOWS as window}
           {#if candles.length >= window}
-            <span class="sma-key" style={`--sma-color: ${SMA_COLORS[window]}`}>SMA {window}</span>
+            <span class="sma-key" style={`--sma-color: ${SMA_COLORS[window]}`}>{smaLabel(window)}</span>
           {/if}
         {/each}
       </span>
     {/if}
-    <span class="range-picker">
+    <span class="interval-picker" aria-label="Chart interval">
+      {#each INTERVALS as intv}
+        <button class:active={interval === intv} onclick={() => chooseInterval(intv)}>{intv}</button>
+      {/each}
+    </span>
+    <span class="range-picker" aria-label="Chart range">
       {#each RANGES as r}
         <button class:active={range === r} onclick={() => (range = r)}>{r}</button>
       {/each}
@@ -246,7 +275,7 @@
       <div class="empty muted">Select a symbol on the right.</div>
     {:else if candles && candles.length === 0 && !loading}
       <div class="empty muted">
-        No price bars for {symbol} in this range.
+        No price bars for {symbol} at {interval} in this range.
         Run <code>make run-ingest</code> to backfill.
       </div>
     {/if}
@@ -280,13 +309,18 @@
     content: ""; width: .9rem; height: 2px; background: var(--sma-color);
     display: inline-block; border-radius: 2px;
   }
-  .range-picker { margin-left: auto; display: flex; gap: .15rem; }
+  .interval-picker { margin-left: auto; }
+  .interval-picker,
+  .range-picker { display: flex; gap: .15rem; flex-wrap: wrap; justify-content: flex-end; }
+  .interval-picker button,
   .range-picker button {
     background: #11161f; color: #6c7693; border: 1px solid #1f2733;
     border-radius: 3px; padding: .15rem .5rem; cursor: pointer; font: inherit;
     font-size: .75rem;
   }
+  .interval-picker button:hover,
   .range-picker button:hover { color: #cdd6f4; border-color: #2a3548; }
+  .interval-picker button.active,
   .range-picker button.active {
     background: #2a3548; color: #cdd6f4; border-color: #45567a;
   }

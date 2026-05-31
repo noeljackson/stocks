@@ -744,9 +744,11 @@
   .workspace {
     display: grid;
     /* Top bar (44) / error bar (auto when present) / main (fills) / bottom (CSS var) */
-    grid-template-rows: 44px auto 1fr var(--bottom-h, 36px);
+    grid-template-rows: 44px auto minmax(0, 1fr) var(--bottom-h, 36px);
     grid-template-columns: 1fr;
-    height: 100dvh; /* dvh handles mobile address-bar resize cleanly */
+    width: 100%;
+    height: 100%;
+    min-height: 100dvh;
     background: #0b0e14;
     overflow: hidden;
   }
@@ -790,13 +792,16 @@
   /* Main: chart fills, splitter, right panel takes --right-w */
   .main {
     display: grid;
-    grid-template-columns: 1fr 4px var(--right-w, 380px);
-    min-height: 0; overflow: hidden;
+    grid-template-columns: minmax(0, 1fr) 4px var(--right-w, 380px);
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
   }
   .chart-panel {
     overflow: auto;
     padding: 1rem;
     min-width: 0;
+    height: 100%;
   }
   .split-v {
     background: #1f2733;
@@ -828,9 +833,12 @@
 
   /* Right panel */
   .right {
-    display: grid; grid-template-rows: minmax(120px, 35%) 1fr;
+    display: grid;
+    grid-template-rows: minmax(120px, 35%) minmax(0, 1fr);
     background: #0a0d14;
     overflow: hidden;
+    height: 100%;
+    min-height: 0;
   }
   .wl-section, .detail-section { overflow: auto; padding: .5rem .75rem; }
   .wl-section { border-bottom: 1px solid #1f2733; }

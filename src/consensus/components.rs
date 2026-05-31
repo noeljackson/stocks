@@ -251,11 +251,67 @@ pub async fn coverage_expansion(pool: &PgPool, symbol: &str) -> Result<Component
     Ok(ComponentScore { name: "coverage_expansion", raw, weighted: 0.0, status: "ok" })
 }
 
-// ---------- degraded stubs (retail_attention waits on #20) ----------
+// ---------- retail_attention from macro crowd-sentiment markers (#20) ----------
 
+/// Compose a retail-attention raw score from the latest crowd markers.
+///
+/// Inputs each map to a 0..100 sub-score; we average across what's available.
+/// Result is positive (higher = more retail attention/risk-on crowd state).
+///
+/// - VIX: high VIX (>30) → 0 (fear), low VIX (<15) → 100 (complacency).
+///   Curve linear between 15 and 30.
+/// - Equity P/C ratio: high (>1.0) → 0 (hedging), low (<0.5) → 100
+///   (calls dominate, speculative). Curve linear between 0.5 and 1.0.
 #[must_use]
-pub fn retail_attention_stub() -> ComponentScore {
-    ComponentScore { name: "retail_attention", raw: 0.0, weighted: 0.0, status: "no_data" }
+pub fn retail_attention_raw(vix_close: Option<f64>, equity_pcr: Option<f64>) -> Option<f64> {
+    let vix_sub = vix_close.map(|v| {
+        let clamped = v.clamp(15.0, 30.0);
+        100.0 * (30.0 - clamped) / 15.0
+    });
+    let pcr_sub = equity_pcr.map(|p| {
+        let clamped = p.clamp(0.5, 1.0);
+        100.0 * (1.0 - clamped) / 0.5
+    });
+    let mut subs = Vec::new();
+    if let Some(s) = vix_sub { subs.push(s); }
+    if let Some(s) = pcr_sub { subs.push(s); }
+    if subs.is_empty() {
+        None
+    } else {
+        Some(subs.iter().sum::<f64>() / subs.len() as f64)
+    }
+}
+
+/// Read the latest crowd_sentiment markers and compose retail_attention.
+pub async fn retail_attention(pool: &PgPool) -> Result<ComponentScore> {
+    let vix: Option<f64> = sqlx::query_scalar(
+        "SELECT value::float8 FROM crowd_sentiment
+          WHERE source='cboe_vix' AND metric='vix_close'
+       ORDER BY observed_at DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+    let pcr: Option<f64> = sqlx::query_scalar(
+        "SELECT value::float8 FROM crowd_sentiment
+          WHERE source='cboe_pcr' AND metric='equity_pcr'
+       ORDER BY observed_at DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+    match retail_attention_raw(vix, pcr) {
+        Some(raw) => Ok(ComponentScore {
+            name: "retail_attention",
+            raw,
+            weighted: 0.0,
+            status: "ok",
+        }),
+        None => Ok(ComponentScore {
+            name: "retail_attention",
+            raw: 0.0,
+            weighted: 0.0,
+            status: "no_data",
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -307,10 +363,28 @@ mod tests {
     }
 
     #[test]
-    fn retail_attention_stub_attributes_no_data() {
-        let s = retail_attention_stub();
-        assert_eq!(s.raw, 0.0);
-        assert_eq!(s.status, "no_data");
+    fn retail_attention_raw_blends_vix_and_pcr() {
+        // VIX 15 (low, complacency) = 100; PCR 0.5 (calls dominate) = 100 → avg 100
+        assert_eq!(retail_attention_raw(Some(15.0), Some(0.5)), Some(100.0));
+        // VIX 30 (fear) = 0; PCR 1.0 (hedging) = 0 → avg 0
+        assert_eq!(retail_attention_raw(Some(30.0), Some(1.0)), Some(0.0));
+        // Single input alone: VIX 22.5 → 50, no PCR → just 50
+        assert_eq!(retail_attention_raw(Some(22.5), None), Some(50.0));
+    }
+
+    #[test]
+    fn retail_attention_raw_clamps_extremes() {
+        // VIX 50 (way past 30 cap) → 0
+        assert_eq!(retail_attention_raw(Some(50.0), None), Some(0.0));
+        // VIX 10 (way below 15) → 100
+        assert_eq!(retail_attention_raw(Some(10.0), None), Some(100.0));
+        // PCR 0.2 (way below 0.5) → 100
+        assert_eq!(retail_attention_raw(None, Some(0.2)), Some(100.0));
+    }
+
+    #[test]
+    fn retail_attention_raw_none_when_no_inputs() {
+        assert_eq!(retail_attention_raw(None, None), None);
     }
 
     #[test]

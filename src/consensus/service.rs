@@ -108,7 +108,10 @@ async fn score_symbol(
         components::mainstream_coverage(pool, symbol).await?,
         cfg.weights.mainstream_coverage,
     );
-    let retail = weight(components::retail_attention_stub(), cfg.weights.retail_attention);
+    let retail = weight(
+        components::retail_attention(pool).await?,
+        cfg.weights.retail_attention,
+    );
 
     Ok(compose(symbol, vec![coverage, estimate, mainstream, retail, pe], cfg))
 }

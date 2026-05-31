@@ -104,6 +104,74 @@ async fn scan_one(pool: &PgPool, symbol: &str, cfg: &Config) -> Result<Vec<Signa
             });
         }
     }
+    // New data-driven signals (#18, #19) — same Option<f64> contract.
+    if cfg.enabled("estimate_revision_velocity") {
+        let counts = sqlx::query(
+            r#"SELECT
+                 count(*) FILTER (WHERE direction = 'up')   AS up,
+                 count(*) FILTER (WHERE direction = 'down') AS down
+               FROM estimate_revision
+              WHERE symbol = $1
+                AND detected_at > now() - interval '14 days'"#,
+        )
+        .bind(symbol)
+        .fetch_one(pool)
+        .await?;
+        let up: i64 = counts.try_get("up").unwrap_or(0);
+        let down: i64 = counts.try_get("down").unwrap_or(0);
+        if let Some(net) = signals::estimate_revision_velocity(up as u32, down as u32, 3) {
+            hits.push(SignalHit {
+                symbol: symbol.to_string(),
+                signal_name: "estimate_revision_velocity",
+                value: net,
+                reasoning: format!(
+                    "{} net revisions in last 14d ({}↑ {}↓)",
+                    net as i32, up, down
+                ),
+            });
+        }
+    }
+    if cfg.enabled("news_sentiment_shift") {
+        let row = sqlx::query(
+            r#"WITH recent AS (
+                  SELECT count(*) AS n, COALESCE(avg(sentiment_polarity), 0) AS avg_pol
+                    FROM news_article
+                   WHERE symbol = $1
+                     AND sentiment_polarity IS NOT NULL
+                     AND published_at > now() - interval '3 days'
+               ), prior AS (
+                  SELECT count(*) AS n, COALESCE(avg(sentiment_polarity), 0) AS avg_pol
+                    FROM news_article
+                   WHERE symbol = $1
+                     AND sentiment_polarity IS NOT NULL
+                     AND published_at > now() - interval '10 days'
+                     AND published_at <= now() - interval '3 days'
+               )
+               SELECT recent.n::int8 AS rn, recent.avg_pol::float8 AS ra,
+                      prior.n::int8 AS pn, prior.avg_pol::float8 AS pa
+                 FROM recent, prior"#,
+        )
+        .bind(symbol)
+        .fetch_one(pool)
+        .await?;
+        let recent_n: i64 = row.try_get("rn")?;
+        let recent_avg: f64 = row.try_get("ra")?;
+        let prior_n: i64 = row.try_get("pn")?;
+        let prior_avg: f64 = row.try_get("pa")?;
+        if let Some(shift) = signals::news_sentiment_shift(
+            recent_avg, recent_n as u32, prior_avg, prior_n as u32, 0.3, 3,
+        ) {
+            hits.push(SignalHit {
+                symbol: symbol.to_string(),
+                signal_name: "news_sentiment_shift",
+                value: shift,
+                reasoning: format!(
+                    "polarity drift {:+.2} ({}→{} articles, {:+.2}→{:+.2} avg)",
+                    shift, prior_n, recent_n, prior_avg, recent_avg
+                ),
+            });
+        }
+    }
     Ok(hits)
 }
 

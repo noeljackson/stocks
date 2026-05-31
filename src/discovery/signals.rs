@@ -1,6 +1,50 @@
-//! Pure signal-detector functions. Each reads a vector of recent closes/
-//! volumes and returns an Option<f64> — Some(strength) if the signal fired,
-//! None if not.
+//! Pure signal-detector functions.
+//!
+//! Price-based signals take vectors of recent closes/volumes and return
+//! `Option<f64>` — Some(strength) if the signal fired, None if not.
+//!
+//! Data-driven signals (#18, #19) take counts/scores already aggregated by
+//! the service layer and return the same Option<f64> shape so the persist
+//! pipeline doesn't care where the signal came from.
+
+/// Estimate revision velocity: net up-vs-down analyst revisions in a window.
+/// Fires when |net| ≥ `min_net` AND there's clear directional dominance
+/// (one side > 2× the other). Returns Some(net) — positive for up-velocity,
+/// negative for down-velocity.
+#[must_use]
+pub fn estimate_revision_velocity(up: u32, down: u32, min_net: i32) -> Option<f64> {
+    let net = (up as i32) - (down as i32);
+    if net.abs() < min_net {
+        return None;
+    }
+    let bigger = up.max(down) as f64;
+    let smaller = up.min(down) as f64;
+    if bigger > 2.0 * smaller.max(1.0) - 1.0 {
+        Some(net as f64)
+    } else {
+        None
+    }
+}
+
+/// News sentiment shift: average polarity in the recent window minus the
+/// average in the prior window. Fires when the absolute shift exceeds
+/// `min_shift` AND we have at least `min_articles` in BOTH windows (we
+/// can't trust a single-article "shift").
+#[must_use]
+pub fn news_sentiment_shift(
+    recent_avg: f64,
+    recent_n: u32,
+    prior_avg: f64,
+    prior_n: u32,
+    min_shift: f64,
+    min_articles: u32,
+) -> Option<f64> {
+    if recent_n < min_articles || prior_n < min_articles {
+        return None;
+    }
+    let shift = recent_avg - prior_avg;
+    if shift.abs() >= min_shift { Some(shift) } else { None }
+}
 
 /// Volume anomaly: today's volume relative to the 20-day average.
 ///   3x avg → returns Some(3.0)
@@ -127,5 +171,58 @@ mod tests {
     fn base_breakout_short_history_returns_none() {
         let c = vec![100.0; 10];
         assert_eq!(base_breakout(&c, 55, 8.0), None);
+    }
+
+    // ---- estimate_revision_velocity ----
+
+    #[test]
+    fn revision_velocity_fires_when_net_dominates() {
+        assert_eq!(estimate_revision_velocity(5, 1, 3), Some(4.0));
+        assert_eq!(estimate_revision_velocity(0, 4, 3), Some(-4.0));
+    }
+
+    #[test]
+    fn revision_velocity_silent_below_min_net() {
+        assert_eq!(estimate_revision_velocity(2, 0, 3), None);
+    }
+
+    #[test]
+    fn revision_velocity_silent_when_mixed() {
+        // 3 up, 2 down: net=1, way below min, OR even if min=1:
+        assert_eq!(estimate_revision_velocity(3, 2, 1), None,
+            "3 vs 2 is too close; bigger must be >2x smaller");
+        // 4 up, 1 down: net=3, bigger(4) > 2*1-1=1, fires
+        assert_eq!(estimate_revision_velocity(4, 1, 3), Some(3.0));
+    }
+
+    // ---- news_sentiment_shift ----
+
+    #[test]
+    fn sentiment_shift_fires_on_clear_drift_with_enough_articles() {
+        assert_eq!(
+            news_sentiment_shift(0.6, 5, 0.0, 5, 0.3, 3),
+            Some(0.6),
+            "+0.6 shift, 5+5 articles, threshold 0.3 → fires"
+        );
+    }
+
+    #[test]
+    fn sentiment_shift_negative_drift_fires() {
+        let r = news_sentiment_shift(-0.4, 4, 0.3, 4, 0.3, 3).unwrap();
+        assert!((r - -0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sentiment_shift_silent_below_threshold() {
+        assert_eq!(news_sentiment_shift(0.2, 5, 0.0, 5, 0.3, 3), None);
+    }
+
+    #[test]
+    fn sentiment_shift_silent_with_too_few_articles() {
+        assert_eq!(
+            news_sentiment_shift(0.9, 2, 0.0, 5, 0.3, 3),
+            None,
+            "recent_n=2 < min_articles=3"
+        );
     }
 }

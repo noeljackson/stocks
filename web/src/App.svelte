@@ -35,6 +35,7 @@
   } from "./lib/api";
   import ContextPanel from "./lib/ContextPanel.svelte";
   import ThesisDetails from "./lib/ThesisDetails.svelte";
+  import ChartPanel from "./lib/ChartPanel.svelte";
   import { PaneGroup, Pane, PaneResizer } from "paneforge";
 
   // ---------- workspace state ----------
@@ -401,29 +402,7 @@
     <Pane defaultSize={72} minSize={40}>
       <PaneGroup direction="vertical" autoSaveId="ws.v3.left" class="main-col">
         <Pane defaultSize={70} minSize={30}>
-          <section class="chart-panel">
-      <div class="chart-stub">
-        <h3>
-          {#if selectedSymbol}
-            {selectedSymbol} chart
-          {:else}
-            no symbol selected
-          {/if}
-        </h3>
-        <p class="muted">
-          Chart panel comes in #57 PR2. For now the workspace shell + selection model is in place.
-        </p>
-        {#if selectedTicker}
-          <dl class="ticker-meta">
-            <dt>Cluster</dt><dd>{selectedTicker.cluster_name ?? selectedTicker.cluster_id}</dd>
-            <dt>Tier</dt><dd>T{selectedTicker.tier}</dd>
-            <dt>Domain fit</dt><dd>{selectedTicker.domain_fit !== null && selectedTicker.domain_fit !== undefined ? Math.round(selectedTicker.domain_fit) : "—"}</dd>
-            <dt>Options</dt><dd>{selectedTicker.options_eligible ? "eligible" : "—"}</dd>
-            <dt>Open theses</dt><dd>{selectedTicker.open_theses}</dd>
-          </dl>
-        {/if}
-      </div>
-          </section>
+          <ChartPanel symbol={selectedSymbol} />
         </Pane>
 
         <PaneResizer class="split-h" />

@@ -219,6 +219,12 @@ refresh-context: ## Refresh ticker_context for one symbol (SYMBOL=NVDA make refr
 draft-thesis: ## Draft a thesis from the latest ticker_context (SYMBOL=NVDA make draft-thesis)
 	cd py && $(RUN) .venv/bin/python -m stocks.thesis_engine $(SYMBOL)
 
+sharpen-thesis: ## Sharpen pass: LLM proposes structured conditions (THESIS_ID=<uuid> make sharpen-thesis)
+	cd py && $(RUN) .venv/bin/python -m stocks.sharpen $(THESIS_ID)
+
+challenge-thesis: ## Challenge pass: LLM finds weak spots, flags for review (THESIS_ID=<uuid>)
+	cd py && $(RUN) .venv/bin/python -m stocks.challenge $(THESIS_ID)
+
 # Legacy alias (will be removed when context_maintainer becomes a long-running service).
 run-context: refresh-context ## Alias of refresh-context (deprecated)
 

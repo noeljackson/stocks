@@ -2,7 +2,7 @@
 
 use pretty_assertions::assert_eq;
 
-use super::{Config, Intent, Portfolio, Position, evaluate};
+use super::{Config, Intent, Portfolio, PortfolioSettings, Position, derive_portfolio, evaluate};
 
 const SEED_RISK_CONFIG: &str = r#"{
   "single_name_delta_notional_pct": 15,
@@ -177,6 +177,88 @@ fn subsector_cluster_is_warning_not_veto() {
     );
     assert!(!d.veto, "sub-sector cap is SOFT");
     assert!(!d.warnings.is_empty());
+}
+
+// --- derive_portfolio (#26) ----------------------------------------------
+
+#[test]
+fn derive_returns_none_when_account_size_unset() {
+    assert!(derive_portfolio(PortfolioSettings::default(), &[], 0.0).is_none());
+}
+
+#[test]
+fn derive_returns_none_when_account_size_nonpositive() {
+    let s = PortfolioSettings { account_size_usd: Some(0.0), high_water_mark_usd: None };
+    assert!(derive_portfolio(s, &[], 0.0).is_none());
+    let s = PortfolioSettings { account_size_usd: Some(-1.0), high_water_mark_usd: None };
+    assert!(derive_portfolio(s, &[], 0.0).is_none());
+}
+
+#[test]
+fn derive_with_no_positions_is_all_cash_no_drawdown() {
+    let s = PortfolioSettings { account_size_usd: Some(100_000.0), high_water_mark_usd: None };
+    let p = derive_portfolio(s, &[], 0.0).unwrap();
+    assert_eq!(p.total_value, 100_000.0);
+    assert_eq!(p.cash_pct, 100.0);
+    assert_eq!(p.drawdown_pct, 0.0);
+}
+
+#[test]
+fn derive_subtracts_open_delta_and_premium_from_cash() {
+    let s = PortfolioSettings { account_size_usd: Some(100_000.0), high_water_mark_usd: None };
+    let positions = vec![
+        Position { delta_notional: 12_000.0, ..Default::default() },
+        Position { premium_at_risk: 3_000.0, ..Default::default() },
+    ];
+    let p = derive_portfolio(s, &positions, 0.0).unwrap();
+    assert_eq!(p.cash_pct, 85.0);
+}
+
+#[test]
+fn derive_cash_clamps_at_zero_when_overdrawn() {
+    let s = PortfolioSettings { account_size_usd: Some(50_000.0), high_water_mark_usd: None };
+    let positions = vec![Position { delta_notional: 90_000.0, ..Default::default() }];
+    let p = derive_portfolio(s, &positions, 0.0).unwrap();
+    assert_eq!(p.cash_pct, 0.0);
+}
+
+#[test]
+fn derive_drawdown_pct_from_realized_pnl() {
+    let s = PortfolioSettings { account_size_usd: Some(100_000.0), high_water_mark_usd: None };
+    // realized pnl = -8k → current = 92k vs 100k anchor → -8%
+    let p = derive_portfolio(s, &[], -8_000.0).unwrap();
+    assert_eq!(p.drawdown_pct, -8.0);
+}
+
+#[test]
+fn derive_drawdown_anchored_to_high_water_mark() {
+    // We've been at 120k peak; account size now 100k (operator hasn't moved
+    // cash in/out). Realized pnl 0 → equity 100k vs 120k anchor → -16.67%
+    let s = PortfolioSettings {
+        account_size_usd: Some(100_000.0),
+        high_water_mark_usd: Some(120_000.0),
+    };
+    let p = derive_portfolio(s, &[], 0.0).unwrap();
+    assert!((p.drawdown_pct - (-16.666_666_67)).abs() < 0.001, "got {}", p.drawdown_pct);
+}
+
+#[test]
+fn derive_drawdown_zero_when_at_or_above_anchor() {
+    let s = PortfolioSettings { account_size_usd: Some(100_000.0), high_water_mark_usd: None };
+    let p = derive_portfolio(s, &[], 5_000.0).unwrap();
+    assert_eq!(p.drawdown_pct, 0.0);
+}
+
+#[test]
+fn derive_drawdown_anchor_floored_at_account_size() {
+    // If high_water_mark is below account_size, we anchor at account_size
+    // (otherwise a fresh-funded account at 100k with hwm=80k would look up).
+    let s = PortfolioSettings {
+        account_size_usd: Some(100_000.0),
+        high_water_mark_usd: Some(80_000.0),
+    };
+    let p = derive_portfolio(s, &[], 0.0).unwrap();
+    assert_eq!(p.drawdown_pct, 0.0);
 }
 
 #[test]

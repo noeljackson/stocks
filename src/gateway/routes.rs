@@ -42,6 +42,10 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
             "/api/watchlists/{id}/members/{symbol}",
             axum::routing::delete(remove_watchlist_member),
         )
+        .route(
+            "/api/portfolio",
+            get(get_portfolio).put(put_portfolio),
+        )
         .route("/api/discovery/candidates", get(list_pending_candidates))
         .route(
             "/api/discovery/candidates/{id}/confirm",
@@ -491,6 +495,77 @@ async fn remove_watchlist_member(
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => (StatusCode::NOT_FOUND, "not in this list").into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// ---------- portfolio settings (#26) ----------
+
+async fn get_portfolio(State(gw): State<Arc<Gateway>>) -> impl IntoResponse {
+    let settings = match gw.store.portfolio_settings().await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "get_portfolio failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    };
+    let realized = gw.store.realized_pnl_total().await.unwrap_or(0.0);
+    let open = gw.store.open_positions_for_risk().await.unwrap_or_default();
+    let derived = match settings.account_size_usd {
+        Some(_) => crate::risk::derive_portfolio(settings, &open, realized),
+        None => None,
+    };
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "account_size_usd":    settings.account_size_usd,
+            "high_water_mark_usd": settings.high_water_mark_usd,
+            "realized_pnl_total":  realized,
+            "configured":          settings.account_size_usd.is_some(),
+            "derived":             derived.map(|p| serde_json::json!({
+                "total_value":  p.total_value,
+                "cash_pct":     p.cash_pct,
+                "drawdown_pct": p.drawdown_pct,
+            })),
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct PutPortfolioReq {
+    #[serde(default)]
+    account_size_usd: Option<f64>,
+    #[serde(default)]
+    high_water_mark_usd: Option<f64>,
+}
+
+async fn put_portfolio(
+    State(gw): State<Arc<Gateway>>,
+    Json(req): Json<PutPortfolioReq>,
+) -> impl IntoResponse {
+    if req.account_size_usd.is_none() && req.high_water_mark_usd.is_none() {
+        return (StatusCode::BAD_REQUEST, "at least one of account_size_usd / high_water_mark_usd required").into_response();
+    }
+    if let Some(v) = req.account_size_usd
+        && v <= 0.0
+    {
+        return (StatusCode::BAD_REQUEST, "account_size_usd must be > 0").into_response();
+    }
+    if let Some(v) = req.high_water_mark_usd
+        && v <= 0.0
+    {
+        return (StatusCode::BAD_REQUEST, "high_water_mark_usd must be > 0").into_response();
+    }
+    match gw
+        .store
+        .upsert_portfolio_settings(req.account_size_usd, req.high_water_mark_usd, "user")
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            warn!(error = %e, "put_portfolio failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
     }
 }
 

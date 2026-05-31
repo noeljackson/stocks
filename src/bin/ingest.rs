@@ -36,7 +36,12 @@ async fn main() -> Result<()> {
             let adapter = MassiveAdapter::new(&key, &base);
             let interval = Duration::from_secs(6 * 3600);
             loop {
-                match adapter.poll_all(30).await {
+                // 2y lookback: covers Donchian-55 base_breakout (#22), full
+                // SMA-200 (consensus #21 price_extension), and gives the
+                // 52w-high baseline. Massive Starter supports 5y; the
+                // (symbol, ts) PK + ON CONFLICT means each subsequent poll
+                // is effectively idempotent — only new bars insert.
+                match adapter.poll_all(730).await {
                     Ok(rows) if rows.is_empty() => {
                         // already warned if key missing; otherwise no-op
                     }

@@ -162,6 +162,12 @@ run-evaluator: ## Run the condition evaluator (resolves targets → satisfied/re
 run-consensus: ## Run the consensus computation (SPEC §6.2, exit + lead-time anchor)
 	$(RUN) cargo run --release --bin consensus
 
+run-discovery: ## Run the discovery scanner (cheap-wide signals → discovery_candidate)
+	$(RUN) cargo run --release --bin discovery
+
+run-reflection: ## Run the reflection service (predictions → outcomes → calibration)
+	$(RUN) cargo run --release --bin reflection
+
 llmsmoke: ## One-shot LLM round-trip — picks transport from env (mock if no key)
 	$(RUN) cargo run --release --bin llmsmoke -- "$(MSG)"
 

@@ -111,6 +111,7 @@ pub struct SignalContext {
     pub has_open_thesis: bool,
     pub has_actionable_thesis: bool,
     pub actionable_thesis_id: Option<uuid::Uuid>,
+    pub is_active_ticker: bool,
     pub is_watchlisted: bool,
 }
 
@@ -122,6 +123,9 @@ pub fn compose(
     ctx: &SignalContext,
 ) -> Option<ComposedSignal> {
     if raw_hits.is_empty() {
+        return None;
+    }
+    if ctx.is_active_ticker && !ctx.has_actionable_thesis {
         return None;
     }
     let has = |name: &str| raw_hits.iter().any(|h| h.signal_name == name);
@@ -372,6 +376,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(got.kind, DiscoveryInterpretationKind::ExistingThesisTrigger);
+    }
+
+    #[test]
+    fn active_ticker_without_actionable_thesis_does_not_create_candidate_review() {
+        let ext = PriceExtension {
+            pct_above_sma: 12.0,
+            sma_days: 200,
+            rsi14: 64.0,
+            pct_from_high: -8.0,
+            raw: 58.0,
+        };
+        let got = compose(
+            "TST",
+            &[hit("volume_anomaly", 3.8), hit("news_sentiment_shift", 0.5)],
+            Some(ext),
+            &SignalContext {
+                is_active_ticker: true,
+                ..SignalContext::default()
+            },
+        );
+        assert!(got.is_none());
     }
 
     #[test]

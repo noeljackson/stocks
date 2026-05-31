@@ -15,9 +15,8 @@ use std::time::Duration;
 
 use crate::llm::prompts::{InvocationRecorder, InvocationRow};
 use crate::platform::domain::{
-    Alert, AlertKind, Condition, MarketStateRow, ThesisDetail, ThesisSubstance,
-    ThesisVersionEvent, TickerContextRow, TickerRow, Watchlist, WatchlistMember,
-    WellFormedCondCounts,
+    Alert, AlertKind, Condition, MarketStateRow, ThesisDetail, ThesisSubstance, ThesisVersionEvent,
+    TickerContextRow, TickerRow, Watchlist, WatchlistMember, WellFormedCondCounts,
 };
 use crate::thesis::substance::{self, Thesis as SubstanceInput};
 
@@ -278,11 +277,7 @@ impl Store {
     }
 
     /// Open attention items, severity-then-recency ordering.
-    pub async fn list_attention(
-        &self,
-        status: &str,
-        limit: i64,
-    ) -> Result<Vec<serde_json::Value>> {
+    pub async fn list_attention(&self, status: &str, limit: i64) -> Result<Vec<serde_json::Value>> {
         let rows = sqlx::query(
             r#"SELECT id, kind, symbol, thesis_id, candidate_id, severity,
                       status, title, reason, source, source_ref,
@@ -426,7 +421,7 @@ impl Store {
             .collect()
     }
 
-    /// Daily candles for `symbol` over the last `lookback_days`, oldest first.
+    /// Daily-or-higher candles for `symbol` over the last `lookback_days`, oldest first.
     /// Shaped for lightweight-charts (each row has `time` as ISO date + OHLCV).
     ///
     /// `price_bar` can contain multiple timestamps on the same UTC date when
@@ -437,6 +432,7 @@ impl Store {
         &self,
         symbol: &str,
         lookback_days: i64,
+        interval: &str,
     ) -> Result<Vec<serde_json::Value>> {
         let rows = sqlx::query(
             r#"WITH daily AS (
@@ -450,13 +446,29 @@ impl Store {
                   WHERE symbol = $1
                     AND ts > now() - ($2 || ' days')::interval
                GROUP BY 1
+             ), bucketed AS (
+                 SELECT CASE
+                          WHEN $3 = '1W' THEN date_trunc('week', day::timestamp)::date
+                          WHEN $3 = '3W' THEN (DATE '1970-01-05' + ((((day - DATE '1970-01-05') / 21)::int) * 21))
+                          WHEN $3 = '1M' THEN date_trunc('month', day::timestamp)::date
+                          ELSE day
+                        END AS bucket,
+                        day, open, high, low, close, volume
+                   FROM daily
              )
-             SELECT day, open, high, low, close, volume
-               FROM daily
-              ORDER BY day ASC"#,
+             SELECT bucket AS day,
+                    (array_agg(open ORDER BY day ASC))[1] AS open,
+                    max(high) AS high,
+                    min(low) AS low,
+                    (array_agg(close ORDER BY day DESC))[1] AS close,
+                    sum(volume) AS volume
+               FROM bucketed
+              GROUP BY bucket
+              ORDER BY bucket ASC"#,
         )
         .bind(symbol)
         .bind(lookback_days.to_string())
+        .bind(interval)
         .fetch_all(&self.pool)
         .await
         .context("candles_for")?;
@@ -465,6 +477,71 @@ impl Store {
                 let day: chrono::NaiveDate = r.try_get("day")?;
                 Ok(serde_json::json!({
                     "time": day.format("%Y-%m-%d").to_string(),
+                    "open": r.try_get::<f64, _>("open")?,
+                    "high": r.try_get::<f64, _>("high")?,
+                    "low": r.try_get::<f64, _>("low")?,
+                    "close": r.try_get::<f64, _>("close")?,
+                    "volume": r.try_get::<f64, _>("volume")?,
+                }))
+            })
+            .collect()
+    }
+
+    pub async fn latest_intraday_bar_ts(
+        &self,
+        symbol: &str,
+        native_interval: &str,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        let row = sqlx::query(
+            "SELECT max(ts) AS ts FROM price_bar_intraday WHERE symbol = $1 AND interval = $2",
+        )
+        .bind(symbol)
+        .bind(native_interval)
+        .fetch_one(&self.pool)
+        .await
+        .context("latest_intraday_bar_ts")?;
+        Ok(row.try_get("ts")?)
+    }
+
+    pub async fn intraday_candles_for(
+        &self,
+        symbol: &str,
+        native_interval: &str,
+        lookback_days: i64,
+        bucket_minutes: i64,
+    ) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query(
+            r#"WITH bucketed AS (
+                 SELECT to_timestamp(floor(extract(epoch FROM ts) / ($4::float8 * 60.0)) * ($4::float8 * 60.0)) AS bucket,
+                        ts, open::float8 AS open, high::float8 AS high, low::float8 AS low,
+                        close::float8 AS close, volume::float8 AS volume
+                   FROM price_bar_intraday
+                  WHERE symbol = $1
+                    AND interval = $2
+                    AND ts > now() - ($3 || ' days')::interval
+             )
+             SELECT bucket,
+                    (array_agg(open ORDER BY ts ASC))[1] AS open,
+                    max(high) AS high,
+                    min(low) AS low,
+                    (array_agg(close ORDER BY ts DESC))[1] AS close,
+                    sum(volume) AS volume
+               FROM bucketed
+              GROUP BY bucket
+              ORDER BY bucket ASC"#,
+        )
+        .bind(symbol)
+        .bind(native_interval)
+        .bind(lookback_days.to_string())
+        .bind(bucket_minutes)
+        .fetch_all(&self.pool)
+        .await
+        .context("intraday_candles_for")?;
+        rows.into_iter()
+            .map(|r| {
+                let bucket: chrono::DateTime<chrono::Utc> = r.try_get("bucket")?;
+                Ok(serde_json::json!({
+                    "time": bucket.to_rfc3339(),
                     "open": r.try_get::<f64, _>("open")?,
                     "high": r.try_get::<f64, _>("high")?,
                     "low": r.try_get::<f64, _>("low")?,
@@ -684,16 +761,20 @@ impl Store {
     /// `Vec<ThesisDetail>` (will have 0 or 1 entry) so the caller can reuse
     /// the existing per-symbol code path.
     pub async fn theses_for_symbol_id(&self, thesis_id: uuid::Uuid) -> Result<Vec<ThesisDetail>> {
-        let symbol: Option<String> = sqlx::query_scalar(
-            "SELECT symbol FROM thesis WHERE thesis_id = $1",
-        )
-        .bind(thesis_id)
-        .fetch_optional(&self.pool)
-        .await
-        .context("symbol lookup")?;
-        let Some(symbol) = symbol else { return Ok(vec![]) };
+        let symbol: Option<String> =
+            sqlx::query_scalar("SELECT symbol FROM thesis WHERE thesis_id = $1")
+                .bind(thesis_id)
+                .fetch_optional(&self.pool)
+                .await
+                .context("symbol lookup")?;
+        let Some(symbol) = symbol else {
+            return Ok(vec![]);
+        };
         let all = self.theses_for_symbol(&symbol).await?;
-        Ok(all.into_iter().filter(|t| t.thesis_id == thesis_id).collect())
+        Ok(all
+            .into_iter()
+            .filter(|t| t.thesis_id == thesis_id)
+            .collect())
     }
 
     /// Apply a state transition (#15). Caller must have already validated the
@@ -730,13 +811,12 @@ impl Store {
         use crate::platform::domain::ThesisState;
         if matches!(to, ThesisState::Actionable) {
             // Look up the symbol for the title.
-            let symbol: String = sqlx::query_scalar(
-                "SELECT symbol FROM thesis WHERE thesis_id = $1",
-            )
-            .bind(thesis_id)
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap_or_default();
+            let symbol: String =
+                sqlx::query_scalar("SELECT symbol FROM thesis WHERE thesis_id = $1")
+                    .bind(thesis_id)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .unwrap_or_default();
             sqlx::query(
                 r#"INSERT INTO attention_item
                      (kind, symbol, thesis_id, severity, title, reason, source, source_ref)
@@ -747,7 +827,11 @@ impl Store {
             .bind(&symbol)
             .bind(thesis_id)
             .bind(format!("{symbol} thesis ready to act on"))
-            .bind(if rationale.is_empty() { None } else { Some(rationale) })
+            .bind(if rationale.is_empty() {
+                None
+            } else {
+                Some(rationale)
+            })
             .bind(from.as_str())
             .execute(&mut *tx)
             .await
@@ -956,12 +1040,11 @@ impl Store {
         watchlist_ids: &[uuid::Uuid],
     ) -> Result<()> {
         let mut tx = self.pool.begin().await.context("begin tx")?;
-        let row =
-            sqlx::query("SELECT symbol, signal_name FROM discovery_candidate WHERE id = $1")
-                .bind(candidate_id)
-                .fetch_one(&mut *tx)
-                .await
-                .context("load candidate")?;
+        let row = sqlx::query("SELECT symbol, signal_name FROM discovery_candidate WHERE id = $1")
+            .bind(candidate_id)
+            .fetch_one(&mut *tx)
+            .await
+            .context("load candidate")?;
         let symbol: String = row.try_get("symbol")?;
         let signal_name: String = row.try_get("signal_name")?;
         let added_by = format!("discovery:{signal_name}");
@@ -999,7 +1082,12 @@ impl Store {
                   AND candidate_id = $1"#,
         )
         .bind(candidate_id)
-        .bind(watchlist_ids.iter().map(uuid::Uuid::to_string).collect::<Vec<_>>())
+        .bind(
+            watchlist_ids
+                .iter()
+                .map(uuid::Uuid::to_string)
+                .collect::<Vec<_>>(),
+        )
         .execute(&mut *tx)
         .await?;
         tx.commit().await.context("commit tx")?;
@@ -1027,7 +1115,9 @@ impl Store {
         .bind(candidate_id)
         .execute(&mut *tx)
         .await?;
-        tx.commit().await.context("commit reject_discovery_candidate")?;
+        tx.commit()
+            .await
+            .context("commit reject_discovery_candidate")?;
         Ok(res.rows_affected() > 0)
     }
 
@@ -1138,14 +1228,13 @@ impl Store {
         watchlist_id: uuid::Uuid,
         symbol: &str,
     ) -> Result<bool> {
-        let res = sqlx::query(
-            "DELETE FROM watchlist_member WHERE watchlist_id = $1 AND symbol = $2",
-        )
-        .bind(watchlist_id)
-        .bind(symbol)
-        .execute(&self.pool)
-        .await
-        .context("remove_from_watchlist")?;
+        let res =
+            sqlx::query("DELETE FROM watchlist_member WHERE watchlist_id = $1 AND symbol = $2")
+                .bind(watchlist_id)
+                .bind(symbol)
+                .execute(&self.pool)
+                .await
+                .context("remove_from_watchlist")?;
         Ok(res.rows_affected() > 0)
     }
 
@@ -1192,6 +1281,47 @@ impl Store {
             .execute(&mut *tx)
             .await
             .context("upsert_price_bars")?;
+            if res.rows_affected() > 0 {
+                inserted += 1;
+            }
+        }
+        tx.commit().await.context("commit tx")?;
+        Ok(inserted)
+    }
+
+    pub async fn upsert_intraday_price_bars(
+        &self,
+        rows: &[crate::ingest::fmp_intraday::IntradayPriceBarRow],
+    ) -> Result<usize> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        let mut inserted = 0;
+        let mut tx = self.pool.begin().await.context("begin tx")?;
+        for r in rows {
+            let res = sqlx::query(
+                r#"INSERT INTO price_bar_intraday
+                     (symbol, interval, ts, open, high, low, close, volume, source, fetched_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'fmp', now())
+                   ON CONFLICT (symbol, interval, ts) DO UPDATE SET
+                     open       = EXCLUDED.open,
+                     high       = EXCLUDED.high,
+                     low        = EXCLUDED.low,
+                     close      = EXCLUDED.close,
+                     volume     = EXCLUDED.volume,
+                     fetched_at = now()"#,
+            )
+            .bind(&r.symbol)
+            .bind(&r.interval)
+            .bind(r.ts)
+            .bind(r.open)
+            .bind(r.high)
+            .bind(r.low)
+            .bind(r.close)
+            .bind(r.volume)
+            .execute(&mut *tx)
+            .await
+            .context("upsert_intraday_price_bars")?;
             if res.rows_affected() > 0 {
                 inserted += 1;
             }

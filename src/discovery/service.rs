@@ -45,6 +45,8 @@ pub async fn run_once(pool: &PgPool, bus: &Bus) -> Result<usize> {
     .await
     .context("load scan pool")?;
 
+    supersede_active_ticker_candidate_reviews(pool).await?;
+
     let mut total_hits = 0;
     for symbol in &symbols {
         match scan_one(pool, symbol, &cfg).await {
@@ -208,7 +210,13 @@ async fn scan_one(pool: &PgPool, symbol: &str, cfg: &Config) -> Result<Vec<Compo
         &ctx,
     );
     if composed.is_none() && !hits.is_empty() {
-        supersede_raw_open_candidates(pool, symbol, &hits, "suppressed_low_quality_noise").await?;
+        if ctx.is_active_ticker {
+            supersede_open_candidates_for_symbol(pool, symbol, "suppressed_tracked_ticker_update")
+                .await?;
+        } else {
+            supersede_raw_open_candidates(pool, symbol, &hits, "suppressed_low_quality_noise")
+                .await?;
+        }
     }
     Ok(composed.into_iter().collect())
 }
@@ -229,6 +237,11 @@ async fn load_signal_context(pool: &PgPool, symbol: &str) -> Result<SignalContex
                 LIMIT 1
              ) AS actionable_thesis_id,
              EXISTS (
+               SELECT 1 FROM ticker
+                WHERE symbol = $1
+                  AND status = 'active'
+             ) AS is_active_ticker,
+             EXISTS (
                SELECT 1 FROM watchlist_member
                 WHERE symbol = $1
              ) AS is_watchlisted"#,
@@ -242,6 +255,7 @@ async fn load_signal_context(pool: &PgPool, symbol: &str) -> Result<SignalContex
         has_open_thesis: row.try_get("has_open_thesis")?,
         has_actionable_thesis: actionable_thesis_id.is_some(),
         actionable_thesis_id,
+        is_active_ticker: row.try_get("is_active_ticker")?,
         is_watchlisted: row.try_get("is_watchlisted")?,
     })
 }
@@ -487,6 +501,68 @@ async fn supersede_raw_open_candidates(
     .execute(pool)
     .await
     .context("supersede_raw_open_candidates")?;
+    Ok(())
+}
+
+async fn supersede_open_candidates_for_symbol(
+    pool: &PgPool,
+    symbol: &str,
+    reason: &str,
+) -> Result<()> {
+    use crate::attention::kind;
+    sqlx::query(
+        r#"WITH stale AS (
+             UPDATE discovery_candidate
+                SET status = 'superseded'
+              WHERE symbol = $1
+                AND status = 'proposed'
+              RETURNING id
+           )
+           UPDATE attention_item ai
+              SET status = 'dismissed',
+                  resolved_at = COALESCE(resolved_at, now()),
+                  resolution_kind = $2,
+                  resolution_ref = jsonb_build_object('symbol', $1)
+             FROM stale
+            WHERE ai.candidate_id = stale.id
+              AND ai.kind = $3
+              AND ai.status = 'open'"#,
+    )
+    .bind(symbol)
+    .bind(reason)
+    .bind(kind::CANDIDATE_REVIEW)
+    .execute(pool)
+    .await
+    .context("supersede_open_candidates_for_symbol")?;
+    Ok(())
+}
+
+async fn supersede_active_ticker_candidate_reviews(pool: &PgPool) -> Result<()> {
+    use crate::attention::kind;
+    sqlx::query(
+        r#"WITH stale AS (
+             UPDATE discovery_candidate dc
+                SET status = 'superseded'
+               FROM ticker t
+              WHERE dc.symbol = t.symbol
+                AND t.status = 'active'
+                AND dc.status = 'proposed'
+              RETURNING dc.id, dc.symbol
+           )
+           UPDATE attention_item ai
+              SET status = 'dismissed',
+                  resolved_at = COALESCE(resolved_at, now()),
+                  resolution_kind = 'suppressed_tracked_ticker_update',
+                  resolution_ref = jsonb_build_object('symbol', stale.symbol)
+             FROM stale
+            WHERE ai.candidate_id = stale.id
+              AND ai.kind = $1
+              AND ai.status = 'open'"#,
+    )
+    .bind(kind::CANDIDATE_REVIEW)
+    .execute(pool)
+    .await
+    .context("supersede_active_ticker_candidate_reviews")?;
     Ok(())
 }
 

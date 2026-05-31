@@ -13,6 +13,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::info;
 
+use crate::ingest::fmp_intraday::FmpIntradayAdapter;
 use crate::platform::bus::{Bus, ConsumerHandle};
 use crate::platform::store::Store;
 use crate::platform::subjects;
@@ -23,6 +24,7 @@ pub struct Gateway {
     pub store: Arc<Store>,
     pub bus: Arc<Bus>,
     pub hub: Arc<Hub>,
+    pub fmp_intraday: Arc<FmpIntradayAdapter>,
     /// When Some, the SPA fallback returns a 302 to this URL instead of
     /// serving the rust-embed'd snapshot. Set by `make dev` so :8080 is
     /// API-only and the live SPA lives at :5173.
@@ -30,11 +32,18 @@ pub struct Gateway {
 }
 
 impl Gateway {
-    pub fn new(store: Store, bus: Bus, dev_redirect: Option<String>) -> Self {
+    pub fn new(
+        store: Store,
+        bus: Bus,
+        fmp_api_key: String,
+        fmp_base_url: String,
+        dev_redirect: Option<String>,
+    ) -> Self {
         Self {
             store: Arc::new(store),
             bus: Arc::new(bus),
             hub: Arc::new(Hub::new()),
+            fmp_intraday: Arc::new(FmpIntradayAdapter::new(&fmp_api_key, &fmp_base_url)),
             dev_redirect,
         }
     }
@@ -50,10 +59,20 @@ impl Gateway {
             .await?;
 
         let thesis = self
-            .bind_consumer(subjects::STREAM_THESIS, "gateway-thesis-alerts", "thesis.*", "state_transition")
+            .bind_consumer(
+                subjects::STREAM_THESIS,
+                "gateway-thesis-alerts",
+                "thesis.*",
+                "state_transition",
+            )
             .await?;
         let risk = self
-            .bind_consumer(subjects::STREAM_DECISIONS, "gateway-risk-alerts", "risk.*", "risk")
+            .bind_consumer(
+                subjects::STREAM_DECISIONS,
+                "gateway-risk-alerts",
+                "risk.*",
+                "risk",
+            )
             .await?;
         Ok(vec![thesis, risk])
     }

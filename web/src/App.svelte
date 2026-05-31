@@ -83,6 +83,109 @@
       error = String(e);
     }
   }
+  async function rejectGroup(candidateIds: number[], reason: string) {
+    try {
+      // Iterate; backend resolves the matching attention item per candidate.
+      for (const id of candidateIds) await rejectCandidate(id);
+      await Promise.all([refreshAttention(), refreshPending()]);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+  async function confirmGroup(candidateIds: number[]) {
+    const lists = new Set<string>();
+    for (const cid of candidateIds) {
+      const inner = chosenLists[cid] ?? {};
+      for (const [wlId, on] of Object.entries(inner)) if (on) lists.add(wlId);
+    }
+    if (lists.size === 0) {
+      error = "Pick at least one watchlist before confirming.";
+      return;
+    }
+    const ids = [...lists];
+    try {
+      // First candidate's confirm promotes the ticker + adds to lists; the
+      // rest are idempotent (ON CONFLICT DO NOTHING on watchlist_member).
+      for (const cid of candidateIds) await confirmCandidate(cid, ids);
+      await Promise.all([refreshAttention(), refreshPending(), refreshWatchlists()]);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  // Plain-English reason from a candidate's signal_name + signal_value.
+  function reasonFor(signal: string, value: number | null): string {
+    if (signal === "volume_anomaly" && value !== null) return `${value.toFixed(1)}× volume vs 20-day avg`;
+    if (signal === "base_breakout" && value !== null) return `base breakout +${value.toFixed(2)}% above prior high`;
+    if (signal === "estimate_revision_velocity" && value !== null) {
+      const dir = value > 0 ? "↑" : "↓";
+      return `${Math.abs(value)|0} net estimate revisions ${dir}`;
+    }
+    if (signal === "news_sentiment_shift" && value !== null) {
+      const sign = value > 0 ? "+" : "";
+      return `news sentiment shift ${sign}${value.toFixed(2)}`;
+    }
+    return signal.replace(/_/g, " ");
+  }
+
+  // Pretty short relative time ("2m", "3h", "1d", or absolute "3:17 PM").
+  function relativeTime(iso: string): string {
+    const t = new Date(iso).getTime();
+    const dt = Date.now() - t;
+    if (dt < 60_000) return "just now";
+    if (dt < 3_600_000) return `${Math.floor(dt / 60_000)}m ago`;
+    if (dt < 86_400_000) return new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    if (dt < 7 * 86_400_000) return `${Math.floor(dt / 86_400_000)}d ago`;
+    return new Date(t).toLocaleDateString();
+  }
+
+  // Group attention items by (kind, symbol). For candidate_review this
+  // collapses N candidates on the same ticker into one card; for other
+  // kinds it's typically 1 item per group.
+  type AttGroup = {
+    key: string;
+    kind: string;
+    symbol: string | null;
+    severity: string;
+    items: AttentionItem[];
+    candidateIds: number[];     // for candidate_review groups
+    latestAt: string;
+  };
+  let groupedAttention = $derived.by<AttGroup[]>(() => {
+    const map = new Map<string, AttGroup>();
+    for (const a of attention) {
+      const key = `${a.kind}::${a.symbol ?? ""}::${a.thesis_id ?? ""}`;
+      const g = map.get(key) ?? {
+        key, kind: a.kind, symbol: a.symbol ?? null, severity: a.severity,
+        items: [], candidateIds: [], latestAt: a.created_at,
+      };
+      g.items.push(a);
+      if (a.candidate_id) g.candidateIds.push(a.candidate_id);
+      if (a.created_at > g.latestAt) g.latestAt = a.created_at;
+      const rank = (s: string) =>
+        s === "blocked" ? 0 : s === "decision" ? 1 : s === "review" ? 2 : 3;
+      if (rank(a.severity) < rank(g.severity)) g.severity = a.severity;
+      map.set(key, g);
+    }
+    return [...map.values()].sort((a, b) => {
+      const rank = (s: string) =>
+        s === "blocked" ? 0 : s === "decision" ? 1 : s === "review" ? 2 : 3;
+      const r = rank(a.severity) - rank(b.severity);
+      return r !== 0 ? r : (b.latestAt > a.latestAt ? 1 : -1);
+    });
+  });
+
+  // Reject reasons (#95 disagreement_reason vocabulary).
+  const REJECT_REASONS = [
+    "wrong_cluster",
+    "not_my_edge",
+    "signal_too_weak",
+    "valuation_priced",
+    "data_stale",
+    "llm_overreached",
+    "risk_too_high",
+  ];
+  let rejectOpenFor = $state<string | null>(null);
 
   // ---------- selected-symbol-scoped data ----------
   let symbolContext = $state<TickerContext | null | undefined>(undefined);
@@ -511,7 +614,7 @@
       <div class="bottom-body">
         {#if bottomMode === "attention"}
           <div class="att-toolbar">
-            <span class="muted">{attention.length} open</span>
+            <span class="muted">{groupedAttention.length} pending</span>
             <span class="att-filters">
               {#each ["all", "candidate_review", "thesis_actionable", "risk_review"] as f}
                 <button class:active={attentionFilter === f} onclick={() => (attentionFilter = f)}>
@@ -521,58 +624,135 @@
             </span>
             <button class="reset" onclick={refreshAttention} title="reload">⟲</button>
           </div>
-          {#if attention.length === 0}
+          {#if groupedAttention.length === 0}
             <p class="muted">No open attention. The system is quiet.</p>
           {:else}
-            {@const filtered = attention.filter((a) => attentionFilter === "all" || a.kind === attentionFilter)}
+            {@const groups = groupedAttention.filter((g) => attentionFilter === "all" || g.kind === attentionFilter)}
             <ul class="att-list">
-              {#each filtered as a (a.id)}
-                <li class="att-card sev-{a.severity}">
-                  <div class="att-hdr">
-                    <span class="badge tiny sev-{a.severity}">{a.severity}</span>
-                    <span class="badge tiny">{a.kind.replace(/_/g, " ")}</span>
-                    {#if a.symbol}
-                      <strong class="link-symbol" onclick={() => a.symbol && selectSymbol(a.symbol)}>{a.symbol}</strong>
+              {#each groups as g (g.key)}
+                {@const ticker = g.symbol ? tickers.find((t) => t.symbol === g.symbol) : undefined}
+                {@const poolMeta = g.symbol ? pool.find((p) => p.symbol === g.symbol) : undefined}
+                {@const tierLabel = ticker ? `T${ticker.tier}` : (poolMeta ? "pool" : "")}
+                {@const reasonMap = (() => {
+                  // Dedupe bullets by signal_name (a ticker can fire the same
+                  // signal repeatedly across discovery passes — show once).
+                  const seen = new Map<string, string>();
+                  for (const it of g.items) {
+                    let key: string, text: string;
+                    if (g.kind === "candidate_review") {
+                      const pc = pending.find((p) => p.id === it.candidate_id);
+                      const sig = pc?.signal_name
+                        ?? (it.title.match(/via (\w+)$/)?.[1])
+                        ?? "signal";
+                      key = sig;
+                      text = pc ? reasonFor(pc.signal_name, pc.signal_value) : (it.reason ?? sig);
+                    } else {
+                      text = it.reason ?? it.title;
+                      key = text;
+                    }
+                    if (!seen.has(key)) seen.set(key, text);
+                  }
+                  return seen;
+                })()}
+                {@const reasons = [...reasonMap.values()]}
+                {@const distinctSignals = reasonMap.size}
+                <li class="att-card sev-{g.severity}">
+                  <div class="att-row1">
+                    {#if g.symbol}
+                      <strong
+                        class="att-symbol link-symbol"
+                        onclick={() => g.symbol && selectSymbol(g.symbol)}
+                      >{g.symbol}</strong>
+                      <span class="att-tier muted">{tierLabel}</span>
                     {/if}
-                    <span class="att-title">{a.title}</span>
-                    <span class="muted">{shortTs(a.created_at)}</span>
+                    <span class="att-time muted">{relativeTime(g.latestAt)}</span>
                   </div>
-                  {#if a.reason}<p class="muted att-reason">{a.reason}</p>{/if}
-                  <div class="att-actions">
-                    {#if a.kind === "candidate_review" && a.candidate_id}
-                      {@const pc = pending.find((p) => p.id === a.candidate_id)}
-                      {#if pc}
-                        <div class="att-inline-lists">
-                          {#each pc.proposed_lists as p}
-                            {#if p.watchlist_id}
-                              <label class="att-pick">
-                                <input
-                                  type="checkbox"
-                                  checked={chosenLists[pc.id]?.[p.watchlist_id] ?? false}
-                                  onchange={() => p.watchlist_id && toggleChoice(pc.id, p.watchlist_id)}
-                                />
-                                {p.watchlist_name}
-                                <span class="badge tiny conf-{p.confidence}">{p.confidence}</span>
-                              </label>
-                            {/if}
-                          {/each}
-                        </div>
-                        <button class="confirm" onclick={() => confirmOne(pc.id)}>Confirm → lists</button>
-                        <button class="reject" onclick={() => rejectOne(pc.id)}>Reject</button>
-                      {:else}
-                        <button class="reject" onclick={() => dismissOne(a.id, "candidate stale")}>Dismiss</button>
-                      {/if}
-                    {:else if a.kind === "thesis_actionable"}
-                      <button class="confirm" onclick={() => { if (a.thesis_id) { decThesisId = a.thesis_id; bottomMode = "decisions"; } }}>
-                        Record decision →
-                      </button>
-                      <button class="reject" onclick={() => dismissOne(a.id, "skip")}>Skip</button>
-                    {:else if a.kind === "risk_review"}
-                      <button class="reject" onclick={() => dismissOne(a.id, "ack")}>Acknowledge</button>
+                  <div class="att-status muted">
+                    {#if g.kind === "candidate_review"}
+                      candidate · {distinctSignals} signal{distinctSignals === 1 ? "" : "s"}
+                    {:else if g.kind === "thesis_actionable"}
+                      thesis ready
+                    {:else if g.kind === "risk_review"}
+                      ⛔ risk · {g.severity}
+                    {:else if g.kind === "thesis_incomplete"}
+                      system declined to draft thesis
                     {:else}
-                      <button class="reject" onclick={() => dismissOne(a.id)}>Dismiss</button>
+                      {g.kind.replace(/_/g, " ")}
                     {/if}
                   </div>
+
+                  <ul class="att-reasons">
+                    {#each reasons as text}
+                      <li>• {text}</li>
+                    {/each}
+                  </ul>
+
+                  {#if g.kind === "candidate_review"}
+                    {@const allLists = [...new Map(
+                      g.candidateIds
+                        .flatMap((cid) => (pending.find((p) => p.id === cid)?.proposed_lists ?? [])
+                          .filter((p) => p.watchlist_id)
+                          .map((p) => [p.watchlist_id, p]))
+                    ).values()]}
+                    {#if allLists.length > 0}
+                      <div class="att-fits">
+                        <span class="muted">Fits →</span>
+                        {#each allLists as p}
+                          {#if p.watchlist_id}
+                            <label class="att-pick">
+                              <input
+                                type="checkbox"
+                                checked={g.candidateIds.some((cid) => chosenLists[cid]?.[p.watchlist_id!])}
+                                onchange={() => {
+                                  if (!p.watchlist_id) return;
+                                  const target = !g.candidateIds.every((cid) => chosenLists[cid]?.[p.watchlist_id!]);
+                                  for (const cid of g.candidateIds) {
+                                    const inner = { ...(chosenLists[cid] ?? {}) };
+                                    inner[p.watchlist_id!] = target;
+                                    chosenLists = { ...chosenLists, [cid]: inner };
+                                  }
+                                }}
+                              />
+                              {p.watchlist_name}
+                              <span class="badge tiny conf-{p.confidence}">{p.confidence}</span>
+                            </label>
+                          {/if}
+                        {/each}
+                      </div>
+                    {/if}
+                  {/if}
+
+                  <div class="att-actions">
+                    {#if g.kind === "candidate_review"}
+                      <button class="confirm" onclick={() => confirmGroup(g.candidateIds)}>Confirm</button>
+                      <button class="reject" onclick={() => (rejectOpenFor = rejectOpenFor === g.key ? null : g.key)}>
+                        Reject ▾
+                      </button>
+                    {:else if g.kind === "thesis_actionable"}
+                      <button class="confirm" onclick={() => {
+                        const tid = g.items[0]?.thesis_id;
+                        if (tid) { decThesisId = tid; bottomMode = "decisions"; }
+                      }}>Enter ▾</button>
+                      <button class="reject" onclick={() => g.items.forEach((it) => dismissOne(it.id, "defer"))}>Defer 7d</button>
+                      <button class="reject" onclick={() => g.items.forEach((it) => dismissOne(it.id, "skip"))}>Skip</button>
+                    {:else if g.kind === "risk_review"}
+                      <button class="confirm" onclick={() => g.items.forEach((it) => dismissOne(it.id, "ack"))}>Acknowledge</button>
+                    {:else}
+                      <button class="reject" onclick={() => g.items.forEach((it) => dismissOne(it.id))}>Dismiss</button>
+                    {/if}
+                  </div>
+
+                  {#if rejectOpenFor === g.key}
+                    <div class="att-reject-menu">
+                      <span class="muted">why?</span>
+                      {#each REJECT_REASONS as r}
+                        <button class="reject-reason" onclick={() => {
+                          rejectGroup(g.candidateIds, r);
+                          rejectOpenFor = null;
+                        }}>{r.replace(/_/g, " ")}</button>
+                      {/each}
+                    </div>
+                  {/if}
                 </li>
               {/each}
             </ul>
@@ -1162,8 +1342,8 @@
   .badge.sev-review   { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
   .badge.sev-info     { background: rgba(108,112,134,.2);  color: #9aa3b8; }
 
-  /* Attention queue (#86) */
-  .att-toolbar { display: flex; gap: .5rem; align-items: baseline; margin-bottom: .4rem; flex-wrap: wrap; }
+  /* Attention queue (#86) — grouped card design */
+  .att-toolbar { display: flex; gap: .5rem; align-items: baseline; margin-bottom: .5rem; flex-wrap: wrap; }
   .att-filters { display: flex; gap: .25rem; flex-wrap: wrap; }
   .att-filters button {
     background: #11161f; color: #6c7693; border: 1px solid #1f2733;
@@ -1176,32 +1356,81 @@
     background: transparent; color: #6c7693; border: 1px solid #2a3548; border-radius: 3px;
     cursor: pointer; padding: 0 .35rem; font: inherit; font-size: .8rem;
   }
-  .att-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .35rem; }
+  .att-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .5rem; }
   .att-card {
     background: #0a0d14; border: 1px solid #1f2733; border-radius: 4px;
-    padding: .4rem .55rem;
+    padding: .55rem .7rem;
     border-left: 3px solid #2a3548;
   }
   .att-card.sev-blocked  { border-left-color: rgb(243,139,168); }
   .att-card.sev-decision { border-left-color: rgb(137,180,250); }
   .att-card.sev-review   { border-left-color: rgb(249,226,175); }
-  .att-hdr { display: flex; gap: .35rem; align-items: baseline; flex-wrap: wrap; font-size: .8rem; }
-  .att-title { flex: 1; }
-  .att-reason { margin: .3rem 0 .4rem; font-size: .75rem; }
-  .att-inline-lists { display: flex; flex-direction: column; gap: .15rem; margin-bottom: .3rem; }
-  .att-pick {
-    display: flex; align-items: baseline; gap: .35rem;
-    padding: .15rem .35rem; border: 1px solid #1f2733; border-radius: 3px;
-    font-size: .75rem; cursor: pointer;
+  .att-card.sev-info     { border-left-color: #6c7693; }
+
+  /* Row 1: TICKER (large, bold) + tier (small, muted) | time (right) */
+  .att-row1 {
+    display: flex; align-items: baseline; gap: .5rem; margin-bottom: .1rem;
   }
-  .att-actions { display: flex; gap: .3rem; flex-wrap: wrap; }
+  .att-symbol {
+    font-size: 1rem; letter-spacing: .02em; cursor: pointer;
+  }
+  .att-symbol:hover { color: #89b4fa; }
+  .att-tier { font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; }
+  .att-time { margin-left: auto; font-size: .75rem; }
+
+  /* Row 2: status line — "candidate · 3 signals over 14d", "thesis ready", etc. */
+  .att-status {
+    font-size: .75rem; margin-bottom: .35rem;
+  }
+
+  /* Row 3: bullet list of reasons */
+  .att-reasons {
+    list-style: none; padding: 0; margin: 0 0 .35rem 0;
+    display: flex; flex-direction: column; gap: .1rem;
+    font-size: .8rem;
+  }
+  .att-reasons li { line-height: 1.35; }
+
+  /* Optional middle "Fits → checkboxes" row */
+  .att-fits {
+    display: flex; flex-wrap: wrap; gap: .35rem; align-items: baseline;
+    margin: .35rem 0; padding: .35rem .45rem;
+    background: rgba(180,190,254,.04); border-radius: 3px;
+    font-size: .75rem;
+  }
+  .att-fits .muted { margin-right: .15rem; }
+  .att-pick {
+    display: flex; align-items: baseline; gap: .25rem;
+    padding: .1rem .35rem; border: 1px solid #1f2733; border-radius: 3px;
+    cursor: pointer; background: #11161f;
+  }
+  .att-pick:hover { background: #1b2230; }
+
+  /* Row 4: action buttons */
+  .att-actions { display: flex; gap: .35rem; flex-wrap: wrap; margin-top: .25rem; }
   .att-actions button {
     background: #1b2230; color: #cdd6f4; border: 1px solid #2a3548;
-    border-radius: 3px; padding: .2rem .55rem; font: inherit; font-size: .75rem; cursor: pointer;
+    border-radius: 3px; padding: .25rem .65rem; font: inherit; font-size: .8rem; cursor: pointer;
   }
-  .att-actions .confirm:hover { background: #1f3a26; border-color: #2d5235; }
+  .att-actions .confirm {
+    background: rgba(166,227,161,.12); border-color: rgba(166,227,161,.35); color: rgb(166,227,161);
+  }
+  .att-actions .confirm:hover { background: rgba(166,227,161,.2); }
   .att-actions .reject { background: rgba(243,139,168,.08); border-color: rgba(243,139,168,.3); color: rgb(243,139,168); }
   .att-actions .reject:hover { background: rgba(243,139,168,.15); }
+
+  /* Reject-with-reason dropdown panel */
+  .att-reject-menu {
+    margin-top: .4rem; padding: .35rem .45rem;
+    background: rgba(243,139,168,.06); border: 1px dashed rgba(243,139,168,.3); border-radius: 3px;
+    display: flex; flex-wrap: wrap; gap: .25rem; align-items: baseline;
+  }
+  .reject-reason {
+    background: #1b2230; color: rgb(243,139,168); border: 1px solid rgba(243,139,168,.25);
+    border-radius: 3px; padding: .15rem .5rem; font: inherit; font-size: .7rem; cursor: pointer;
+    text-transform: lowercase;
+  }
+  .reject-reason:hover { background: rgba(243,139,168,.18); }
 
   /* Narrow viewport polish (#57 PR5). At <= 760px wide, stack everything
      vertically: chart on top, drawer in middle, sidebar at bottom. paneforge

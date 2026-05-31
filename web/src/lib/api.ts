@@ -277,6 +277,53 @@ export function subscribe(
   return () => es.close();
 }
 
+export interface PoolMember {
+  symbol: string;
+  company_name?: string | null;
+  sector?: string | null;
+  industry?: string | null;
+  market_cap?: number | null;
+  first_seen_at: string;
+}
+
+export async function fetchDiscoveryPool(): Promise<PoolMember[]> {
+  const r = await fetch("/api/discovery-pool");
+  if (!r.ok) throw new Error(`pool ${r.status}`);
+  return ((await r.json()) as PoolMember[] | null) ?? [];
+}
+
+export interface AttentionItem {
+  id: number;
+  kind: string;
+  symbol?: string | null;
+  thesis_id?: string | null;
+  candidate_id?: number | null;
+  severity: string;
+  status: string;
+  title: string;
+  reason?: string | null;
+  source: string;
+  source_ref: Record<string, unknown>;
+  created_at: string;
+  resolved_at?: string | null;
+  resolution_kind?: string | null;
+}
+
+export async function fetchAttention(status = "open"): Promise<AttentionItem[]> {
+  const r = await fetch(`/api/attention?status=${status}`);
+  if (!r.ok) throw new Error(`attention ${r.status}`);
+  return ((await r.json()) as AttentionItem[] | null) ?? [];
+}
+
+export async function dismissAttention(id: number, reason?: string): Promise<void> {
+  const r = await fetch(`/api/attention/${id}/dismiss`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ reason }),
+  });
+  if (!r.ok && r.status !== 204) throw new Error(`dismiss ${r.status}`);
+}
+
 export interface DecisionRow {
   decision_id: string;
   thesis_id?: string | null;

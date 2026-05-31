@@ -11,6 +11,7 @@
     createWatchlist,
     fetchAlerts,
     fetchCalibration,
+    fetchDecisions,
     fetchPendingCandidates,
     fetchRegime,
     fetchTheses,
@@ -24,6 +25,7 @@
     subscribe,
     type Alert,
     type Calibration,
+    type DecisionRow,
     type MarketState,
     type PendingCandidate,
     type StreamEvent,
@@ -63,6 +65,7 @@
   // ---------- selected-symbol-scoped data ----------
   let symbolContext = $state<TickerContext | null | undefined>(undefined);
   let symbolTheses = $state<ThesisDetail[] | null | undefined>(undefined);
+  let symbolDecisions = $state<DecisionRow[] | null | undefined>(undefined);
   // We don't have a per-symbol alerts endpoint yet; we filter globally.
   let showAcked = $state(false);
 
@@ -142,13 +145,16 @@
     selectedSymbol = symbol;
     symbolContext = undefined;
     symbolTheses = undefined;
+    symbolDecisions = undefined;
     // Fetch detail in parallel.
-    const [ctx, theses] = await Promise.all([
+    const [ctx, theses, decisions] = await Promise.all([
       fetchTickerContext(symbol).catch(() => null),
       fetchTheses(symbol).catch(() => []),
+      fetchDecisions(symbol).catch(() => []),
     ]);
     symbolContext = ctx;
     symbolTheses = theses;
+    symbolDecisions = decisions;
   }
 
   function pickFirstSymbol() {
@@ -316,6 +322,16 @@
     // Once tickers and watchlists arrive, auto-pick the first symbol.
     if (!selectedSymbol && (tickers.length > 0 || watchlists.length > 0)) {
       pickFirstSymbol();
+    }
+  });
+  // Auto-default the decision form's thesis ID to the selected symbol's
+  // most recent open thesis — saves the operator from typing UUIDs.
+  $effect(() => {
+    if (symbolTheses && symbolTheses.length > 0) {
+      const open = symbolTheses.find(
+        (t) => !["closed", "disqualified"].includes(t.state),
+      );
+      if (open) decThesisId = open.thesis_id;
     }
   });
 
@@ -680,7 +696,32 @@
                 </ul>
               {/if}
             {:else if rightTab === "decisions"}
-              <p class="muted">Per-symbol decisions view comes in #57 PR4. For now the global decision form lives in the bottom drawer.</p>
+              {#if symbolDecisions === undefined}
+                <p class="muted">Loading…</p>
+              {:else if symbolDecisions && symbolDecisions.length > 0}
+                <ul class="decisions">
+                  {#each symbolDecisions as d (d.decision_id)}
+                    <li>
+                      <span class="badge tiny dec-{d.action}">{d.action}</span>
+                      {#if d.user_choice}<span class="muted">{d.user_choice}</span>{/if}
+                      <span class="muted">{shortTs(d.at)}</span>
+                      {#if d.thesis_id}
+                        <button
+                          class="link-mini"
+                          onclick={() => { decThesisId = d.thesis_id ?? ""; bottomMode = "decisions"; if (!bottomOpen) bottomPane?.expand(); }}
+                          title="prefill the decision form with this thesis"
+                        >use ↓</button>
+                      {/if}
+                      {#if d.sizing}
+                        <pre class="dec-sizing">{JSON.stringify(d.sizing)}</pre>
+                      {/if}
+                    </li>
+                  {/each}
+                </ul>
+                <p class="muted hint">Submit new decisions via the bottom drawer's <strong>decisions</strong> tab.</p>
+              {:else}
+                <p class="muted">No decisions recorded yet for <strong>{selectedSymbol}</strong>.</p>
+              {/if}
             {/if}
           </div>
         {:else}
@@ -1000,4 +1041,22 @@
   .badge.conf-high { background: rgba(166, 227, 161, .18); color: rgb(166, 227, 161); }
   .badge.conf-medium { background: rgba(249, 226, 175, .15); color: rgb(249, 226, 175); }
   .badge.conf-low { background: rgba(108, 112, 134, .2); color: #9aa3b8; }
+
+  .decisions { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .2rem; }
+  .decisions li {
+    display: flex; align-items: baseline; gap: .35rem; flex-wrap: wrap;
+    padding: .25rem .4rem; border: 1px solid #1f2733; border-radius: 3px;
+    font-size: .8rem;
+  }
+  .dec-sizing { font-size: .7rem; margin: 0; color: #6c7693; background: transparent; padding: 0; }
+  .badge.dec-enter   { background: rgba(166,227,161,.18); color: rgb(166,227,161); }
+  .badge.dec-exit    { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
+  .badge.dec-skip    { background: rgba(108,112,134,.2);  color: #9aa3b8; }
+  .badge.dec-resize  { background: rgba(249,226,175,.18); color: rgb(249,226,175); }
+  .link-mini {
+    background: transparent; color: #89b4fa; border: none; cursor: pointer;
+    font: inherit; font-size: .75rem; padding: 0;
+  }
+  .link-mini:hover { text-decoration: underline; }
+  .hint { margin-top: .35rem; font-size: .75rem; }
 </style>

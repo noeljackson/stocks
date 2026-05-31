@@ -277,6 +277,21 @@ export function subscribe(
   return () => es.close();
 }
 
+export interface DecisionRow {
+  decision_id: string;
+  thesis_id?: string | null;
+  action: string;
+  user_choice?: string | null;
+  sizing?: Record<string, unknown> | null;
+  at: string;
+}
+
+export async function fetchDecisions(symbol: string): Promise<DecisionRow[]> {
+  const r = await fetch(`/api/decisions?symbol=${encodeURIComponent(symbol)}`);
+  if (!r.ok) throw new Error(`decisions ${r.status}`);
+  return ((await r.json()) as DecisionRow[] | null) ?? [];
+}
+
 export async function postDecision(d: {
   thesis_id?: string;
   action: string;

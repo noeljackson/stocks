@@ -30,14 +30,21 @@ log = logging.getLogger("brain_maintainer")
 
 SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
 SOURCE_FRESHNESS_MINUTES = 90
-COMMODITY_REQUIREMENT_PARTS = (
-    "commodity",
+COMMODITY_PRICE_REQUIREMENT_PARTS = (
+    "commodity_price",
+    "commodity price",
+    "crop_price",
+    "crop price",
+    "futures_price",
+    "futures price",
+)
+COMMODITY_FUNDAMENTAL_REQUIREMENT_PARTS = (
     "inventory",
     "inventories",
     "usda",
     "weather",
-    "crop",
     "china_demand",
+    "china demand",
     "cot",
 )
 RESEARCH_REQUIREMENT_PARTS = (
@@ -51,6 +58,10 @@ RESEARCH_REQUIREMENT_PARTS = (
 )
 ALLOWED_STATES = {"forming", "active", "weakening", "invalidated", "archived"}
 ALLOWED_DIRECTIONS = {"risk_on", "risk_off", "neutral", "bullish", "bearish", "mixed"}
+THEME_PROXY_SYMBOLS = {
+    "copper_industrial_metals": {"CPER", "XME"},
+    "wheat_agriculture_food": {"WEAT"},
+}
 
 
 def _parse_dt(value: Any) -> dt.datetime | None:
@@ -185,6 +196,14 @@ def _dedupe(values: list[str]) -> list[str]:
     return out
 
 
+def _default_expression_role(theme_key: Any, symbol: str, fallback: str) -> str:
+    """Classify direct tradable proxies separately from operating companies."""
+    key = str(theme_key or "")
+    if normalize_symbol(symbol) in THEME_PROXY_SYMBOLS.get(key, set()):
+        return "proxy"
+    return fallback
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None:
@@ -215,11 +234,17 @@ def _theme_missing_evidence(thesis: dict[str, Any], metrics: dict[str, int]) -> 
     has_estimates = int(metrics.get("estimate_symbols") or 0) > 0
     has_opinion = int(metrics.get("opinion_symbols") or 0) > 0
     has_price = int(metrics.get("price_symbols") or 0) > 0
+    has_proxy = int(metrics.get("proxy_count") or 0) > 0
+    has_proxy_price = int(metrics.get("proxy_price_symbols") or 0) > 0
     has_research = int(metrics.get("research_symbols") or 0) > 0
 
     for item in _baseline_missing(thesis):
         low = item.lower()
-        if any(part in low for part in COMMODITY_REQUIREMENT_PARTS):
+        if any(part in low for part in COMMODITY_PRICE_REQUIREMENT_PARTS):
+            if not (has_proxy_price if has_proxy else has_price):
+                missing.append(item)
+            continue
+        if any(part in low for part in COMMODITY_FUNDAMENTAL_REQUIREMENT_PARTS):
             missing.append(item)
             continue
         if "estimate" in low or "revision" in low or "target" in low or "rating" in low:
@@ -306,6 +331,28 @@ def _coerce_string_list(value: Any, fallback: list[str], *, max_items: int = 12)
     return _dedupe(out) or fallback
 
 
+def _merge_missing_evidence(
+    deterministic_missing: list[str],
+    llm_missing: Any,
+) -> list[str]:
+    """Preserve deterministic gaps while accepting extra LLM-requested gaps."""
+    base = list(deterministic_missing)
+    llm_items = _coerce_string_list(llm_missing, [], max_items=12)
+    deterministic_has_commodity_price = any(
+        any(part in item.lower() for part in COMMODITY_PRICE_REQUIREMENT_PARTS)
+        for item in base
+    )
+    for item in llm_items:
+        low = item.lower()
+        if (
+            any(part in low for part in COMMODITY_PRICE_REQUIREMENT_PARTS)
+            and not deterministic_has_commodity_price
+        ):
+            continue
+        base.append(item)
+    return _dedupe(base)
+
+
 def _coerce_json_list(value: Any, fallback: list[Any], *, max_items: int = 12) -> list[Any]:
     decoded = _json(value, value)
     if not isinstance(decoded, list):
@@ -334,6 +381,8 @@ def build_theme_update(
         "contexts": int(metrics.get("context_symbols") or 0),
         "open_theses": int(metrics.get("open_thesis_symbols") or 0),
         "price": int(metrics.get("price_symbols") or 0),
+        "commodity_proxies": int(metrics.get("proxy_count") or 0),
+        "commodity_proxy_price": int(metrics.get("proxy_price_symbols") or 0),
         "news": int(metrics.get("news_symbols") or 0),
         "estimates": int(metrics.get("estimate_symbols") or 0),
         "analyst_opinion": int(metrics.get("opinion_symbols") or 0),
@@ -496,7 +545,7 @@ async def _load_market_state(pool: asyncpg.Pool) -> dict[str, Any] | None:
 async def _load_thesis_metrics(pool: asyncpg.Pool, brain_thesis_id: Any) -> dict[str, int]:
     row = await pool.fetchrow(
         """WITH linked AS (
-               SELECT symbol
+               SELECT symbol, role
                  FROM brain_thesis_ticker
                 WHERE brain_thesis_id = $1
            ), latest_thesis AS (
@@ -504,17 +553,23 @@ async def _load_thesis_metrics(pool: asyncpg.Pool, brain_thesis_id: Any) -> dict
                       th.symbol,
                       th.forecast->>'direction' AS direction
                  FROM thesis th
-                 JOIN linked l ON l.symbol = th.symbol
+                JOIN linked l ON l.symbol = th.symbol
                 WHERE th.state NOT IN ('closed', 'disqualified')
              ORDER BY th.symbol, th.updated_at DESC, th.created_at DESC
            )
            SELECT
               (SELECT count(*) FROM linked) AS linked_count,
+              (SELECT count(*) FROM linked WHERE role = 'proxy') AS proxy_count,
               (SELECT count(DISTINCT symbol) FROM ticker_context
                 WHERE symbol IN (SELECT symbol FROM linked)) AS context_symbols,
               (SELECT count(*) FROM latest_thesis) AS open_thesis_symbols,
               (SELECT count(DISTINCT symbol) FROM price_bar
                 WHERE symbol IN (SELECT symbol FROM linked)) AS price_symbols,
+              (SELECT count(*) FROM linked l
+                WHERE l.role = 'proxy'
+                  AND EXISTS (
+                      SELECT 1 FROM price_bar pb WHERE pb.symbol = l.symbol
+                  )) AS proxy_price_symbols,
               (SELECT count(DISTINCT symbol) FROM news_article
                 WHERE symbol IN (SELECT symbol FROM linked)
                   AND published_at > now() - interval '30 days') AS news_symbols,
@@ -662,9 +717,9 @@ def merge_llm_update(
         max_len=1200,
     )
     merged["why_now"] = _coerce_text(parsed.get("why_now"), thesis.get("why_now"), max_len=900)
-    merged["missing_evidence"] = _coerce_string_list(
-        parsed.get("missing_evidence"),
+    merged["missing_evidence"] = _merge_missing_evidence(
         update.get("missing_evidence", []),
+        parsed.get("missing_evidence"),
     )
     merged["open_questions"] = _coerce_string_list(
         parsed.get("open_questions"),
@@ -848,7 +903,7 @@ async def ensure_brain_ticker_mappings(pool: asyncpg.Pool) -> int:
     become active ticker rows and mappings for downstream data/cognition loops.
     """
     rows = await pool.fetch(
-        """SELECT id, name, beneficiaries, losers
+        """SELECT id, key, name, beneficiaries, losers
              FROM brain_thesis
             WHERE active = true
               AND scope <> 'macro'""",
@@ -861,8 +916,9 @@ async def ensure_brain_ticker_mappings(pool: asyncpg.Pool) -> int:
                     ("beneficiary", symbols_from_json(row["beneficiaries"])),
                     ("hedge", symbols_from_json(row["losers"])),
                 ]
-                for role, symbols in groups:
+                for default_role, symbols in groups:
                     for symbol in symbols:
+                        role = _default_expression_role(row["key"], symbol, default_role)
                         await conn.execute(
                             """INSERT INTO ticker(symbol, tier, status)
                                VALUES ($1, 3, 'active')

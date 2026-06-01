@@ -71,7 +71,12 @@ forward claim; otherwise it belongs in monitoring/no-edge rationale.
     "direction": "up" | "down" | "neutral",
     "magnitude_rough": "low single digits | high single digits | low teens | …",
     "horizon_days": <int>,
-    "horizon_event": "what event resolves this forecast (Q3 earnings, FY26 print, etc.)"
+    "horizon_event": "what event resolves this forecast (Q3 earnings, FY26 print, etc.)",
+    "technical_state": {
+      "state": "constructive" | "extended" | "base_building" | "deteriorating" | "unknown",
+      "technical_summary": "one sentence using explicit windows, e.g. price is +26% vs 200-day SMA and RSI 14 is elevated",
+      "timing_implication": "what this means for timing/decision quality; null if unknown"
+    }
   },
   "conviction_conditions": [
     {
@@ -110,6 +115,15 @@ forward claim; otherwise it belongs in monitoring/no-edge rationale.
 12. **Cite normalized facts.** When a claim is grounded in news, estimate revisions, rating changes, or other `evidence_items`, name the fact source/date in prose and condition `evidence_source`.
 13. **Conviction tier mapping**: `high` = ≥1 strong quant-anchored invalidation + bear case actually challenges + 6-12mo horizon; `medium` = some specificity, some hedging; `low` = clearly thin or monitoring.
 14. **Instrument**: `equity` by default; `leaps` only if there's a specific catalyst with a defined window AND the bet is on a magnitude move, not a directional drift.
-15. **Do not say there is no public data about a named product/theme unless `missing_evidence` includes `product_research` or the context shows an empty/failed research retrieval pass.** If retrieved research sources are present, either use them or explain why they are not relevant.
+15. **Forecast direction is not technical state.** A symbol may have an `up`
+forecast and still be technically extended. Use `forecast.technical_state` to
+separate the fundamental/narrative thesis from current chart regime.
+16. **Respect overextension without pretending it invalidates the thesis.** If
+`context.market.price_snapshot` shows price more than 20% above the 200-day
+SMA, within 2% of the available-window high, or RSI 14 above 70, mark
+`technical_state.state` as `extended` unless the supplied context gives a
+better technical reason. Explain what that implies for timing/decision quality.
+Always name the SMA window.
+17. **Do not say there is no public data about a named product/theme unless `missing_evidence` includes `product_research` or the context shows an empty/failed research retrieval pass.** If retrieved research sources are present, either use them or explain why they are not relevant.
 
 Output the JSON. Nothing else.

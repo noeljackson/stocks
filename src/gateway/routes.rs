@@ -11,7 +11,10 @@ use axum::{
     response::{IntoResponse, Sse, sse::Event},
     routing::{get, post},
 };
-use futures::stream::Stream;
+use futures::{
+    StreamExt,
+    stream::{self, Stream},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::Row;
@@ -694,14 +697,23 @@ async fn stream(
     State(gw): State<Arc<Gateway>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = gw.hub.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|res| async move {
+    let connected = stream::once(async {
+        Ok(Event::default().data(
+            json!({
+                "subject": "stream.connected",
+                "kind": "stream",
+                "payload": { "status": "open" }
+            })
+            .to_string(),
+        ))
+    });
+    let broadcast = BroadcastStream::new(rx).filter_map(|res| async move {
         match res {
             Ok(s) => Some(Ok(Event::default().data(s))),
             Err(_) => None, // Lagged → drop
         }
     });
-    use futures::StreamExt;
-    let stream = stream.boxed();
+    let stream = connected.chain(broadcast).boxed();
     Sse::new(stream).keep_alive(
         axum::response::sse::KeepAlive::new()
             .interval(Duration::from_secs(25))

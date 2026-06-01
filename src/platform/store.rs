@@ -307,7 +307,18 @@ impl Store {
         symbols: &[String],
         owner: &str,
     ) -> Result<u64> {
-        if actions.is_empty() || symbols.is_empty() {
+        self.mark_source_tasks_fetching_for_scope("symbol", actions, symbols, owner)
+            .await
+    }
+
+    pub async fn mark_source_tasks_fetching_for_scope(
+        &self,
+        scope: &str,
+        actions: &[&str],
+        target_ids: &[String],
+        owner: &str,
+    ) -> Result<u64> {
+        if actions.is_empty() || target_ids.is_empty() {
             return Ok(0);
         }
         let actions: Vec<String> = actions.iter().map(|a| (*a).to_string()).collect();
@@ -321,15 +332,16 @@ impl Store {
                           'claimed_by', $3,
                           'claimed_at', now()
                       )
-                WHERE scope = 'symbol'
+                WHERE scope = $4
                   AND target_id = ANY($1::text[])
                   AND action = ANY($2::text[])
                   AND state IN ('queued', 'no_rows', 'failed', 'rate_limited', 'satisfied')
                   AND due_at <= now()"#,
         )
-        .bind(symbols)
+        .bind(target_ids)
         .bind(&actions)
         .bind(owner)
+        .bind(scope)
         .execute(&self.pool)
         .await
         .context("mark_source_tasks_fetching")?;
@@ -344,7 +356,27 @@ impl Store {
         owner: &str,
         fresh_for: ChronoDuration,
     ) -> Result<u64> {
-        if attempted_symbols.is_empty() {
+        self.complete_source_tasks_for_scope(
+            "symbol",
+            action,
+            attempted_symbols,
+            symbols_with_rows,
+            owner,
+            fresh_for,
+        )
+        .await
+    }
+
+    pub async fn complete_source_tasks_for_scope(
+        &self,
+        scope: &str,
+        action: &str,
+        attempted_targets: &[String],
+        targets_with_rows: &[String],
+        owner: &str,
+        fresh_for: ChronoDuration,
+    ) -> Result<u64> {
+        if attempted_targets.is_empty() {
             return Ok(0);
         }
         let fresh_until = Utc::now() + fresh_for;
@@ -370,16 +402,17 @@ impl Store {
                               ELSE 'no_rows'
                           END
                       )
-                WHERE scope = 'symbol'
+                WHERE scope = $7
                   AND target_id = ANY($1::text[])
                   AND action = $2"#,
         )
-        .bind(attempted_symbols)
+        .bind(attempted_targets)
         .bind(action)
-        .bind(symbols_with_rows)
+        .bind(targets_with_rows)
         .bind(owner)
         .bind(fresh_until)
         .bind(retry_at)
+        .bind(scope)
         .execute(&self.pool)
         .await
         .context("complete_source_tasks_for_attempt")?;
@@ -395,7 +428,29 @@ impl Store {
         error: &str,
         retry_after_at: Option<DateTime<Utc>>,
     ) -> Result<u64> {
-        if attempted_symbols.is_empty() {
+        self.fail_source_tasks_for_scope(
+            "symbol",
+            action,
+            attempted_symbols,
+            owner,
+            state,
+            error,
+            retry_after_at,
+        )
+        .await
+    }
+
+    pub async fn fail_source_tasks_for_scope(
+        &self,
+        scope: &str,
+        action: &str,
+        attempted_targets: &[String],
+        owner: &str,
+        state: &str,
+        error: &str,
+        retry_after_at: Option<DateTime<Utc>>,
+    ) -> Result<u64> {
+        if attempted_targets.is_empty() {
             return Ok(0);
         }
         let task_state = if state == "rate_limited" {
@@ -415,16 +470,17 @@ impl Store {
                           'failed_by', $4,
                           'failed_at', now()
                       )
-                WHERE scope = 'symbol'
+                WHERE scope = $7
                   AND target_id = ANY($1::text[])
                   AND action = $2"#,
         )
-        .bind(attempted_symbols)
+        .bind(attempted_targets)
         .bind(action)
         .bind(task_state)
         .bind(owner)
         .bind(error.chars().take(500).collect::<String>())
         .bind(retry_at)
+        .bind(scope)
         .execute(&self.pool)
         .await
         .context("fail_source_tasks_for_attempt")?;

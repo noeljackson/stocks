@@ -274,6 +274,19 @@
     return [...new Set(parts)].join(" · ");
   }
 
+  function evidenceSourceTasks(req: EvidenceRequirement): string {
+    const tasks = req.source_tasks ?? [];
+    if (!tasks.length) return "";
+    return tasks
+      .slice(0, 4)
+      .map((task) => {
+        const action = task.action.replace(/_/g, " ");
+        const state = task.state.replace(/_/g, " ");
+        return `${action}: ${state}`;
+      })
+      .join(" · ");
+  }
+
   // Group attention items by (kind, symbol). For candidate_review this
   // collapses N candidates on the same ticker into one card; for other
   // kinds it's typically 1 item per group.
@@ -1737,6 +1750,9 @@
                         {/if}
                       {:else if evidenceActions(req).length}
                         <p class="muted">next fetch: {evidenceActions(req).map((a) => a.replace(/_/g, " ")).join(", ")}</p>
+                      {/if}
+                      {#if req.blocking_state !== "satisfied" && evidenceSourceTasks(req)}
+                        <p class="muted">source tasks: {evidenceSourceTasks(req)}</p>
                       {/if}
                       {#if req.blocking_state !== "satisfied" && evidenceCounts(req)}
                         <p class="muted">{evidenceCounts(req)}</p>

@@ -157,6 +157,18 @@ export interface EvidenceRequirement {
   next_retry_at?: string | null;
   last_error?: string | null;
   source_ref: Record<string, unknown>;
+  source_tasks?: {
+    id: number;
+    action: string;
+    provider: string;
+    state: string;
+    priority: string;
+    due_at?: string | null;
+    next_retry_at?: string | null;
+    attempts: number;
+    last_error?: string | null;
+    updated_at?: string | null;
+  }[];
   created_at: string;
   updated_at: string;
   satisfied_at?: string | null;

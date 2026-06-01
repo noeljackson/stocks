@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 
 import asyncpg
@@ -31,8 +32,7 @@ EVIDENCE_REQUIREMENTS = {
         "source_type": "news",
         "priority": "high",
         "reason": (
-            "Need recent narrative evidence before deciding whether the market has "
-            "new information."
+            "Need recent narrative evidence before deciding whether the market has new information."
         ),
         "fetch_actions": ["fmp_news", "massive_news", "llm_sentiment_scoring"],
     },
@@ -56,6 +56,93 @@ EVIDENCE_REQUIREMENTS = {
 
 def _iso(value) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _task_json(task: dict) -> dict:
+    due_at = task["due_at"]
+    return {
+        "action": task["action"],
+        "provider": task["provider"],
+        "state": task["state"],
+        "due_at": _iso(due_at) if hasattr(due_at, "isoformat") else due_at,
+        "next_retry_at": task["next_retry_at"],
+    }
+
+
+def provider_for_fetch_action(action: str, source_type: str) -> str:
+    if action.startswith("fmp_"):
+        return "fmp"
+    if action.startswith("massive_"):
+        return "massive"
+    if action.startswith("sec_"):
+        return "sec"
+    if action.startswith("gdelt_"):
+        return "gdelt"
+    if action.startswith("bing_"):
+        return "bing"
+    if action.startswith("llm_"):
+        return "llm"
+    return source_type
+
+
+def source_task_state(blocking_state: str, acquisition_state: str | None) -> str:
+    if blocking_state == "satisfied":
+        return "satisfied"
+    if blocking_state == "fetching":
+        return "fetching"
+    if acquisition_state == "rate_limited":
+        return "rate_limited"
+    if blocking_state == "blocked":
+        return "failed"
+    if acquisition_state in {
+        "source_checked_no_new_rows",
+        "source_checked_no_relevant_rows",
+        "no_relevant_symbol_evidence_after_success",
+    }:
+        return "no_rows"
+    return "queued"
+
+
+def _task_due_at(state: str, retry_after_at: str | None) -> dt.datetime | str:
+    if retry_after_at:
+        return retry_after_at
+    now = dt.datetime.now(dt.UTC)
+    if state in {"no_rows", "failed", "blocked"}:
+        return now + dt.timedelta(minutes=30)
+    return now
+
+
+def build_source_tasks(symbol: str, requirement: dict) -> list[dict]:
+    state = source_task_state(
+        requirement["blocking_state"],
+        requirement.get("state_reason"),
+    )
+    tasks = []
+    for action in requirement.get("fetch_actions", []):
+        provider = provider_for_fetch_action(action, requirement["source_type"])
+        tasks.append(
+            {
+                "source_type": requirement["source_type"],
+                "requirement_key": requirement["requirement_key"],
+                "action": action,
+                "scope": "symbol",
+                "target_id": symbol,
+                "provider": provider,
+                "limiter_key": provider,
+                "state": state,
+                "priority": requirement["priority"],
+                "due_at": _task_due_at(state, requirement.get("retry_after_at")),
+                "attempts": requirement.get("attempts", 0),
+                "next_retry_at": requirement.get("retry_after_at"),
+                "last_error": requirement.get("last_error"),
+                "source_ref": {
+                    "acquisition_state": requirement.get("state_reason"),
+                    "evidence_counts": requirement.get("source_ref", {}).get("counts", {}),
+                    "source_health": requirement.get("source_ref", {}).get("source_health", []),
+                },
+            }
+        )
+    return tasks
 
 
 async def load_evidence_counts(pool: asyncpg.Pool, symbol: str) -> dict[str, int]:
@@ -123,10 +210,7 @@ def _acquisition_state(requirement_key: str, source_health: dict[str, dict] | No
             "retry_after_at": None,
             "source_health": rows,
         }
-    failures = [
-        r for r in rows
-        if r["last_status"] == "failed" or r.get("last_failure_kind")
-    ]
+    failures = [r for r in rows if r["last_status"] == "failed" or r.get("last_failure_kind")]
     if failures:
         retry_after = next(
             (r.get("retry_after_at") for r in failures if r.get("retry_after_at")),
@@ -179,23 +263,25 @@ def assess_evidence_requirements(
             continue
         spec = EVIDENCE_REQUIREMENTS[key]
         acquisition = _acquisition_state(key, source_health)
-        missing.append({
-            "requirement_key": key,
-            "source_type": spec["source_type"],
-            "priority": spec["priority"],
-            "reason": spec["reason"],
-            "fetch_actions": spec["fetch_actions"],
-            "blocking_state": acquisition["blocking_state"],
-            "state_reason": acquisition["state_reason"],
-            "last_error": acquisition["last_error"],
-            "retry_after_at": acquisition["retry_after_at"],
-            "source_ref": {
-                "counts": evidence_counts,
+        missing.append(
+            {
+                "requirement_key": key,
+                "source_type": spec["source_type"],
+                "priority": spec["priority"],
+                "reason": spec["reason"],
                 "fetch_actions": spec["fetch_actions"],
-                "acquisition_state": acquisition["state_reason"],
-                "source_health": acquisition["source_health"],
-            },
-        })
+                "blocking_state": acquisition["blocking_state"],
+                "state_reason": acquisition["state_reason"],
+                "last_error": acquisition["last_error"],
+                "retry_after_at": acquisition["retry_after_at"],
+                "source_ref": {
+                    "counts": evidence_counts,
+                    "fetch_actions": spec["fetch_actions"],
+                    "acquisition_state": acquisition["state_reason"],
+                    "source_health": acquisition["source_health"],
+                },
+            }
+        )
     return missing
 
 
@@ -212,6 +298,8 @@ async def sync_evidence_requirements(
     for key, spec in EVIDENCE_REQUIREMENTS.items():
         if key in missing_by_key:
             req = missing_by_key[key]
+            source_tasks = build_source_tasks(symbol, req)
+            req["source_ref"]["source_tasks"] = [_task_json(task) for task in source_tasks]
             await pool.execute(
                 """INSERT INTO evidence_requirement
                      (symbol, requirement_key, source_type, reason, priority,
@@ -256,6 +344,7 @@ async def sync_evidence_requirements(
                 req["last_error"],
                 json.dumps(req["source_ref"]),
             )
+            await sync_source_tasks(pool, source_tasks)
         else:
             await pool.execute(
                 """INSERT INTO evidence_requirement
@@ -276,7 +365,70 @@ async def sync_evidence_requirements(
                 spec["priority"],
                 now_ref,
             )
+            await mark_source_tasks_satisfied(pool, symbol, key)
     return missing
+
+
+async def sync_source_tasks(pool: asyncpg.Pool, tasks: list[dict]) -> None:
+    for task in tasks:
+        await pool.execute(
+            """INSERT INTO source_task
+                 (source_type, requirement_key, action, scope, target_id,
+                  provider, limiter_key, state, priority, due_at, attempts,
+                  next_retry_at, last_error, source_ref)
+               VALUES (
+                  $1, $2, $3, $4, $5,
+                  $6, $7, $8, $9, $10::timestamptz, $11,
+                  $12::timestamptz, $13, $14::jsonb
+               )
+               ON CONFLICT (scope, target_id, requirement_key, action) DO UPDATE SET
+                  source_type = EXCLUDED.source_type,
+                  provider = EXCLUDED.provider,
+                  limiter_key = EXCLUDED.limiter_key,
+                  state = EXCLUDED.state,
+                  priority = EXCLUDED.priority,
+                  due_at = EXCLUDED.due_at,
+                  attempts = GREATEST(source_task.attempts, EXCLUDED.attempts),
+                  next_retry_at = EXCLUDED.next_retry_at,
+                  last_error = EXCLUDED.last_error,
+                  source_ref = EXCLUDED.source_ref,
+                  updated_at = now()""",
+            task["source_type"],
+            task["requirement_key"],
+            task["action"],
+            task["scope"],
+            task["target_id"],
+            task["provider"],
+            task["limiter_key"],
+            task["state"],
+            task["priority"],
+            task["due_at"],
+            task["attempts"],
+            task["next_retry_at"],
+            task["last_error"],
+            json.dumps(task["source_ref"]),
+        )
+
+
+async def mark_source_tasks_satisfied(
+    pool: asyncpg.Pool,
+    symbol: str,
+    requirement_key: str,
+) -> None:
+    await pool.execute(
+        """UPDATE source_task
+              SET state = 'satisfied',
+                  next_retry_at = NULL,
+                  due_at = now(),
+                  last_error = NULL,
+                  updated_at = now()
+            WHERE scope = 'symbol'
+              AND target_id = $1
+              AND requirement_key = $2
+              AND state <> 'satisfied'""",
+        symbol,
+        requirement_key,
+    )
 
 
 async def refresh_open_evidence_requirements(

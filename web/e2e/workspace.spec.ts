@@ -365,22 +365,53 @@ async function mockApi(page: Page): Promise<Calls> {
       return;
     }
     if (path === "/api/evidence-requirements") {
-      await json(route, [{
-        id: 8101,
-        symbol: url.searchParams.get("symbol") ?? "MSFT",
-        requirement_key: "product_research",
-        source_type: "web_research",
-        reason: "Need product/theme web research before claiming public evidence does or does not exist.",
-        priority: "high",
-        blocking_state: "satisfied",
-        attempts: 1,
-        next_retry_at: null,
-        last_error: null,
-        source_ref: { counts: { research_evidence: 2 }, fetch_actions: ["gdelt_doc_search", "bing_news_rss_search"] },
-        created_at: "2026-06-01T00:00:00Z",
-        updated_at: "2026-06-01T00:00:00Z",
-        satisfied_at: "2026-06-01T00:00:00Z",
-      }]);
+      await json(route, [
+        {
+          id: 8101,
+          symbol: url.searchParams.get("symbol") ?? "MSFT",
+          requirement_key: "product_research",
+          source_type: "web_research",
+          reason: "Need product/theme web research before claiming public evidence does or does not exist.",
+          priority: "high",
+          blocking_state: "satisfied",
+          attempts: 1,
+          next_retry_at: null,
+          last_error: null,
+          source_ref: { counts: { research_evidence: 2 }, fetch_actions: ["gdelt_doc_search", "bing_news_rss_search"] },
+          source_tasks: [],
+          created_at: "2026-06-01T00:00:00Z",
+          updated_at: "2026-06-01T00:00:00Z",
+          satisfied_at: "2026-06-01T00:00:00Z",
+        },
+        {
+          id: 8102,
+          symbol: url.searchParams.get("symbol") ?? "MSFT",
+          requirement_key: "analyst_estimates",
+          source_type: "estimates",
+          reason: "Need analyst estimate snapshots before evaluating revision/consensus drift.",
+          priority: "high",
+          blocking_state: "missing",
+          attempts: 2,
+          next_retry_at: "2026-06-01T00:30:00Z",
+          last_error: null,
+          source_ref: { counts: { estimate_snapshots: 0 }, fetch_actions: ["fmp_analyst_estimates"] },
+          source_tasks: [{
+            id: 9101,
+            action: "fmp_analyst_estimates",
+            provider: "fmp",
+            state: "queued",
+            priority: "high",
+            due_at: "2026-06-01T00:30:00Z",
+            next_retry_at: "2026-06-01T00:30:00Z",
+            attempts: 2,
+            last_error: null,
+            updated_at: "2026-06-01T00:00:00Z",
+          }],
+          created_at: "2026-06-01T00:00:00Z",
+          updated_at: "2026-06-01T00:00:00Z",
+          satisfied_at: null,
+        },
+      ]);
       return;
     }
     if (path === "/api/research-evidence") {
@@ -535,6 +566,18 @@ test("evidence tab shows retrieved research sources", async ({ page }) => {
   await expect(page.getByText("Research sources")).toBeVisible();
   await expect(page.getByText("AMD MI355X production deployment expands")).toBeVisible();
   await expect(page.getByText("AMD MI355X deployment benchmark adoption")).toBeVisible();
+});
+
+test("evidence tab shows source task acquisition state", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "evidence" }).click();
+
+  const requirement = page.locator(".evidence-card").filter({ hasText: "analyst estimate snapshots" }).first();
+  await expect(requirement).toContainText("high priority");
+  await expect(requirement).toContainText("missing");
+  await expect(requirement).toContainText("source tasks: fmp analyst estimates: queued");
 });
 
 test("discovery tab shows candidate ranking reasons", async ({ page }) => {

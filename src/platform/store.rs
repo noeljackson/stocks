@@ -705,7 +705,37 @@ impl Store {
         let rows = sqlx::query(
             r#"SELECT id, symbol, requirement_key, source_type, reason, priority,
                       blocking_state, attempts, next_retry_at, last_error,
-                      source_ref, created_at, updated_at, satisfied_at
+                      source_ref, created_at, updated_at, satisfied_at,
+                      COALESCE((
+                          SELECT jsonb_agg(
+                              jsonb_build_object(
+                                  'id', st.id,
+                                  'action', st.action,
+                                  'provider', st.provider,
+                                  'state', st.state,
+                                  'priority', st.priority,
+                                  'due_at', st.due_at,
+                                  'next_retry_at', st.next_retry_at,
+                                  'attempts', st.attempts,
+                                  'last_error', st.last_error,
+                                  'updated_at', st.updated_at
+                              )
+                              ORDER BY
+                                  CASE st.state
+                                       WHEN 'queued' THEN 0
+                                       WHEN 'rate_limited' THEN 1
+                                       WHEN 'failed' THEN 2
+                                       WHEN 'no_rows' THEN 3
+                                       WHEN 'fetching' THEN 4
+                                       ELSE 5
+                                  END,
+                                  st.due_at
+                          )
+                            FROM source_task st
+                           WHERE st.scope = 'symbol'
+                             AND st.target_id = evidence_requirement.symbol
+                             AND st.requirement_key = evidence_requirement.requirement_key
+                      ), '[]'::jsonb) AS source_tasks
                  FROM evidence_requirement
                 WHERE symbol = $1
              ORDER BY
@@ -746,6 +776,7 @@ impl Store {
                     "next_retry_at": next_retry_at,
                     "last_error": r.try_get::<Option<String>, _>("last_error")?,
                     "source_ref": r.try_get::<serde_json::Value, _>("source_ref")?,
+                    "source_tasks": r.try_get::<serde_json::Value, _>("source_tasks")?,
                     "created_at": created_at,
                     "updated_at": updated_at,
                     "satisfied_at": satisfied_at,

@@ -270,7 +270,7 @@ async fn load_signal_context(pool: &PgPool, symbol: &str) -> Result<SignalContex
 /// surface (#86) picks it up immediately. The attention table's partial
 /// unique on (kind, candidate_id) WHERE status='open' dedups across runs.
 async fn persist(pool: &PgPool, hit: &ComposedSignal, config_version: &str) -> Result<bool> {
-    use crate::attention::{kind, severity, source, title_for_candidate};
+    use crate::attention::{initial_assignment, kind, severity, source, title_for_candidate};
     if hit.kind == composer::DiscoveryInterpretationKind::ExistingThesisTrigger {
         if let Some(thesis_id) = hit.thesis_id {
             persist_existing_thesis_trigger(pool, hit, config_version, thesis_id).await?;
@@ -309,10 +309,13 @@ async fn persist(pool: &PgPool, hit: &ComposedSignal, config_version: &str) -> R
             "price_extension": hit.price_extension,
             "config_version": config_version,
         });
+        let (fsm_state, owner) =
+            initial_assignment(kind::CANDIDATE_REVIEW, severity::REVIEW, source::DISCOVERY);
         if let Err(e) = sqlx::query(
             r#"INSERT INTO attention_item
-                 (kind, symbol, candidate_id, severity, title, reason, source, source_ref)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+                 (kind, symbol, candidate_id, severity, title, reason, source, source_ref,
+                  fsm_state, owner, state_reason)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
                ON CONFLICT DO NOTHING"#,
         )
         .bind(kind::CANDIDATE_REVIEW)
@@ -323,6 +326,9 @@ async fn persist(pool: &PgPool, hit: &ComposedSignal, config_version: &str) -> R
         .bind(&hit.reasoning)
         .bind(source::DISCOVERY)
         .bind(source_ref)
+        .bind(fsm_state)
+        .bind(owner)
+        .bind(hit.kind.signal_name())
         .execute(pool)
         .await
         {
@@ -338,7 +344,9 @@ async fn persist_existing_thesis_trigger(
     config_version: &str,
     thesis_id: uuid::Uuid,
 ) -> Result<()> {
-    use crate::attention::{kind, severity, source, title_for_thesis_actionable};
+    use crate::attention::{
+        initial_assignment, kind, severity, source, title_for_thesis_actionable,
+    };
     supersede_stale_open_candidates(pool, hit).await?;
     let source_ref = serde_json::json!({
         "signal_value": hit.value,
@@ -347,10 +355,16 @@ async fn persist_existing_thesis_trigger(
         "price_extension": hit.price_extension,
         "config_version": config_version,
     });
+    let (fsm_state, owner) = initial_assignment(
+        kind::THESIS_ACTIONABLE,
+        severity::DECISION,
+        source::DISCOVERY,
+    );
     sqlx::query(
         r#"INSERT INTO attention_item
-             (kind, symbol, thesis_id, severity, title, reason, source, source_ref)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+             (kind, symbol, thesis_id, severity, title, reason, source, source_ref,
+              fsm_state, owner, state_reason)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
            ON CONFLICT DO NOTHING"#,
     )
     .bind(kind::THESIS_ACTIONABLE)
@@ -361,6 +375,9 @@ async fn persist_existing_thesis_trigger(
     .bind(&hit.reasoning)
     .bind(source::DISCOVERY)
     .bind(&source_ref)
+    .bind(fsm_state)
+    .bind(owner)
+    .bind("existing_thesis_trigger")
     .execute(pool)
     .await
     .context("insert existing thesis trigger attention")?;
@@ -368,7 +385,10 @@ async fn persist_existing_thesis_trigger(
         r#"UPDATE attention_item
               SET title = $3,
                   reason = $4,
-                  source_ref = source_ref || $5::jsonb
+                  source_ref = source_ref || $5::jsonb,
+                  fsm_state = $6,
+                  owner = $7,
+                  state_reason = $8
             WHERE kind = $1
               AND thesis_id = $2
               AND status = 'open'"#,
@@ -378,6 +398,9 @@ async fn persist_existing_thesis_trigger(
     .bind(title_for_thesis_actionable(&hit.symbol))
     .bind(&hit.reasoning)
     .bind(serde_json::json!({ "latest_discovery_trigger": source_ref }))
+    .bind(fsm_state)
+    .bind(owner)
+    .bind("existing_thesis_trigger")
     .execute(pool)
     .await
     .context("refresh existing thesis trigger attention")?;
@@ -435,20 +458,51 @@ async fn supersede_stale_open_candidates(pool: &PgPool, hit: &ComposedSignal) ->
                   OR signal_name = ANY($3::text[])
                 )
               RETURNING id
-           )
-           UPDATE attention_item ai
-              SET status = 'dismissed',
-                  resolved_at = COALESCE(resolved_at, now()),
-                  resolution_kind = 'superseded_by_composed_discovery',
-                  resolution_ref = jsonb_build_object(
+           ),
+           matched AS (
+             SELECT ai.id, ai.fsm_state
+               FROM attention_item ai
+               JOIN stale ON ai.candidate_id = stale.id
+              WHERE ai.kind = $5
+                AND ai.status = 'open'
+              FOR UPDATE OF ai
+           ),
+           updated AS (
+             UPDATE attention_item ai
+                SET status = 'dismissed',
+                    fsm_state = 'dismissed',
+                    owner = 'system',
+                    resolved_at = COALESCE(resolved_at, now()),
+                    resolution_kind = 'superseded_by_composed_discovery',
+                    resolution_ref = jsonb_build_object(
                     'symbol', $1,
                     'signal_name', $4,
                     'raw_signals', to_jsonb($2::text[])
-                  )
-             FROM stale
-            WHERE ai.candidate_id = stale.id
-              AND ai.kind = $5
-              AND ai.status = 'open'"#,
+                  ),
+                    next_retry_at = NULL,
+                    resurface_at = NULL,
+                    state_reason = 'superseded_by_composed_discovery'
+               FROM matched m
+              WHERE ai.id = m.id
+          RETURNING ai.id,
+                    m.fsm_state AS from_state,
+                    ai.fsm_state AS to_state,
+                    ai.owner,
+                    ai.state_reason,
+                    ai.next_retry_at,
+                    ai.resurface_at,
+                    ai.resolution_ref
+           ),
+           inserted AS (
+             INSERT INTO attention_state_history
+                  (attention_id, from_state, to_state, owner, reason,
+                   next_retry_at, resurface_at, source_ref)
+             SELECT id, from_state, to_state, owner, state_reason,
+                    next_retry_at, resurface_at, resolution_ref
+               FROM updated
+          RETURNING 1
+           )
+           SELECT COUNT(*) FROM updated"#,
     )
     .bind(&hit.symbol)
     .bind(&raw_signals)
@@ -480,19 +534,50 @@ async fn supersede_raw_open_candidates(
                 AND status = 'proposed'
                 AND signal_name = ANY($2::text[])
               RETURNING id
-           )
-           UPDATE attention_item ai
-              SET status = 'dismissed',
-                  resolved_at = COALESCE(resolved_at, now()),
-                  resolution_kind = $3,
-                  resolution_ref = jsonb_build_object(
+           ),
+           matched AS (
+             SELECT ai.id, ai.fsm_state
+               FROM attention_item ai
+               JOIN stale ON ai.candidate_id = stale.id
+              WHERE ai.kind = $4
+                AND ai.status = 'open'
+              FOR UPDATE OF ai
+           ),
+           updated AS (
+             UPDATE attention_item ai
+                SET status = 'dismissed',
+                    fsm_state = 'dismissed',
+                    owner = 'system',
+                    resolved_at = COALESCE(resolved_at, now()),
+                    resolution_kind = $3,
+                    resolution_ref = jsonb_build_object(
                     'symbol', $1,
                     'raw_signals', to_jsonb($2::text[])
-                  )
-             FROM stale
-            WHERE ai.candidate_id = stale.id
-              AND ai.kind = $4
-              AND ai.status = 'open'"#,
+                  ),
+                    next_retry_at = NULL,
+                    resurface_at = NULL,
+                    state_reason = $3
+               FROM matched m
+              WHERE ai.id = m.id
+          RETURNING ai.id,
+                    m.fsm_state AS from_state,
+                    ai.fsm_state AS to_state,
+                    ai.owner,
+                    ai.state_reason,
+                    ai.next_retry_at,
+                    ai.resurface_at,
+                    ai.resolution_ref
+           ),
+           inserted AS (
+             INSERT INTO attention_state_history
+                  (attention_id, from_state, to_state, owner, reason,
+                   next_retry_at, resurface_at, source_ref)
+             SELECT id, from_state, to_state, owner, state_reason,
+                    next_retry_at, resurface_at, resolution_ref
+               FROM updated
+          RETURNING 1
+           )
+           SELECT COUNT(*) FROM updated"#,
     )
     .bind(symbol)
     .bind(&raw_signals)
@@ -517,16 +602,47 @@ async fn supersede_open_candidates_for_symbol(
               WHERE symbol = $1
                 AND status = 'proposed'
               RETURNING id
+           ),
+           matched AS (
+             SELECT ai.id, ai.fsm_state
+               FROM attention_item ai
+               JOIN stale ON ai.candidate_id = stale.id
+              WHERE ai.kind = $3
+                AND ai.status = 'open'
+              FOR UPDATE OF ai
+           ),
+           updated AS (
+             UPDATE attention_item ai
+                SET status = 'dismissed',
+                    fsm_state = 'dismissed',
+                    owner = 'system',
+                    resolved_at = COALESCE(resolved_at, now()),
+                    resolution_kind = $2,
+                    resolution_ref = jsonb_build_object('symbol', $1),
+                    next_retry_at = NULL,
+                    resurface_at = NULL,
+                    state_reason = $2
+               FROM matched m
+              WHERE ai.id = m.id
+          RETURNING ai.id,
+                    m.fsm_state AS from_state,
+                    ai.fsm_state AS to_state,
+                    ai.owner,
+                    ai.state_reason,
+                    ai.next_retry_at,
+                    ai.resurface_at,
+                    ai.resolution_ref
+           ),
+           inserted AS (
+             INSERT INTO attention_state_history
+                  (attention_id, from_state, to_state, owner, reason,
+                   next_retry_at, resurface_at, source_ref)
+             SELECT id, from_state, to_state, owner, state_reason,
+                    next_retry_at, resurface_at, resolution_ref
+               FROM updated
+          RETURNING 1
            )
-           UPDATE attention_item ai
-              SET status = 'dismissed',
-                  resolved_at = COALESCE(resolved_at, now()),
-                  resolution_kind = $2,
-                  resolution_ref = jsonb_build_object('symbol', $1)
-             FROM stale
-            WHERE ai.candidate_id = stale.id
-              AND ai.kind = $3
-              AND ai.status = 'open'"#,
+           SELECT COUNT(*) FROM updated"#,
     )
     .bind(symbol)
     .bind(reason)
@@ -548,16 +664,47 @@ async fn supersede_active_ticker_candidate_reviews(pool: &PgPool) -> Result<()> 
                 AND t.status = 'active'
                 AND dc.status = 'proposed'
               RETURNING dc.id, dc.symbol
+           ),
+           matched AS (
+             SELECT ai.id, ai.fsm_state, stale.symbol
+               FROM attention_item ai
+               JOIN stale ON ai.candidate_id = stale.id
+              WHERE ai.kind = $1
+                AND ai.status = 'open'
+              FOR UPDATE OF ai
+           ),
+           updated AS (
+             UPDATE attention_item ai
+                SET status = 'dismissed',
+                    fsm_state = 'dismissed',
+                    owner = 'system',
+                    resolved_at = COALESCE(resolved_at, now()),
+                    resolution_kind = 'suppressed_tracked_ticker_update',
+                    resolution_ref = jsonb_build_object('symbol', m.symbol),
+                    next_retry_at = NULL,
+                    resurface_at = NULL,
+                    state_reason = 'suppressed_tracked_ticker_update'
+               FROM matched m
+              WHERE ai.id = m.id
+          RETURNING ai.id,
+                    m.fsm_state AS from_state,
+                    ai.fsm_state AS to_state,
+                    ai.owner,
+                    ai.state_reason,
+                    ai.next_retry_at,
+                    ai.resurface_at,
+                    ai.resolution_ref
+           ),
+           inserted AS (
+             INSERT INTO attention_state_history
+                  (attention_id, from_state, to_state, owner, reason,
+                   next_retry_at, resurface_at, source_ref)
+             SELECT id, from_state, to_state, owner, state_reason,
+                    next_retry_at, resurface_at, resolution_ref
+               FROM updated
+          RETURNING 1
            )
-           UPDATE attention_item ai
-              SET status = 'dismissed',
-                  resolved_at = COALESCE(resolved_at, now()),
-                  resolution_kind = 'suppressed_tracked_ticker_update',
-                  resolution_ref = jsonb_build_object('symbol', stale.symbol)
-             FROM stale
-            WHERE ai.candidate_id = stale.id
-              AND ai.kind = $1
-              AND ai.status = 'open'"#,
+           SELECT COUNT(*) FROM updated"#,
     )
     .bind(kind::CANDIDATE_REVIEW)
     .execute(pool)

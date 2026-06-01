@@ -41,6 +41,28 @@ pub mod severity {
     pub const BLOCKED: &str = "blocked";
 }
 
+/// Operational FSM states (mirrors 0028_attention_fsm.sql).
+pub mod fsm {
+    pub const QUEUED: &str = "queued";
+    pub const EVALUATING: &str = "evaluating";
+    pub const WAITING_ON_DATA: &str = "waiting_on_data";
+    pub const READY_FOR_REVIEW: &str = "ready_for_review";
+    pub const OPERATOR_DEFERRED: &str = "operator_deferred";
+    pub const ACTIONABLE: &str = "actionable";
+    pub const RESOLVED: &str = "resolved";
+    pub const DISMISSED: &str = "dismissed";
+    pub const BLOCKED: &str = "blocked";
+}
+
+/// Current owner labels (mirrors 0028_attention_fsm.sql).
+pub mod owner {
+    pub const SYSTEM: &str = "system";
+    pub const OPERATOR: &str = "operator";
+    pub const SOURCE: &str = "source";
+    pub const COGNITION: &str = "cognition";
+    pub const RISK: &str = "risk";
+}
+
 /// Source labels (where the item came from in our pipeline).
 pub mod source {
     pub const DISCOVERY: &str = "discovery";
@@ -50,6 +72,29 @@ pub mod source {
     pub const CONSENSUS: &str = "consensus";
     pub const REFLECTION: &str = "reflection";
     pub const SYSTEM: &str = "system";
+}
+
+#[must_use]
+pub fn initial_assignment(
+    kind: &str,
+    severity: &str,
+    source: &str,
+) -> (&'static str, &'static str) {
+    match kind {
+        kind::CANDIDATE_REVIEW => (fsm::READY_FOR_REVIEW, owner::OPERATOR),
+        kind::THESIS_ACTIONABLE => (fsm::ACTIONABLE, owner::OPERATOR),
+        kind::RISK_REVIEW if severity == severity::BLOCKED => (fsm::BLOCKED, owner::OPERATOR),
+        kind::RISK_REVIEW => (fsm::READY_FOR_REVIEW, owner::OPERATOR),
+        kind::THESIS_INCOMPLETE if source == source::CONSENSUS => {
+            (fsm::EVALUATING, owner::COGNITION)
+        }
+        kind::THESIS_INCOMPLETE if source == source::CONTEXT => {
+            (fsm::WAITING_ON_DATA, owner::SOURCE)
+        }
+        kind::CONTEXT_STALE => (fsm::WAITING_ON_DATA, owner::COGNITION),
+        kind::INVALIDATION_HIT | kind::OUTCOME_READY => (fsm::READY_FOR_REVIEW, owner::OPERATOR),
+        _ => (fsm::READY_FOR_REVIEW, owner::OPERATOR),
+    }
 }
 
 /// Builds the standard title for a candidate_review item.
@@ -143,6 +188,28 @@ mod tests {
             assert!(!s.is_empty());
         }
         for s in [
+            fsm::QUEUED,
+            fsm::EVALUATING,
+            fsm::WAITING_ON_DATA,
+            fsm::READY_FOR_REVIEW,
+            fsm::OPERATOR_DEFERRED,
+            fsm::ACTIONABLE,
+            fsm::RESOLVED,
+            fsm::DISMISSED,
+            fsm::BLOCKED,
+        ] {
+            assert!(!s.is_empty());
+        }
+        for o in [
+            owner::SYSTEM,
+            owner::OPERATOR,
+            owner::SOURCE,
+            owner::COGNITION,
+            owner::RISK,
+        ] {
+            assert!(!o.is_empty());
+        }
+        for s in [
             source::DISCOVERY,
             source::THESIS,
             source::RISK,
@@ -153,5 +220,25 @@ mod tests {
         ] {
             assert!(!s.is_empty());
         }
+    }
+
+    #[test]
+    fn initial_assignment_names_the_current_owner() {
+        assert_eq!(
+            initial_assignment(kind::CANDIDATE_REVIEW, severity::REVIEW, source::DISCOVERY),
+            (fsm::READY_FOR_REVIEW, owner::OPERATOR)
+        );
+        assert_eq!(
+            initial_assignment(kind::THESIS_ACTIONABLE, severity::DECISION, source::THESIS),
+            (fsm::ACTIONABLE, owner::OPERATOR)
+        );
+        assert_eq!(
+            initial_assignment(kind::THESIS_INCOMPLETE, severity::REVIEW, source::CONSENSUS),
+            (fsm::EVALUATING, owner::COGNITION)
+        );
+        assert_eq!(
+            initial_assignment(kind::RISK_REVIEW, severity::BLOCKED, source::RISK),
+            (fsm::BLOCKED, owner::OPERATOR)
+        );
     }
 }

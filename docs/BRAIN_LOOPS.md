@@ -209,8 +209,9 @@ source_ref
 
 Current gaps:
 
-- #147: waiting-on-data, blocked, evaluating, and retry producers still need to
-  use the FSM consistently.
+- #147: retry/waiting transitions still need a canonical helper for services
+  that move long-running work between `evaluating`, `waiting_on_data`, and
+  `blocked`.
 - #89: each attention item should open a review packet with the same resolve
   grammar.
 - #126: the workspace needs an explicit operator workflow rail.
@@ -478,9 +479,11 @@ partially working
 implemented first slice
   selected-symbol brain status and next action
   Defer 7d attention snooze/resurface
+  attention producer initial state/owner adoption
+  transition history for attention resolutions
 
 missing
-  full attention FSM producer adoption
+  attention retry/blocked transition helper
   macro/sector brain
   external research retrieval
   analyst price targets/recommendations

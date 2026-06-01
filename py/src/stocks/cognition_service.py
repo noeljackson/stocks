@@ -84,11 +84,17 @@ async def _record_decline(
     evidence = await load_open_evidence_requirements(pool, symbol)
     full_ref = dict(source_ref)
     full_ref["missing_evidence"] = evidence
+    fsm_state = "waiting_on_data" if evidence else "ready_for_review"
+    owner = "source" if evidence else "operator"
+    state_reason = "missing_evidence" if evidence else "thesis_declined"
     await pool.execute(
         """WITH updated AS (
                UPDATE attention_item
                   SET reason = $4,
-                      source_ref = $5::jsonb
+                      source_ref = $5::jsonb,
+                      fsm_state = $6,
+                      owner = $7,
+                      state_reason = $8
                 WHERE status = 'open'
                   AND kind = 'thesis_incomplete'
                   AND symbol = $1
@@ -96,9 +102,9 @@ async def _record_decline(
            )
            INSERT INTO attention_item
              (kind, symbol, candidate_id, severity, title, reason,
-              source, source_ref)
+              source, source_ref, fsm_state, owner, state_reason)
            SELECT 'thesis_incomplete', $1, $2, 'info', $3, $4,
-                  'thesis', $5::jsonb
+                  'thesis', $5::jsonb, $6, $7, $8
             WHERE NOT EXISTS (SELECT 1 FROM updated)
            ON CONFLICT DO NOTHING""",
         symbol,
@@ -106,6 +112,9 @@ async def _record_decline(
         f"{symbol}: system declined to draft a thesis",
         reason,
         json.dumps(full_ref),
+        fsm_state,
+        owner,
+        state_reason,
     )
 
 

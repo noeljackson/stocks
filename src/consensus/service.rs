@@ -10,7 +10,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::{Config, components, compose};
-use crate::attention::{kind, severity, source};
+use crate::attention::{initial_assignment, kind, severity, source};
 use crate::platform::bus::Bus;
 use crate::platform::subjects;
 
@@ -208,10 +208,13 @@ async fn record_missing_thesis_attention(
         "config_version": config_version,
         "trigger": "consensus_crossing_without_thesis",
     });
+    let (fsm_state, owner) =
+        initial_assignment(kind::THESIS_INCOMPLETE, severity::REVIEW, source::CONSENSUS);
     sqlx::query(
         r#"INSERT INTO attention_item
-             (kind, symbol, severity, title, reason, source, source_ref)
-           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+             (kind, symbol, severity, title, reason, source, source_ref,
+              fsm_state, owner, state_reason)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
            ON CONFLICT DO NOTHING"#,
     )
     .bind(kind::THESIS_INCOMPLETE)
@@ -221,6 +224,9 @@ async fn record_missing_thesis_attention(
     .bind(&reason)
     .bind(source::CONSENSUS)
     .bind(&source_ref)
+    .bind(fsm_state)
+    .bind(owner)
+    .bind("consensus_crossing_without_thesis")
     .execute(pool)
     .await
     .context("insert missing-thesis consensus attention")?;
@@ -228,7 +234,10 @@ async fn record_missing_thesis_attention(
         r#"UPDATE attention_item
               SET title = $3,
                   reason = $4,
-                  source_ref = $5::jsonb
+                  source_ref = $5::jsonb,
+                  fsm_state = $6,
+                  owner = $7,
+                  state_reason = $8
             WHERE kind = $1
               AND symbol = $2
               AND status = 'open'
@@ -240,6 +249,9 @@ async fn record_missing_thesis_attention(
     .bind(&title)
     .bind(&reason)
     .bind(&source_ref)
+    .bind(fsm_state)
+    .bind(owner)
+    .bind("consensus_crossing_without_thesis")
     .execute(pool)
     .await
     .context("refresh missing-thesis consensus attention")?;

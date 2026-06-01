@@ -346,9 +346,11 @@ What works now:
 
 Current gaps:
 
-- #129: macro and sector theses exist as records, and the cognition sweep now
-  maintains their coverage/freshness state. They still need an LLM/factor
-  cognition pass that can rewrite parent claims from normalized evidence.
+- #129: macro and sector theses exist as records, the cognition sweep maintains
+  their coverage/freshness state, and a bounded parent-thesis LLM pass can
+  rewrite parent claims from linked ticker/evidence state when evidence changes
+  or the parent view is stale. Remaining work is broader factor data coverage
+  for commodities, breadth, credit, and earnings.
 - Discovery ranking reads `brain_thesis_ticker` fit today; it still needs
   active parent-thesis direction and contradiction penalties.
 
@@ -690,9 +692,9 @@ Current gaps:
   freshness, nominations, contradictions, and maintainer coverage. The
   cognition sweep evaluates parent rows from linked ticker/source coverage and
   records material changes in `brain_thesis_version_history`.
-- #129 remaining work: parent theses still need an LLM/factor cognition pass
-  that can rewrite the actual macro/sector claim from normalized evidence,
-  commodity data, and factor breadth instead of only maintaining coverage.
+- #129 remaining work: parent theses now have a bounded LLM rewrite pass from
+  normalized linked evidence; the remaining gap is broader macro/factor data
+  coverage and more direct commodity/breadth feeds.
 - #89: review packet pattern for every attention-resolution flow.
 - #126: explicit workflow rail.
 - #82: terminology still needs simplification across UI/docs.
@@ -731,6 +733,7 @@ implemented first slice
   parent brain maintainer evaluates source/ticker coverage on cognition sweep
   parent thesis beneficiary/proxy symbols become active ticker mappings
   ticker thesis prompt receives linked parent theses
+  bounded parent-thesis LLM pass rewrites macro/sector/theme claims when due
   selected-symbol brain status and next action
   Defer 7d attention snooze/resurface
   attention producer initial state/owner adoption
@@ -755,7 +758,7 @@ implemented first slice
 missing
   remaining Rust market-data loops claim/complete source_task rows directly
   full producer adoption for attention retry/blocked transitions
-  macro/sector thesis generation and scheduled re-evaluation
+  broader macro/factor/commodity data coverage for parent thesis generation
   paid semantic research provider if GDELT recall is insufficient
   real broker/position execution state
   review packets

@@ -1,8 +1,10 @@
 import datetime as dt
 
 from stocks.brain_maintainer import (
+    _brain_llm_due,
     build_macro_update,
     build_theme_update,
+    merge_llm_update,
     normalize_symbol,
     symbols_from_json,
 )
@@ -51,6 +53,7 @@ def test_theme_update_marks_active_when_linked_coverage_is_complete() -> None:
     coverage = update["source_ref"]["maintainer"]["coverage"]
     assert coverage["linked"] == 3
     assert coverage["open_theses"] == 3
+    assert update["source_ref"]["maintainer"]["deterministic_fingerprint"]
     assert update["evidence"][0]["kind"] == "linked_ticker_coverage"
 
 
@@ -130,3 +133,99 @@ def test_macro_update_derives_direction_from_market_state_and_source_freshness()
     assert update["direction"] == "risk_off"
     assert update["missing_evidence"] == ["earnings_breadth"]
     assert update["source_ref"]["maintainer"]["sources"]["fred"]["freshness"] == "fresh"
+
+
+def test_brain_llm_due_on_changed_deterministic_fingerprint() -> None:
+    now = dt.datetime(2026, 6, 1, 15, 0, tzinfo=dt.UTC)
+    assert _brain_llm_due(
+        {
+            "source_ref": {
+                "maintainer": {"deterministic_fingerprint": "old"},
+                "llm": {"evaluated_at": now.isoformat()},
+            }
+        },
+        {"fingerprint": "new"},
+        now=now,
+        max_age_minutes=720,
+    )
+
+
+def test_brain_llm_not_due_when_fingerprint_and_llm_are_fresh() -> None:
+    now = dt.datetime(2026, 6, 1, 15, 0, tzinfo=dt.UTC)
+    assert not _brain_llm_due(
+        {
+            "source_ref": {
+                "maintainer": {"deterministic_fingerprint": "same"},
+                "llm": {"evaluated_at": now.isoformat()},
+            }
+        },
+        {"fingerprint": "same"},
+        now=now,
+        max_age_minutes=720,
+    )
+
+
+def test_merge_llm_update_rewrites_parent_claim_and_keeps_coverage_evidence() -> None:
+    now = dt.datetime(2026, 6, 1, 15, 0, tzinfo=dt.UTC)
+    thesis = {
+        "state": "forming",
+        "direction": "mixed",
+        "summary": "Seed summary",
+        "core_claim": "Seed claim",
+        "why_now": None,
+        "evidence": [{"source": "manual", "claim": "keep me"}],
+        "open_questions": ["old question"],
+        "missing_evidence": ["old_gap"],
+        "beneficiaries": ["MU", "NVDA"],
+        "losers": [],
+        "invalidation_conditions": [],
+        "source_ref": {"llm": {"fingerprint": "old"}},
+    }
+    update = {
+        "state": "active",
+        "direction": "bullish",
+        "missing_evidence": [],
+        "evidence": [{
+            "generated_by": "brain_maintainer",
+            "kind": "linked_ticker_coverage",
+            "coverage": {"linked": 2},
+        }],
+        "source_ref": {"maintainer": {"fingerprint": "det", "deterministic_fingerprint": "det"}},
+        "fingerprint": "det",
+        "diff": {"coverage": {"linked": 2}},
+    }
+    merged = merge_llm_update(
+        thesis,
+        update,
+        {
+            "state": "active",
+            "direction": "bullish",
+            "summary": "HBM evidence is improving.",
+            "core_claim": "Memory suppliers benefit if revisions keep rising.",
+            "why_now": "Recent evidence changed.",
+            "evidence": [{
+                "claim": "MU revision up",
+                "source": "evidence_item",
+                "evidence_ids": [7],
+            }],
+            "missing_evidence": [],
+            "open_questions": ["Is pricing still tightening?"],
+            "beneficiaries": ["MU"],
+            "losers": [],
+            "invalidation_conditions": [{
+                "name": "pricing_rollover",
+                "assertion": "HBM pricing falls",
+            }],
+            "material_change_reason": "New revision evidence",
+        },
+        prompt_hash="abc123",
+        now=now,
+    )
+
+    assert merged["summary"] == "HBM evidence is improving."
+    assert merged["core_claim"] == "Memory suppliers benefit if revisions keep rising."
+    assert merged["llm_material"] is True
+    assert merged["source_ref"]["llm"]["prompt_hash"] == "abc123"
+    assert merged["evidence"][0]["claim"] == "keep me"
+    assert merged["evidence"][1]["generated_by"] == "brain_llm"
+    assert merged["evidence"][-1]["generated_by"] == "brain_maintainer"

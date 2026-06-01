@@ -15,12 +15,16 @@ import datetime as dt
 import hashlib
 import json
 import logging
+import os
 import re
 from typing import Any
 
 import asyncpg
 
 from . import config
+from .context_maintainer import _llm_cfg, _provider_name, _repo_root  # noqa: PLC2701
+from .llm import new_provider
+from .prompts import AsyncpgRecorder, invoke, load
 
 log = logging.getLogger("brain_maintainer")
 
@@ -45,6 +49,8 @@ RESEARCH_REQUIREMENT_PARTS = (
     "capacity",
     "transcript",
 )
+ALLOWED_STATES = {"forming", "active", "weakening", "invalidated", "archived"}
+ALLOWED_DIRECTIONS = {"risk_on", "risk_off", "neutral", "bullish", "bearish", "mixed"}
 
 
 def _parse_dt(value: Any) -> dt.datetime | None:
@@ -179,6 +185,17 @@ def _dedupe(values: list[str]) -> list[str]:
     return out
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        log.warning("invalid integer env %s=%r; using %d", name, raw, default)
+        return default
+
+
 def _theme_missing_evidence(thesis: dict[str, Any], metrics: dict[str, int]) -> list[str]:
     linked = int(metrics.get("linked_count") or 0)
     missing: list[str] = []
@@ -251,8 +268,55 @@ def _generated_evidence(existing: Any) -> list[Any]:
     return [
         item
         for item in decoded
-        if not (isinstance(item, dict) and item.get("generated_by") == "brain_maintainer")
+        if not (
+            isinstance(item, dict)
+            and item.get("generated_by") in {"brain_maintainer", "brain_llm"}
+        )
     ]
+
+
+def _coerce_text(value: Any, fallback: str | None = None, *, max_len: int = 1200) -> str | None:
+    if not isinstance(value, str):
+        return fallback
+    stripped = value.strip()
+    if not stripped:
+        return fallback
+    return stripped[:max_len]
+
+
+def _coerce_string_list(value: Any, fallback: list[str], *, max_items: int = 12) -> list[str]:
+    decoded = _json(value, value)
+    if not isinstance(decoded, list):
+        return fallback
+    out: list[str] = []
+    for item in decoded:
+        if isinstance(item, str) and item.strip():
+            out.append(item.strip()[:240])
+        elif isinstance(item, dict):
+            text = (
+                item.get("name")
+                or item.get("claim")
+                or item.get("question")
+                or item.get("reason")
+            )
+            if isinstance(text, str) and text.strip():
+                out.append(text.strip()[:240])
+        if len(out) >= max_items:
+            break
+    return _dedupe(out) or fallback
+
+
+def _coerce_json_list(value: Any, fallback: list[Any], *, max_items: int = 12) -> list[Any]:
+    decoded = _json(value, value)
+    if not isinstance(decoded, list):
+        return fallback
+    out: list[Any] = []
+    for item in decoded[:max_items]:
+        if isinstance(item, dict):
+            out.append(item)
+        elif isinstance(item, str) and item.strip():
+            out.append({"claim": item.strip()[:500]})
+    return out or fallback
 
 
 def build_theme_update(
@@ -298,6 +362,7 @@ def build_theme_update(
         "kind": "theme_coverage",
         "evaluated_at": now.isoformat(),
         "fingerprint": fingerprint,
+        "deterministic_fingerprint": fingerprint,
         "coverage": coverage,
     }
     return {
@@ -384,6 +449,7 @@ def build_macro_update(
         "kind": "macro_coverage",
         "evaluated_at": now.isoformat(),
         "fingerprint": fingerprint,
+        "deterministic_fingerprint": fingerprint,
         "sources": sources,
         "market_state": market_state,
     }
@@ -473,6 +539,307 @@ async def _load_thesis_metrics(pool: asyncpg.Pool, brain_thesis_id: Any) -> dict
     return {key: int(row[key] or 0) for key in row.keys()}
 
 
+async def _load_parent_context(pool: asyncpg.Pool, thesis: dict[str, Any]) -> dict[str, Any]:
+    ticker_rows = await pool.fetch(
+        """SELECT btt.symbol, btt.role, btt.rationale, btt.conviction,
+                  latest.state AS thesis_state,
+                  latest.forecast AS thesis_forecast,
+                  latest.edge_rationale AS thesis_edge,
+                  latest.updated_at AS thesis_updated_at
+             FROM brain_thesis_ticker btt
+        LEFT JOIN LATERAL (
+                  SELECT th.state, th.forecast, th.edge_rationale, th.updated_at
+                    FROM thesis th
+                   WHERE th.symbol = btt.symbol
+                     AND th.state NOT IN ('closed', 'disqualified')
+                ORDER BY th.updated_at DESC, th.created_at DESC
+                   LIMIT 1
+             ) latest ON TRUE
+            WHERE btt.brain_thesis_id = $1
+         ORDER BY COALESCE(btt.conviction, 0) DESC, btt.symbol
+            LIMIT 40""",
+        thesis["id"],
+    )
+    linked_tickers: list[dict[str, Any]] = []
+    symbols: list[str] = []
+    for row in ticker_rows:
+        symbol = row["symbol"]
+        symbols.append(symbol)
+        forecast = _json(row["thesis_forecast"], {})
+        linked_tickers.append({
+            "symbol": symbol,
+            "role": row["role"],
+            "rationale": row["rationale"],
+            "conviction": row["conviction"],
+            "thesis_state": row["thesis_state"],
+            "thesis_direction": forecast.get("direction") if isinstance(forecast, dict) else None,
+            "thesis_edge": row["thesis_edge"],
+            "thesis_updated_at": _iso(row["thesis_updated_at"]),
+        })
+
+    evidence_items: list[dict[str, Any]] = []
+    if symbols:
+        evidence_rows = await pool.fetch(
+            """SELECT id, symbol, kind, observed_at, source, source_id,
+                      summary, strength, polarity, url
+                 FROM evidence_item
+                WHERE symbol = ANY($1::text[])
+             ORDER BY observed_at DESC, id DESC
+                LIMIT 80""",
+            symbols,
+        )
+        for row in evidence_rows:
+            evidence_items.append({
+                "id": row["id"],
+                "symbol": row["symbol"],
+                "kind": row["kind"],
+                "observed_at": _iso(row["observed_at"]),
+                "source": row["source"],
+                "source_id": row["source_id"],
+                "summary": row["summary"],
+                "strength": None if row["strength"] is None else float(row["strength"]),
+                "polarity": None if row["polarity"] is None else float(row["polarity"]),
+                "url": row["url"],
+            })
+
+    return {
+        "linked_tickers": linked_tickers,
+        "evidence_items": evidence_items,
+    }
+
+
+def _brain_llm_enabled(cfg: config.Config) -> bool:
+    raw = os.getenv("BRAIN_THESIS_LLM_ENABLED")
+    if raw is not None:
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    if cfg.llm_provider == "mock":
+        return False
+    return bool(cfg.anthropic_api_key or cfg.openai_api_key)
+
+
+def _brain_llm_due(
+    thesis: dict[str, Any],
+    update: dict[str, Any],
+    *,
+    now: dt.datetime,
+    max_age_minutes: int,
+) -> bool:
+    source_ref = _json(thesis.get("source_ref"), {}) or {}
+    maintainer = source_ref.get("maintainer", {}) if isinstance(source_ref, dict) else {}
+    prior_deterministic = (
+        maintainer.get("deterministic_fingerprint")
+        or maintainer.get("fingerprint")
+    )
+    if prior_deterministic != update["fingerprint"]:
+        return True
+    llm_ref = source_ref.get("llm", {}) if isinstance(source_ref, dict) else {}
+    evaluated_at = _parse_dt(llm_ref.get("evaluated_at")) if isinstance(llm_ref, dict) else None
+    return evaluated_at is None or evaluated_at < now - dt.timedelta(minutes=max_age_minutes)
+
+
+def merge_llm_update(
+    thesis: dict[str, Any],
+    update: dict[str, Any],
+    parsed: dict[str, Any],
+    *,
+    prompt_hash: str,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    now = now or dt.datetime.now(dt.UTC)
+    merged = dict(update)
+    source_ref = dict(_json(update.get("source_ref"), {}) or {})
+    prior_source_ref = _json(thesis.get("source_ref"), {}) or {}
+    prior_llm = prior_source_ref.get("llm", {}) if isinstance(prior_source_ref, dict) else {}
+
+    state = _coerce_text(parsed.get("state"), update["state"], max_len=40)
+    direction = _coerce_text(parsed.get("direction"), update["direction"], max_len=40)
+    merged["state"] = state if state in ALLOWED_STATES else update["state"]
+    merged["direction"] = direction if direction in ALLOWED_DIRECTIONS else update["direction"]
+    merged["summary"] = _coerce_text(parsed.get("summary"), thesis.get("summary"), max_len=900)
+    merged["core_claim"] = _coerce_text(
+        parsed.get("core_claim"),
+        thesis.get("core_claim"),
+        max_len=1200,
+    )
+    merged["why_now"] = _coerce_text(parsed.get("why_now"), thesis.get("why_now"), max_len=900)
+    merged["missing_evidence"] = _coerce_string_list(
+        parsed.get("missing_evidence"),
+        update.get("missing_evidence", []),
+    )
+    merged["open_questions"] = _coerce_string_list(
+        parsed.get("open_questions"),
+        _json(thesis.get("open_questions"), []),
+    )
+    merged["beneficiaries"] = _coerce_string_list(
+        parsed.get("beneficiaries"),
+        symbols_from_json(thesis.get("beneficiaries")),
+    )
+    merged["losers"] = _coerce_string_list(
+        parsed.get("losers"),
+        symbols_from_json(thesis.get("losers")),
+    )
+    merged["invalidation_conditions"] = _coerce_json_list(
+        parsed.get("invalidation_conditions"),
+        _json(thesis.get("invalidation_conditions"), []),
+    )
+
+    llm_evidence = _coerce_json_list(parsed.get("evidence"), [], max_items=12)
+    llm_evidence = [
+        {
+            "generated_by": "brain_llm",
+            "as_of": now.isoformat(),
+            **item,
+        }
+        for item in llm_evidence
+    ]
+    maintainer_evidence = [
+        item
+        for item in update.get("evidence", [])
+        if isinstance(item, dict) and item.get("generated_by") == "brain_maintainer"
+    ]
+    merged["evidence"] = (
+        _generated_evidence(thesis.get("evidence"))
+        + llm_evidence
+        + maintainer_evidence
+    )
+
+    llm_fingerprint_payload = {
+        key: merged.get(key)
+        for key in (
+            "state",
+            "direction",
+            "summary",
+            "core_claim",
+            "why_now",
+            "missing_evidence",
+            "open_questions",
+            "beneficiaries",
+            "losers",
+            "invalidation_conditions",
+            "evidence",
+        )
+    }
+    llm_fingerprint = _stable_fingerprint(llm_fingerprint_payload)
+    source_ref["llm"] = {
+        "kind": "parent_thesis_update",
+        "evaluated_at": now.isoformat(),
+        "prompt_name": "update-brain-thesis",
+        "prompt_hash": prompt_hash,
+        "fingerprint": llm_fingerprint,
+        "material_change_reason": _coerce_text(
+            parsed.get("material_change_reason"),
+            None,
+            max_len=500,
+        ),
+    }
+    merged["source_ref"] = source_ref
+    merged["llm_material"] = prior_llm.get("fingerprint") != llm_fingerprint
+    merged["diff"] = {
+        **update.get("diff", {}),
+        "llm": {
+            "fingerprint": llm_fingerprint,
+            "material": merged["llm_material"],
+            "material_change_reason": source_ref["llm"]["material_change_reason"],
+        },
+    }
+    return merged
+
+
+def _extract_json_dict(content: str) -> dict[str, Any]:
+    from .prompts import _extract_json as extract_json_text  # noqa: PLC0415
+
+    raw = extract_json_text(content)
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"could not parse parent brain JSON: {e.msg} at line {e.lineno} column {e.colno}"
+        ) from e
+    if not isinstance(parsed, dict):
+        raise ValueError("parent brain response must be a JSON object")
+    return parsed
+
+
+async def _invoke_parent_update(
+    *,
+    pool: asyncpg.Pool,
+    provider,
+    prompt,
+    provider_name: str,
+    model: str,
+    thesis: dict[str, Any],
+    deterministic_update: dict[str, Any],
+    parent_context: dict[str, Any],
+    max_retries: int = 2,
+) -> dict[str, Any]:
+    today = dt.date.today().isoformat()
+    payload = {
+        "today": today,
+        "brain_thesis": {
+            "scope": thesis.get("scope"),
+            "key": thesis.get("key"),
+            "name": thesis.get("name"),
+            "state": thesis.get("state"),
+            "direction": thesis.get("direction"),
+            "summary": thesis.get("summary"),
+            "core_claim": thesis.get("core_claim"),
+            "why_now": thesis.get("why_now"),
+            "evidence": _json(thesis.get("evidence"), []),
+            "invalidation_conditions": _json(thesis.get("invalidation_conditions"), []),
+            "beneficiaries": _json(thesis.get("beneficiaries"), []),
+            "losers": _json(thesis.get("losers"), []),
+            "open_questions": _json(thesis.get("open_questions"), []),
+            "missing_evidence": _json(thesis.get("missing_evidence"), []),
+        },
+        "deterministic_update": deterministic_update.get("diff", {}),
+        "source_ref": deterministic_update.get("source_ref", {}),
+        "parent_context": parent_context,
+    }
+    user_msg = json.dumps(payload, default=str, indent=2)
+    current_user = user_msg
+    last_error: Exception | None = None
+    for attempt in range(max_retries + 1):
+        resp = await invoke(
+            provider=provider,
+            recorder=AsyncpgRecorder(pool),
+            prompt=prompt,
+            vars={
+                "today": today,
+                "name": str(thesis.get("name") or ""),
+                "scope": str(thesis.get("scope") or ""),
+            },
+            user_message=current_user,
+            provider_name=provider_name,
+            model=model,
+            max_tokens=3072,
+        )
+        try:
+            return _extract_json_dict(resp.content)
+        except ValueError as e:
+            last_error = e
+            if attempt >= max_retries:
+                raise RuntimeError(
+                    "update-brain-thesis returned invalid JSON after "
+                    f"{max_retries + 1} attempts: {e}"
+                ) from e
+            log.warning(
+                "parent brain JSON parse failed key=%s attempt=%d/%d; retrying: %s",
+                thesis.get("key"),
+                attempt + 1,
+                max_retries + 1,
+                e,
+            )
+            current_user = (
+                f"{user_msg}\n\n"
+                "[Previous update-brain-thesis response was invalid JSON. "
+                "Reply ONLY with one complete valid JSON object matching the prompt contract. "
+                f"JSON parse error: {e}.]\n\n"
+                "[Invalid response excerpt]\n"
+                f"{resp.content[:2500]}"
+            )
+    raise RuntimeError(f"parent brain retry loop exited unexpectedly: {last_error}")
+
+
 async def ensure_brain_ticker_mappings(pool: asyncpg.Pool) -> int:
     """Ensure beneficiary/loser symbols from parent theses are tracked.
 
@@ -540,15 +907,25 @@ async def _persist_update(
                 if isinstance(prior_source_ref, dict)
                 else None
             )
-            material = prior_fingerprint != update["fingerprint"]
+            material = (
+                prior_fingerprint != update["fingerprint"]
+                or bool(update.get("llm_material"))
+            )
             next_version = int(locked["version"] or 1) + 1 if material else locked["version"]
             await conn.execute(
                 """UPDATE brain_thesis
                       SET state = $2,
                           direction = $3,
+                          summary = COALESCE($9, summary),
+                          core_claim = COALESCE($10, core_claim),
+                          why_now = COALESCE($11, why_now),
                           evidence = $4::jsonb,
                           missing_evidence = $5::jsonb,
                           source_ref = $6::jsonb,
+                          open_questions = COALESCE($12::jsonb, open_questions),
+                          invalidation_conditions = COALESCE($13::jsonb, invalidation_conditions),
+                          beneficiaries = COALESCE($14::jsonb, beneficiaries),
+                          losers = COALESCE($15::jsonb, losers),
                           last_evaluated_at = now(),
                           version = $7,
                           updated_at = CASE WHEN $8 THEN now() ELSE updated_at END
@@ -561,6 +938,19 @@ async def _persist_update(
                 json.dumps(update["source_ref"], default=str),
                 next_version,
                 material,
+                update.get("summary"),
+                update.get("core_claim"),
+                update.get("why_now"),
+                json.dumps(update["open_questions"], default=str)
+                if "open_questions" in update
+                else None,
+                json.dumps(update["invalidation_conditions"], default=str)
+                if "invalidation_conditions" in update
+                else None,
+                json.dumps(update["beneficiaries"], default=str)
+                if "beneficiaries" in update
+                else None,
+                json.dumps(update["losers"], default=str) if "losers" in update else None,
             )
             if material:
                 await conn.execute(
@@ -577,7 +967,8 @@ async def _persist_update(
                         },
                         default=str,
                     ),
-                    "Parent thesis evaluated from source freshness and linked ticker coverage.",
+                    "Parent thesis evaluated from source freshness, linked ticker "
+                    "coverage, and parent cognition.",
                 )
             return material
 
@@ -587,9 +978,28 @@ async def refresh(pool: asyncpg.Pool, *, limit: int = 50) -> int:
     if inserted_mappings:
         log.info("brain maintainer linked %d parent expression ticker(s)", inserted_mappings)
 
+    cfg = config.load()
+    now = dt.datetime.now(dt.UTC)
+    llm_enabled = _brain_llm_enabled(cfg)
+    llm_budget = max(0, _env_int("BRAIN_THESIS_LLM_MAX_PER_SWEEP", 2))
+    llm_max_age_minutes = max(30, _env_int("BRAIN_THESIS_LLM_MAX_AGE_MINUTES", 720))
+    llm_provider = None
+    llm_prompt = None
+    llm_provider_name = ""
+    if llm_enabled and llm_budget > 0:
+        registry = load(_repo_root() / "prompts")
+        llm_prompt = registry.get("update-brain-thesis")
+        if llm_prompt is None:
+            log.warning("prompts/update-brain-thesis.md missing; parent LLM pass disabled")
+        else:
+            llm_provider = new_provider(_llm_cfg(cfg))
+            llm_provider_name = _provider_name(cfg)
+
     rows = await pool.fetch(
         """SELECT id, scope, key, name, state, direction, evidence,
-                  missing_evidence, source_ref, beneficiaries, losers
+                  summary, core_claim, why_now,
+                  invalidation_conditions, beneficiaries, losers,
+                  open_questions, missing_evidence, source_ref
              FROM brain_thesis
             WHERE active = true
          ORDER BY last_evaluated_at ASC NULLS FIRST, updated_at ASC
@@ -605,10 +1015,43 @@ async def refresh(pool: asyncpg.Pool, *, limit: int = 50) -> int:
     for row in rows:
         thesis = dict(row)
         if thesis["scope"] == "macro":
-            update = build_macro_update(thesis, source_health, market_state)
+            update = build_macro_update(thesis, source_health, market_state, now=now)
         else:
             metrics = await _load_thesis_metrics(pool, thesis["id"])
-            update = build_theme_update(thesis, metrics)
+            update = build_theme_update(thesis, metrics, now=now)
+        if (
+            llm_provider is not None
+            and llm_prompt is not None
+            and llm_budget > 0
+            and _brain_llm_due(
+                thesis,
+                update,
+                now=now,
+                max_age_minutes=llm_max_age_minutes,
+            )
+        ):
+            try:
+                parent_context = await _load_parent_context(pool, thesis)
+                parsed = await _invoke_parent_update(
+                    pool=pool,
+                    provider=llm_provider,
+                    prompt=llm_prompt,
+                    provider_name=llm_provider_name,
+                    model=cfg.model_routine,
+                    thesis=thesis,
+                    deterministic_update=update,
+                    parent_context=parent_context,
+                )
+                update = merge_llm_update(
+                    thesis,
+                    update,
+                    parsed,
+                    prompt_hash=llm_prompt.hash,
+                    now=now,
+                )
+                llm_budget -= 1
+            except Exception:  # noqa: BLE001
+                log.exception("parent brain LLM update failed key=%s", thesis["key"])
         material = await _persist_update(pool, thesis, update)
         updated += 1
         log.info(
@@ -652,6 +1095,7 @@ __all__ = [
     "build_macro_update",
     "build_theme_update",
     "ensure_brain_ticker_mappings",
+    "merge_llm_update",
     "normalize_symbol",
     "refresh",
     "symbols_from_json",

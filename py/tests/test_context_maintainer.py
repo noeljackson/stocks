@@ -5,6 +5,7 @@ from stocks.evidence import (
     assess_evidence_requirements,
     build_satisfied_source_tasks,
     build_source_tasks,
+    canonical_requirement_key,
     source_task_due_at,
 )
 
@@ -67,6 +68,22 @@ def test_assess_evidence_requirements_reports_missing_inputs() -> None:
 
     keys = {r["requirement_key"] for r in missing}
     assert keys == {"company_facts", "recent_news"}
+
+
+def test_llm_missing_evidence_maps_research_like_items_to_product_research() -> None:
+    assert canonical_requirement_key({
+        "requirement_key": "customer_adoption_research",
+        "source_type": "web_research",
+        "reason": "Need public MI325X customer adoption evidence.",
+    }) == "product_research"
+
+
+def test_llm_missing_evidence_maps_fundamental_items_to_company_facts() -> None:
+    assert canonical_requirement_key({
+        "requirement_key": "q2_10q_snapshot",
+        "source_type": "filings",
+        "reason": "Need latest 10-Q margin and cash-flow facts.",
+    }) == "company_facts"
 
 
 def test_assess_evidence_requirements_attaches_source_health_state() -> None:

@@ -25,6 +25,28 @@ SOURCE_HEALTH_BY_REQUIREMENT = {
     "product_research": ["web_research"],
 }
 
+SOURCE_TYPE_REQUIREMENT_ALIASES = {
+    "price": "price_history",
+    "technical": "price_history",
+    "market": "price_history",
+    "fundamentals": "company_facts",
+    "filings": "company_facts",
+    "xbrl": "company_facts",
+    "facts": "company_facts",
+    "news": "recent_news",
+    "narrative": "recent_news",
+    "estimates": "analyst_estimates",
+    "estimate_revisions": "analyst_estimates",
+    "revisions": "analyst_estimates",
+    "analyst_opinion": "analyst_opinion",
+    "price_targets": "analyst_opinion",
+    "ratings": "analyst_opinion",
+    "web_research": "product_research",
+    "product_research": "product_research",
+    "theme_research": "product_research",
+    "customer_research": "product_research",
+}
+
 EVIDENCE_REQUIREMENTS = {
     "price_history": {
         "source_type": "price",
@@ -104,6 +126,53 @@ def _parse_dt(value) -> dt.datetime | None:
             return dt.datetime.fromisoformat(normalized)
         except ValueError:
             return None
+    return None
+
+
+def canonical_requirement_key(item: dict) -> str | None:
+    """Map LLM-declared missing evidence onto the acquisition FSM.
+
+    Prompts should prefer canonical requirement keys, but LLMs may emit
+    product/theme-specific names like `customer_adoption_research`. Those still
+    need to create retrieval pressure instead of becoming inert prose.
+    """
+    raw_key = str(item.get("requirement_key") or "").strip().lower()
+    if raw_key in EVIDENCE_REQUIREMENTS:
+        return raw_key
+
+    source_type = str(item.get("source_type") or "").strip().lower()
+    if source_type in SOURCE_TYPE_REQUIREMENT_ALIASES:
+        return SOURCE_TYPE_REQUIREMENT_ALIASES[source_type]
+
+    reason = str(item.get("reason") or "").lower()
+    haystack = f"{raw_key} {source_type} {reason}"
+    if any(token in haystack for token in ("price", "ohlcv", "sma", "rsi", "technical")):
+        return "price_history"
+    if any(token in haystack for token in ("filing", "xbrl", "fundamental", "10-q", "10-k")):
+        return "company_facts"
+    if any(token in haystack for token in ("news", "article", "headline", "narrative")):
+        return "recent_news"
+    if any(token in haystack for token in ("estimate", "revision", "consensus")):
+        return "analyst_estimates"
+    if any(token in haystack for token in ("price target", "rating", "analyst opinion")):
+        return "analyst_opinion"
+    if any(
+        token in haystack
+        for token in (
+            "research",
+            "product",
+            "customer",
+            "adoption",
+            "design win",
+            "benchmark",
+            "theme",
+            "roadmap",
+            "commodity",
+            "supply",
+            "demand",
+        )
+    ):
+        return "product_research"
     return None
 
 
@@ -590,53 +659,7 @@ async def sync_evidence_requirements(
     for key, spec in EVIDENCE_REQUIREMENTS.items():
         if key in missing_by_key:
             req = missing_by_key[key]
-            source_tasks = build_source_tasks(symbol, req, source_health)
-            req["source_ref"]["source_tasks"] = [_task_json(task) for task in source_tasks]
-            await pool.execute(
-                """INSERT INTO evidence_requirement
-                     (symbol, requirement_key, source_type, reason, priority,
-                      blocking_state, next_retry_at, last_error, source_ref)
-                   VALUES (
-                     $1, $2, $3, $4, $5, $6,
-                     COALESCE($7::timestamptz, now() + interval '30 minutes'),
-                     $8,
-                     $9::jsonb
-                   )
-                   ON CONFLICT (symbol, requirement_key) DO UPDATE SET
-                     source_type = EXCLUDED.source_type,
-                     reason = EXCLUDED.reason,
-                     priority = EXCLUDED.priority,
-                     blocking_state = EXCLUDED.blocking_state,
-                     attempts = CASE
-                         WHEN evidence_requirement.next_retry_at IS NOT NULL
-                          AND evidence_requirement.next_retry_at <= now()
-                         THEN evidence_requirement.attempts + 1
-                         ELSE evidence_requirement.attempts
-                     END,
-                     next_retry_at = CASE
-                         WHEN EXCLUDED.blocking_state = 'blocked'
-                          AND EXCLUDED.next_retry_at IS NOT NULL
-                         THEN EXCLUDED.next_retry_at
-                         WHEN evidence_requirement.next_retry_at IS NULL
-                           OR evidence_requirement.next_retry_at <= now()
-                         THEN EXCLUDED.next_retry_at
-                         ELSE evidence_requirement.next_retry_at
-                     END,
-                     source_ref = EXCLUDED.source_ref,
-                     last_error = EXCLUDED.last_error,
-                     satisfied_at = NULL,
-                     updated_at = now()""",
-                symbol,
-                key,
-                req["source_type"],
-                req["reason"],
-                req["priority"],
-                req["blocking_state"],
-                _parse_dt(req["retry_after_at"]),
-                req["last_error"],
-                json.dumps(req["source_ref"]),
-            )
-            await sync_source_tasks(pool, source_tasks)
+            await upsert_open_evidence_requirement(pool, symbol, key, req, source_health)
         else:
             source_tasks = build_satisfied_source_tasks(
                 symbol, key, spec, evidence_counts, source_health,
@@ -665,6 +688,101 @@ async def sync_evidence_requirements(
             )
             await sync_source_tasks(pool, source_tasks)
     return missing
+
+
+async def upsert_open_evidence_requirement(
+    pool: asyncpg.Pool,
+    symbol: str,
+    key: str,
+    req: dict,
+    source_health: dict[str, dict] | None = None,
+) -> None:
+    source_tasks = build_source_tasks(symbol, req, source_health)
+    req["source_ref"]["source_tasks"] = [_task_json(task) for task in source_tasks]
+    await pool.execute(
+        """INSERT INTO evidence_requirement
+             (symbol, requirement_key, source_type, reason, priority,
+              blocking_state, next_retry_at, last_error, source_ref)
+           VALUES (
+             $1, $2, $3, $4, $5, $6,
+             COALESCE($7::timestamptz, now() + interval '30 minutes'),
+             $8,
+             $9::jsonb
+           )
+           ON CONFLICT (symbol, requirement_key) DO UPDATE SET
+             source_type = EXCLUDED.source_type,
+             reason = EXCLUDED.reason,
+             priority = EXCLUDED.priority,
+             blocking_state = EXCLUDED.blocking_state,
+             attempts = CASE
+                 WHEN evidence_requirement.next_retry_at IS NOT NULL
+                  AND evidence_requirement.next_retry_at <= now()
+                 THEN evidence_requirement.attempts + 1
+                 ELSE evidence_requirement.attempts
+             END,
+             next_retry_at = CASE
+                 WHEN EXCLUDED.blocking_state = 'blocked'
+                  AND EXCLUDED.next_retry_at IS NOT NULL
+                 THEN EXCLUDED.next_retry_at
+                 WHEN evidence_requirement.next_retry_at IS NULL
+                   OR evidence_requirement.next_retry_at <= now()
+                 THEN EXCLUDED.next_retry_at
+                 ELSE evidence_requirement.next_retry_at
+             END,
+             source_ref = EXCLUDED.source_ref,
+             last_error = EXCLUDED.last_error,
+             satisfied_at = NULL,
+             updated_at = now()""",
+        symbol,
+        key,
+        req["source_type"],
+        req["reason"],
+        req["priority"],
+        req["blocking_state"],
+        _parse_dt(req["retry_after_at"]),
+        req["last_error"],
+        json.dumps(req["source_ref"]),
+    )
+    await sync_source_tasks(pool, source_tasks)
+
+
+async def sync_llm_missing_evidence(
+    pool: asyncpg.Pool,
+    symbol: str,
+    missing_evidence: object,
+) -> list[dict]:
+    """Convert thesis-engine missing_evidence into active acquisition work."""
+    if not isinstance(missing_evidence, list):
+        return []
+
+    evidence_counts = await load_evidence_counts(pool, symbol)
+    source_health = await load_source_health(pool)
+    missing = assess_evidence_requirements(evidence_counts, source_health)
+    missing_by_key = {r["requirement_key"]: r for r in missing}
+    synced: list[dict] = []
+    seen: set[str] = set()
+    for item in missing_evidence:
+        if not isinstance(item, dict):
+            continue
+        key = canonical_requirement_key(item)
+        if key is None or key in seen:
+            continue
+        seen.add(key)
+        req = missing_by_key.get(key)
+        if req is None:
+            continue
+        req = {
+            **req,
+            "reason": item.get("reason") or req["reason"],
+            "source_ref": {
+                **req["source_ref"],
+                "triggered_by": "thesis_engine.missing_evidence",
+                "llm_missing_evidence": item,
+            },
+        }
+        await upsert_open_evidence_requirement(pool, symbol, key, req, source_health)
+        synced.append(req)
+    return synced
 
 
 async def sync_source_tasks(pool: asyncpg.Pool, tasks: list[dict]) -> None:

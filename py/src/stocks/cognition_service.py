@@ -47,7 +47,11 @@ from .brain_maintainer import refresh as refresh_brain_theses
 from .challenge import challenge as challenge_thesis
 from .context_maintainer import BlockingEvidenceMissing
 from .context_maintainer import refresh as refresh_context
-from .evidence import load_open_evidence_requirements, refresh_open_evidence_requirements
+from .evidence import (
+    load_open_evidence_requirements,
+    refresh_open_evidence_requirements,
+    sync_llm_missing_evidence,
+)
 from .sharpen import sharpen as sharpen_thesis
 from .source_tasks import loop as source_task_loop
 from .thesis_engine import draft as draft_thesis
@@ -122,13 +126,17 @@ async def _record_decline(
     candidate_id: int | None,
     reason: str | None,
     source_ref: dict,
+    extra_missing_evidence: list[dict] | None = None,
 ) -> None:
     evidence = await load_open_evidence_requirements(pool, symbol)
     full_ref = dict(source_ref)
     full_ref["missing_evidence"] = evidence
-    fsm_state = "waiting_on_data" if evidence else "ready_for_review"
-    owner = "source" if evidence else "operator"
-    state_reason = "missing_evidence" if evidence else "thesis_declined"
+    if extra_missing_evidence:
+        full_ref["llm_missing_evidence"] = extra_missing_evidence
+    fsm_state, owner, state_reason = _decline_attention_assignment(
+        evidence,
+        extra_missing_evidence,
+    )
     await pool.execute(
         """WITH updated AS (
                UPDATE attention_item
@@ -158,6 +166,16 @@ async def _record_decline(
         owner,
         state_reason,
     )
+
+
+def _decline_attention_assignment(
+    evidence: list[dict],
+    extra_missing_evidence: list[dict] | None = None,
+) -> tuple[str, str, str]:
+    has_missing_evidence = bool(evidence or extra_missing_evidence)
+    if has_missing_evidence:
+        return "waiting_on_data", "source", "missing_evidence"
+    return "ready_for_review", "operator", "thesis_declined"
 
 
 async def _run_pipeline(
@@ -209,14 +227,20 @@ async def _run_pipeline(
         else:
             log.info("cognition: %s thesis declined (no edge)", symbol)
             decline_ref = dict(source_ref or {"reason": "no_edge"})
+            llm_missing_evidence = []
             if result and result.get("missing_evidence"):
-                decline_ref["llm_missing_evidence"] = result["missing_evidence"]
+                llm_missing_evidence = result["missing_evidence"]
+                synced = await sync_llm_missing_evidence(pool, symbol, llm_missing_evidence)
+                decline_ref["synced_missing_evidence"] = [
+                    r["requirement_key"] for r in synced
+                ]
             await _record_decline(
                 pool,
                 symbol,
                 candidate_id,
                 (result or {}).get("no_edge_reason"),
                 decline_ref,
+                llm_missing_evidence,
             )
     except Exception:  # noqa: BLE001
         log.exception("cognition: thesis_engine failed for %s", symbol)

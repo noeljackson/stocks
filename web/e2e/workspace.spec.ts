@@ -6,6 +6,17 @@ type Calls = {
   addedSymbols: string[];
 };
 
+type MockWatchlistMember = {
+  watchlist_id: string;
+  symbol: string;
+  added_at: string;
+  added_by: string;
+  latest_thesis_id?: string | null;
+  thesis_state?: string | null;
+  thesis_direction?: string | null;
+  open_theses?: number;
+};
+
 function isoDate(offset: number): string {
   const d = new Date(Date.UTC(2025, 0, 1 + offset));
   return d.toISOString().slice(0, 10);
@@ -45,7 +56,16 @@ async function json(route: Route, body: unknown, status = 200) {
 async function mockApi(page: Page): Promise<Calls> {
   const calls: Calls = { candleUrls: [], confirmBody: null, addedSymbols: [] };
   let attentionOpen = true;
-  const watchlistMembers = [{ watchlist_id: "wl-core", symbol: "OKTA", added_at: "2026-01-01T00:00:00Z", added_by: "seed" }];
+  const watchlistMembers: MockWatchlistMember[] = [{
+    watchlist_id: "wl-core",
+    symbol: "OKTA",
+    added_at: "2026-01-01T00:00:00Z",
+    added_by: "seed",
+    latest_thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+    thesis_state: "forming",
+    thesis_direction: "up",
+    open_theses: 1,
+  }];
 
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -66,9 +86,9 @@ async function mockApi(page: Page): Promise<Calls> {
     }
     if (path === "/api/tickers") {
       await json(route, [
-        { symbol: "MSFT", cluster_id: "ai", cluster_name: "AI infrastructure", tier: 1, options_eligible: true, domain_fit: 91, added_at: "2026-01-01T00:00:00Z", open_theses: 0 },
-        { symbol: "OKTA", cluster_id: "identity", cluster_name: "Identity", tier: 2, options_eligible: true, domain_fit: 77, added_at: "2026-01-01T00:00:00Z", open_theses: 1 },
-        { symbol: "NVDA", cluster_id: "ai", cluster_name: "AI infrastructure", tier: 1, options_eligible: true, domain_fit: 96, added_at: "2026-01-01T00:00:00Z", open_theses: 0 },
+        { symbol: "MSFT", cluster_id: "ai", cluster_name: "AI infrastructure", tier: 1, options_eligible: true, domain_fit: 91, added_at: "2026-01-01T00:00:00Z", open_theses: 0, latest_thesis_id: null, thesis_state: null, thesis_direction: null },
+        { symbol: "OKTA", cluster_id: "identity", cluster_name: "Identity", tier: 2, options_eligible: true, domain_fit: 77, added_at: "2026-01-01T00:00:00Z", open_theses: 1, latest_thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59", thesis_state: "forming", thesis_direction: "up" },
+        { symbol: "NVDA", cluster_id: "ai", cluster_name: "AI infrastructure", tier: 1, options_eligible: true, domain_fit: 96, added_at: "2026-01-01T00:00:00Z", open_theses: 0, latest_thesis_id: null, thesis_state: null, thesis_direction: null },
       ]);
       return;
     }
@@ -87,7 +107,16 @@ async function mockApi(page: Page): Promise<Calls> {
     if (path === "/api/watchlists/wl-core/members" && request.method() === "POST") {
       const body = await request.postDataJSON();
       calls.addedSymbols.push(body.symbol);
-      watchlistMembers.push({ watchlist_id: "wl-core", symbol: body.symbol, added_at: "2026-06-01T00:00:00Z", added_by: body.added_by ?? "user" });
+      watchlistMembers.push({
+        watchlist_id: "wl-core",
+        symbol: body.symbol,
+        added_at: "2026-06-01T00:00:00Z",
+        added_by: body.added_by ?? "user",
+        latest_thesis_id: null,
+        thesis_state: null,
+        thesis_direction: null,
+        open_theses: 0,
+      });
       await route.fulfill({ status: 204 });
       return;
     }
@@ -171,7 +200,22 @@ async function mockApi(page: Page): Promise<Calls> {
         immutable_original: {},
         created_at: "2026-06-01T00:00:00Z",
         updated_at: "2026-06-01T00:00:00Z",
-        history: [],
+        history: [
+          {
+            version: 1,
+            diff: {},
+            rationale: "smoketest duplicate",
+            weakens_invalidation: false,
+            at: "2026-06-01T00:00:00Z",
+          },
+          {
+            version: 1,
+            diff: {},
+            rationale: "smoketest duplicate",
+            weakens_invalidation: false,
+            at: "2026-06-01T00:00:00Z",
+          },
+        ],
         substance: null,
       }] : []);
       return;
@@ -288,4 +332,28 @@ test("watchlist add form posts ticker and refreshes members", async ({ page }) =
 
   await expect.poll(() => calls.addedSymbols).toContainEqual("NVDA");
   await expect(page.locator(".wl-members").filter({ hasText: "NVDA" })).toBeVisible();
+});
+
+test("watchlist rows show thesis state and direction", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+
+  await page.locator(".wl-row").filter({ hasText: "Core" }).click();
+  const row = page.locator(".wl-mem").filter({ hasText: "OKTA" });
+
+  await expect(row).toContainText("forming");
+  await expect(row).toContainText("bull");
+});
+
+test("theses tab renders current thesis despite duplicate history rows", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+
+  await page.locator(".symbol-box input").fill("OKTA");
+  await page.locator(".symbol-box input").press("Enter");
+  await page.getByRole("button", { name: "theses" }).click();
+
+  await expect(page.getByText("Identity platform consolidation can improve growth durability.")).toBeVisible();
+  await expect(page.getByText("Version history")).toBeVisible();
+  await expect(page.getByText("smoketest duplicate")).toHaveCount(2);
 });

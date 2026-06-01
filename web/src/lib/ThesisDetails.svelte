@@ -175,7 +175,7 @@
   {#if thesis.history.length > 0}
     <h4>Version history</h4>
     <ul class="hist">
-      {#each thesis.history as h (`${h.version}-${h.at}`)}
+      {#each thesis.history as h, i (`${h.version}-${h.at}-${i}`)}
         <li>
           <span class="meta">v{h.version}</span>
           {#if h.weakens_invalidation}

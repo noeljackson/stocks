@@ -30,6 +30,9 @@ export interface Ticker {
   domain_fit?: number | null;
   added_at: string;
   open_theses: number;
+  latest_thesis_id?: string | null;
+  thesis_state?: string | null;
+  thesis_direction?: string | null;
 }
 
 export async function fetchAlerts(opts?: { unacked?: boolean }): Promise<Alert[]> {
@@ -213,6 +216,10 @@ export interface WatchlistMember {
   symbol: string;
   added_at: string;
   added_by?: string | null;
+  latest_thesis_id?: string | null;
+  thesis_state?: string | null;
+  thesis_direction?: string | null;
+  open_theses?: number;
 }
 
 export async function fetchWatchlists(): Promise<Watchlist[]> {

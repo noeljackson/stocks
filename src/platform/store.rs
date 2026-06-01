@@ -788,11 +788,25 @@ impl Store {
         payload: &[u8],
     ) -> Result<i64> {
         let payload_str = std::str::from_utf8(payload).context("payload utf-8")?;
+        let payload_json: serde_json::Value = serde_json::from_str(payload_str).unwrap_or_default();
+        let inferred_symbol = symbol.map(str::to_string).or_else(|| {
+            payload_json
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        });
+        let thesis_id = payload_json
+            .get("thesis_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| uuid::Uuid::parse_str(s).ok());
         let row = sqlx::query(
-            "INSERT INTO alert (kind, symbol, payload) VALUES ($1, $2, $3::jsonb) RETURNING id",
+            r#"INSERT INTO alert (kind, symbol, thesis_id, payload)
+               VALUES ($1, $2, $3, $4::jsonb)
+            RETURNING id"#,
         )
         .bind(kind.as_str())
-        .bind(symbol)
+        .bind(inferred_symbol)
+        .bind(thesis_id)
         .bind(payload_str)
         .fetch_one(&self.pool)
         .await
@@ -883,11 +897,22 @@ impl Store {
                       t.options_eligible,
                       t.domain_fit::float8              AS domain_fit,
                       t.added_at,
+                      latest.thesis_id                  AS latest_thesis_id,
+                      latest.state                      AS thesis_state,
+                      latest.direction                   AS thesis_direction,
                       (SELECT count(*) FROM thesis th
                         WHERE th.symbol = t.symbol
                           AND th.state NOT IN ('closed','disqualified')) AS open_theses
                  FROM ticker t
             LEFT JOIN cluster c ON c.id = t.cluster_id
+            LEFT JOIN LATERAL (
+                SELECT th.thesis_id, th.state, th.forecast->>'direction' AS direction
+                  FROM thesis th
+                 WHERE th.symbol = t.symbol
+                   AND th.state NOT IN ('closed','disqualified')
+              ORDER BY th.updated_at DESC
+                 LIMIT 1
+            ) latest ON TRUE
                 WHERE t.status = 'active'
              ORDER BY t.tier ASC, t.symbol ASC"#,
         )
@@ -905,6 +930,9 @@ impl Store {
                     domain_fit: row.try_get::<Option<f64>, _>("domain_fit").ok().flatten(),
                     added_at: row.try_get("added_at")?,
                     open_theses: row.try_get::<i64, _>("open_theses").unwrap_or(0),
+                    latest_thesis_id: row.try_get("latest_thesis_id").ok(),
+                    thesis_state: row.try_get("thesis_state").ok(),
+                    thesis_direction: row.try_get("thesis_direction").ok(),
                 })
             })
             .collect()
@@ -1341,10 +1369,27 @@ impl Store {
     /// Members of one watchlist (UI loads on click).
     pub async fn list_watchlist_members(&self, id: uuid::Uuid) -> Result<Vec<WatchlistMember>> {
         let rows = sqlx::query(
-            r#"SELECT watchlist_id, symbol, added_at, added_by
-                 FROM watchlist_member
-                WHERE watchlist_id = $1
-             ORDER BY added_at DESC"#,
+            r#"SELECT wm.watchlist_id,
+                      wm.symbol,
+                      wm.added_at,
+                      wm.added_by,
+                      latest.thesis_id AS latest_thesis_id,
+                      latest.state AS thesis_state,
+                      latest.direction AS thesis_direction,
+                      (SELECT count(*) FROM thesis th
+                        WHERE th.symbol = wm.symbol
+                          AND th.state NOT IN ('closed','disqualified')) AS open_theses
+                 FROM watchlist_member wm
+            LEFT JOIN LATERAL (
+                SELECT th.thesis_id, th.state, th.forecast->>'direction' AS direction
+                  FROM thesis th
+                 WHERE th.symbol = wm.symbol
+                   AND th.state NOT IN ('closed','disqualified')
+              ORDER BY th.updated_at DESC
+                 LIMIT 1
+            ) latest ON TRUE
+                WHERE wm.watchlist_id = $1
+             ORDER BY wm.added_at DESC"#,
         )
         .bind(id)
         .fetch_all(&self.pool)
@@ -1357,6 +1402,10 @@ impl Store {
                     symbol: r.try_get("symbol")?,
                     added_at: r.try_get("added_at")?,
                     added_by: r.try_get("added_by").ok(),
+                    latest_thesis_id: r.try_get("latest_thesis_id").ok(),
+                    thesis_state: r.try_get("thesis_state").ok(),
+                    thesis_direction: r.try_get("thesis_direction").ok(),
+                    open_theses: r.try_get::<i64, _>("open_theses").unwrap_or(0),
                 })
             })
             .collect()

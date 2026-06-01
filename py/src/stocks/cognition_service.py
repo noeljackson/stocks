@@ -21,6 +21,7 @@ Reads:
     COGNITION_OPEN_THESIS_MAX_AGE_MINUTES — default 30
     COGNITION_DECLINE_RETRY_HOURS — default 6
     COGNITION_MAX_SYMBOLS_PER_SWEEP — default 20
+    COGNITION_EVIDENCE_SYNC_LIMIT — default 200
     COGNITION_ACK_PROGRESS_SECONDS — default 10
 """
 
@@ -41,7 +42,7 @@ from . import config
 from .challenge import challenge as challenge_thesis
 from .context_maintainer import BlockingEvidenceMissing
 from .context_maintainer import refresh as refresh_context
-from .evidence import load_open_evidence_requirements
+from .evidence import load_open_evidence_requirements, refresh_open_evidence_requirements
 from .sharpen import sharpen as sharpen_thesis
 from .thesis_engine import draft as draft_thesis
 
@@ -391,6 +392,13 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
     open_thesis_max_age_minutes = _env_int("COGNITION_OPEN_THESIS_MAX_AGE_MINUTES", 30)
     decline_retry_hours = _env_int("COGNITION_DECLINE_RETRY_HOURS", 6)
     limit = max(1, _env_int("COGNITION_MAX_SYMBOLS_PER_SWEEP", 20))
+    evidence_sync_limit = max(1, _env_int("COGNITION_EVIDENCE_SYNC_LIMIT", 200))
+    evidence_synced = await refresh_open_evidence_requirements(
+        pool,
+        limit=evidence_sync_limit,
+    )
+    if evidence_synced:
+        log.info("cognition sweep: refreshed evidence state for %d symbol(s)", evidence_synced)
     targets = await _sweep_targets(
         pool,
         context_max_age_hours=context_max_age_hours,

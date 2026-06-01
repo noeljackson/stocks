@@ -212,12 +212,7 @@ async def sync_evidence_requirements(
                      source_type = EXCLUDED.source_type,
                      reason = EXCLUDED.reason,
                      priority = EXCLUDED.priority,
-                     blocking_state = CASE
-                         WHEN evidence_requirement.blocking_state = 'fetching'
-                          AND EXCLUDED.blocking_state = 'missing'
-                         THEN 'fetching'
-                         ELSE EXCLUDED.blocking_state
-                     END,
+                     blocking_state = EXCLUDED.blocking_state,
                      attempts = CASE
                          WHEN evidence_requirement.next_retry_at IS NOT NULL
                           AND evidence_requirement.next_retry_at <= now()
@@ -225,6 +220,9 @@ async def sync_evidence_requirements(
                          ELSE evidence_requirement.attempts
                      END,
                      next_retry_at = CASE
+                         WHEN EXCLUDED.blocking_state = 'blocked'
+                          AND EXCLUDED.next_retry_at IS NOT NULL
+                         THEN EXCLUDED.next_retry_at
                          WHEN evidence_requirement.next_retry_at IS NULL
                            OR evidence_requirement.next_retry_at <= now()
                          THEN EXCLUDED.next_retry_at
@@ -265,6 +263,31 @@ async def sync_evidence_requirements(
                 now_ref,
             )
     return missing
+
+
+async def refresh_open_evidence_requirements(
+    pool: asyncpg.Pool,
+    *,
+    limit: int = 200,
+) -> int:
+    """Refresh evidence rows from current counts/source_health without invoking LLMs."""
+    rows = await pool.fetch(
+        """SELECT DISTINCT symbol
+             FROM evidence_requirement
+            WHERE blocking_state <> 'satisfied'
+         ORDER BY symbol
+            LIMIT $1""",
+        limit,
+    )
+    if not rows:
+        return 0
+
+    source_health = await load_source_health(pool)
+    for row in rows:
+        symbol = row["symbol"]
+        evidence_counts = await load_evidence_counts(pool, symbol)
+        await sync_evidence_requirements(pool, symbol, evidence_counts, source_health)
+    return len(rows)
 
 
 async def load_open_evidence_requirements(pool: asyncpg.Pool, symbol: str) -> list[dict]:

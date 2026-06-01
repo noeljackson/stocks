@@ -17,15 +17,30 @@ use super::source_health;
 pub async fn run_once(pool: &PgPool, adapter: &CboeAdapter) -> Result<usize> {
     source_health::mark_started(pool, "cboe", 0).await?;
     let mut inserted = 0;
+    let mut rows_seen = 0;
+    let mut failures = 0;
     match adapter.fetch_pcr().await {
-        Ok(rows) => inserted += upsert_many(pool, &rows).await?,
-        Err(e) => warn!(error = %e, "cboe pcr fetch failed"),
+        Ok(rows) => {
+            rows_seen += rows.len();
+            inserted += upsert_many(pool, &rows).await?;
+        }
+        Err(e) => {
+            failures += 1;
+            warn!(error = %e, "cboe pcr fetch failed");
+        }
     }
     match adapter.fetch_vix().await {
-        Ok(rows) => inserted += upsert_many(pool, &rows).await?,
-        Err(e) => warn!(error = %e, "cboe vix fetch failed"),
+        Ok(rows) => {
+            rows_seen += rows.len();
+            inserted += upsert_many(pool, &rows).await?;
+        }
+        Err(e) => {
+            failures += 1;
+            warn!(error = %e, "cboe vix fetch failed");
+        }
     }
-    source_health::record_success(pool, "cboe", inserted as i64, inserted as i64, 0, 0).await?;
+    source_health::record_success(pool, "cboe", rows_seen as i64, inserted as i64, 2, failures)
+        .await?;
     Ok(inserted)
 }
 

@@ -152,6 +152,13 @@
     return new Date(t).toLocaleDateString();
   }
 
+  function healthLabel(status: string, failureKind?: string | null): string {
+    if (failureKind) return failureKind;
+    if (status === "no_new_rows") return "checked, no new rows";
+    if (status === "ok") return "new data";
+    return status;
+  }
+
   // Group attention items by (kind, symbol). For candidate_review this
   // collapses N candidates on the same ticker into one card; for other
   // kinds it's typically 1 item per group.
@@ -986,9 +993,9 @@
             {@const priceFresh = sysStatus.price_freshness as { expected_latest_session?: string|null; actual_latest_session?: string|null; symbols_total?: number; symbols_fresh?: number; status?: string }}
             <div class="diag-grid">
               <section class="diag">
-                <h5>Ingest <span class="muted">— last 24h</span></h5>
+                <h5>Stored events <span class="muted">— new rows / 24h</span></h5>
                 <table class="diag-tbl">
-                  <thead><tr><th>source</th><th>last</th><th>rows</th><th>symbols</th></tr></thead>
+                  <thead><tr><th>table/feed</th><th>last new row</th><th>new rows</th><th>symbols</th></tr></thead>
                   <tbody>
                     {#each Object.entries(ing) as [src, v] (src)}
                       <tr>
@@ -1005,14 +1012,15 @@
               <section class="diag wide">
                 <h5>Source health</h5>
                 <table class="diag-tbl">
-                  <thead><tr><th>source</th><th>status</th><th>last ok</th><th>rows</th><th>symbols</th><th>retry</th></tr></thead>
+                  <thead><tr><th>source</th><th>status</th><th>last checked</th><th>seen</th><th>new</th><th>symbols</th><th>retry</th></tr></thead>
                   <tbody>
                     {#each health as h (h.source)}
                       <tr title={h.last_error ?? ""}>
                         <td><strong>{h.source}</strong></td>
-                        <td><span class={`badge tiny health-${h.last_status}`}>{h.last_failure_kind ?? h.last_status}</span></td>
+                        <td><span class={`badge tiny health-${h.last_status}`}>{healthLabel(h.last_status, h.last_failure_kind)}</span></td>
                         <td class="muted">{h.last_success_at ? relativeTime(h.last_success_at) : "—"}</td>
-                        <td>{h.rows_inserted}/{h.rows_seen}</td>
+                        <td>{h.last_status === "running" && !h.last_success_at ? "checking" : h.rows_seen}</td>
+                        <td>{h.last_status === "running" && !h.last_success_at ? "—" : h.rows_inserted}</td>
                         <td>{h.symbols_attempted - h.symbols_failed}/{h.symbols_attempted}</td>
                         <td class="muted">{h.retry_after_at ? relativeTime(h.retry_after_at) : "—"}</td>
                       </tr>

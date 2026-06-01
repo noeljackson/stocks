@@ -208,6 +208,11 @@ async def _sweep_targets(
                       AND (
                            ld.at IS NULL
                         OR ld.at < now() - ($2::text || ' hours')::interval
+                        OR (
+                             lc.created_at IS NOT NULL
+                         AND ld.at IS NOT NULL
+                         AND lc.created_at > ld.at
+                        )
                       )
                     )
               )

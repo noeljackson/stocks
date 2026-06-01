@@ -630,10 +630,25 @@ struct AttentionQuery {
 async fn list_discovery_pool(State(gw): State<Arc<Gateway>>) -> impl IntoResponse {
     use sqlx::Row;
     let rows = sqlx::query(
-        r#"SELECT symbol, company_name, sector, industry, market_cap, first_seen_at
-             FROM discovery_pool
-            WHERE dropped_at IS NULL
-         ORDER BY market_cap DESC NULLS LAST, symbol"#,
+        r#"SELECT dp.symbol, dp.company_name, dp.sector, dp.industry,
+                  dp.market_cap, dp.first_seen_at,
+                  latest.thesis_id AS latest_thesis_id,
+                  latest.state AS thesis_state,
+                  latest.direction AS thesis_direction,
+                  (SELECT count(*) FROM thesis th
+                    WHERE th.symbol = dp.symbol
+                      AND th.state NOT IN ('closed','disqualified')) AS open_theses
+             FROM discovery_pool dp
+        LEFT JOIN LATERAL (
+             SELECT th.thesis_id, th.state, th.forecast->>'direction' AS direction
+               FROM thesis th
+              WHERE th.symbol = dp.symbol
+                AND th.state NOT IN ('closed','disqualified')
+           ORDER BY th.updated_at DESC
+              LIMIT 1
+        ) latest ON TRUE
+            WHERE dp.dropped_at IS NULL
+         ORDER BY dp.market_cap DESC NULLS LAST, dp.symbol"#,
     )
     .fetch_all(&gw.store.pool)
     .await;
@@ -652,6 +667,10 @@ async fn list_discovery_pool(State(gw): State<Arc<Gateway>>) -> impl IntoRespons
                         "industry": r.try_get::<Option<String>, _>("industry").ok().flatten(),
                         "market_cap": r.try_get::<Option<i64>, _>("market_cap").ok().flatten(),
                         "first_seen_at": first_seen,
+                        "latest_thesis_id": r.try_get::<Option<uuid::Uuid>, _>("latest_thesis_id").ok().flatten(),
+                        "thesis_state": r.try_get::<Option<String>, _>("thesis_state").ok().flatten(),
+                        "thesis_direction": r.try_get::<Option<String>, _>("thesis_direction").ok().flatten(),
+                        "open_theses": r.try_get::<i64, _>("open_theses").unwrap_or(0),
                     })
                 })
                 .collect();

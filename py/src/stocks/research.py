@@ -174,7 +174,8 @@ def build_queries(
         raw.append(f"{company} {term} deployment benchmark adoption")
         raw.append(f"{symbol} {term} vs competitor customer production")
     if industry:
-        raw.append(f"{company} {industry} AI infrastructure product roadmap")
+        raw.append(f"{company} {industry} latest demand pricing margins customers")
+        raw.append(f"{symbol} {industry} supply demand estimates revisions catalyst")
     raw.append(f"{company} latest product customer deployment benchmark")
 
     seen: set[str] = set()

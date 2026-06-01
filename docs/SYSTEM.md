@@ -1,9 +1,12 @@
 # System model
 
 This project is a single-operator trading intelligence system. It does not try
-to be an autonomous hedge fund. It helps one human notice tech-infrastructure
-inflections earlier, reason about them more consistently, and record enough
-evidence to learn from decisions over time.
+to be an autonomous hedge fund. It helps one human notice evidence-backed
+market inflections earlier, reason about them more consistently, and record
+enough evidence to learn from decisions over time. Tech infrastructure is a
+current strength/theme, not a hard product boundary; copper, wheat, financials,
+staples, energy, healthcare, and any other liquid market can matter when the
+evidence creates a falsifiable money-making view.
 
 The shortest description:
 
@@ -19,7 +22,8 @@ market/data events
 
 The system's edge is information diffusion. Public facts do not become equally
 understood by every market participant at once. The system tries to find the
-window between "available" and "obvious to the late retail/passive tech crowd".
+window between "available" and "obvious to the late retail/passive crowd" for
+the relevant market, sector, commodity proxy, or individual equity.
 
 ## Operating loop
 
@@ -92,6 +96,11 @@ The scheduler and feedback-loop map lives in
 freshness rules, retry behavior, or queue ownership, update that loop map in
 the same PR.
 
+The product/system plan that connects the brain, discovery, cognition, thesis,
+attention, decision, position, and reflection loops lives in
+[`docs/PRODUCT_PLAN.md`](PRODUCT_PLAN.md). Use it as the implementation spine
+when choosing the next work item.
+
 ## Scan tiers
 
 Scanning should be broad, but not equally expensive for every symbol. The system
@@ -106,7 +115,7 @@ Tier 3 / discovery_pool
   estimate/rating snapshots
   lightweight profile/fundamental metadata
   candidate_review attention when signals fire
-  research_nomination attention for reasoned unreviewed theme-relevant names
+  research_nomination attention for reasoned unreviewed names with evidence
 
 Tier 2 / watchlisted or confirmed candidate
   evidence requirement tracking
@@ -134,16 +143,17 @@ signal path:
   price/news/estimate signal -> composed interpretation -> candidate_review
 
 nomination path:
-  unreviewed theme-relevant pool member with enough evidence -> research_nomination candidate_review
+  unreviewed pool member with enough evidence + explicit opportunity reason
+        -> research_nomination candidate_review
 ```
 
-`research_nomination` means "this business belongs in the monitored universe
-for these explicit reasons"; it does not mean a trade signal fired. The
-stored `source_ref.nomination_reasons` records theme fit, business fit,
-suggested watchlists, and the acceptance effect. Confirming promotes the symbol
-into the tracked universe/watchlists and lets cognition build context and
-attempt a thesis. Confirmed/watchlisted symbols get deeper context and thesis
-workflows.
+`research_nomination` means "this business or market factor belongs in the
+monitored universe for these explicit reasons"; it does not mean a trade signal
+fired. The stored `source_ref.nomination_reasons` records theme/sector/factor
+fit, business fit, suggested watchlists, and the acceptance effect. Confirming
+promotes the symbol into the tracked universe/watchlists and lets cognition
+build context and attempt a thesis. Confirmed/watchlisted symbols get deeper
+context and thesis workflows.
 
 Open theses are not static notes. The cognition service runs a bounded update
 loop that selects active tickers whose context is stale, whose evidence
@@ -614,7 +624,7 @@ price extension
 
 Reflection scores what happened after a thesis or prediction. The point is not
 to celebrate wins; it is to learn whether the system was early, calibrated, and
-useful versus passive tech beta.
+useful versus the relevant passive benchmark for that decision.
 
 ## Service families
 
@@ -820,7 +830,7 @@ closed / fulfilled / invalidated thesis
   -> outcome row
   -> Brier/calibration score when forecast is scorable
   -> lead-time-to-consensus when consensus is observed
-  -> decision quality compared with QQQ/SMH
+  -> decision quality compared with the relevant passive benchmark
 ```
 
 Bad outcomes are first-class data. The system should make it easy to see when a
@@ -867,7 +877,7 @@ forecast calibration
   thesis forecast -> realized outcome
 
 decision quality
-  realized choices -> passive tech beta benchmarks such as QQQ/SMH
+  realized choices -> relevant passive benchmarks
 ```
 
 If the system does not improve decision quality after enough forward use, the

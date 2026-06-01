@@ -226,6 +226,28 @@
       : [];
   }
 
+  function evidencePriorityLabel(priority: EvidenceRequirement["priority"]): string {
+    if (priority === "blocking") return "blocks if missing";
+    return `${priority} priority`;
+  }
+
+  function evidenceRequirementCount(req: EvidenceRequirement): string {
+    const counts = req.source_ref?.counts;
+    if (!counts || typeof counts !== "object" || Array.isArray(counts)) return "";
+    const keyByRequirement: Record<string, string> = {
+      price_history: "price_bars",
+      company_facts: "company_facts",
+      recent_news: "recent_news",
+      analyst_estimates: "estimate_snapshots",
+      product_research: "research_evidence",
+    };
+    const countKey = keyByRequirement[req.requirement_key];
+    const value = countKey ? (counts as Record<string, unknown>)[countKey] : undefined;
+    if (typeof value !== "number") return "";
+    const label = countKey.replace(/_/g, " ");
+    return `available: ${value.toLocaleString()} ${label}`;
+  }
+
   function evidenceCounts(req: EvidenceRequirement): string {
     const counts = req.source_ref?.counts;
     if (!counts || typeof counts !== "object" || Array.isArray(counts)) return "";
@@ -1704,15 +1726,19 @@
                     <li class="evidence-card state-{req.blocking_state}">
                       <div class="evidence-row">
                         <strong>{req.source_type.replace(/_/g, " ")}</strong>
-                        <span class="badge tiny">{req.priority}</span>
+                        <span class="badge tiny priority-{req.priority}">{evidencePriorityLabel(req.priority)}</span>
                         <span class="badge tiny">{req.blocking_state}</span>
                         {#if req.next_retry_at}<span class="muted">retry {relativeTime(req.next_retry_at)}</span>{/if}
                       </div>
                       <p>{req.reason}</p>
-                      {#if evidenceActions(req).length}
-                        <p class="muted">will try {evidenceActions(req).map((a) => a.replace(/_/g, " ")).join(", ")}</p>
+                      {#if req.blocking_state === "satisfied"}
+                        {#if evidenceRequirementCount(req)}
+                          <p class="muted">{evidenceRequirementCount(req)}</p>
+                        {/if}
+                      {:else if evidenceActions(req).length}
+                        <p class="muted">next fetch: {evidenceActions(req).map((a) => a.replace(/_/g, " ")).join(", ")}</p>
                       {/if}
-                      {#if evidenceCounts(req)}
+                      {#if req.blocking_state !== "satisfied" && evidenceCounts(req)}
                         <p class="muted">{evidenceCounts(req)}</p>
                       {/if}
                       {#if evidenceHealth(req)}

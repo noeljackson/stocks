@@ -43,74 +43,51 @@ struct ScreenerSlice {
 
 fn screener_slices() -> &'static [ScreenerSlice] {
     &[
-        // Core compute/software infrastructure.
+        // Broad liquid-equity radar. Themes and rankings decide what matters;
+        // the screener should not hard-code the product into one sector.
         ScreenerSlice {
             sector: "Technology",
-            industry: Some("Semiconductors"),
+            industry: None,
         },
         ScreenerSlice {
-            sector: "Technology",
-            industry: Some("Semiconductor Equipment & Materials"),
+            sector: "Communication Services",
+            industry: None,
         },
         ScreenerSlice {
-            sector: "Technology",
-            industry: Some("Communication Equipment"),
+            sector: "Consumer Cyclical",
+            industry: None,
         },
         ScreenerSlice {
-            sector: "Technology",
-            industry: Some("Information Technology Services"),
+            sector: "Consumer Defensive",
+            industry: None,
         },
         ScreenerSlice {
-            sector: "Technology",
-            industry: Some("Software - Infrastructure"),
+            sector: "Financial Services",
+            industry: None,
         },
         ScreenerSlice {
-            sector: "Technology",
-            industry: Some("Computer Hardware"),
-        },
-        // Power, cooling, grid, and construction bottlenecks around AI buildout.
-        ScreenerSlice {
-            sector: "Industrials",
-            industry: Some("Electrical Equipment & Parts"),
+            sector: "Healthcare",
+            industry: None,
         },
         ScreenerSlice {
             sector: "Industrials",
-            industry: Some("Specialty Industrial Machinery"),
+            industry: None,
         },
         ScreenerSlice {
-            sector: "Industrials",
-            industry: Some("Engineering & Construction"),
+            sector: "Energy",
+            industry: None,
         },
-        ScreenerSlice {
-            sector: "Industrials",
-            industry: Some("Building Products & Equipment"),
-        },
-        ScreenerSlice {
-            sector: "Utilities",
-            industry: Some("Utilities - Renewable"),
-        },
-        ScreenerSlice {
-            sector: "Utilities",
-            industry: Some("Utilities - Independent Power Producers"),
-        },
-        ScreenerSlice {
-            sector: "Utilities",
-            industry: Some("Utilities - Regulated Electric"),
-        },
-        // Materials exposure matters when power/data-center buildout pulls
-        // copper, electrical steel, and other upstream constraints into scope.
         ScreenerSlice {
             sector: "Basic Materials",
             industry: None,
         },
-        // Data-center landlords and physical infrastructure owners.
         ScreenerSlice {
             sector: "Real Estate",
-            industry: Some("REIT - Specialty"),
+            industry: None,
         },
         ScreenerSlice {
-            sector: "Real Estate",
-            industry: Some("REIT - Industrial"),
+            sector: "Utilities",
+            industry: None,
         },
     ]
 }
@@ -127,8 +104,8 @@ impl FmpScreenerAdapter {
         }
     }
 
-    /// Pull all rows matching our SPEC §0 scope (tech-infrastructure,
-    /// large-cap, actively trading). Returns the filtered list — non-US
+    /// Pull all rows matching the broad liquid-equity radar: large-cap,
+    /// actively trading US names. Returns the filtered list — non-US
     /// names dropped, anything not actively trading dropped, market cap
     /// floor enforced again client-side as belt-and-braces.
     pub async fn fetch_pool(&self, min_market_cap: i64) -> Result<Vec<ScreenerRow>> {
@@ -136,8 +113,7 @@ impl FmpScreenerAdapter {
             return Ok(Vec::new());
         }
         let mut all = Vec::new();
-        // SPEC §0 scope: tech infrastructure and adjacent physical bottlenecks.
-        // Pull each sector/industry slice; dedup at the end by symbol.
+        // Pull each sector slice; dedup at the end by symbol.
         // FMP's screener returns ~250 per call max; we paginate by sector.
         for slice in screener_slices() {
             let sector = slice.sector;
@@ -218,24 +194,25 @@ mod tests {
     }
 
     #[test]
-    fn screener_scope_covers_adjacent_ai_infra_themes() {
+    fn screener_scope_is_broad_cross_sector_radar() {
         let slices = screener_slices();
         assert!(
             slices
                 .iter()
                 .any(|s| s.sector == "Basic Materials" && s.industry.is_none()),
-            "copper/materials exposure should be in the discovery pool"
-        );
-        assert!(
-            slices.iter().any(|s| s.sector == "Industrials"
-                && s.industry == Some("Specialty Industrial Machinery")),
-            "power/cooling equipment should be in the discovery pool"
+            "copper/materials exposure should be in the discovery pool",
         );
         assert!(
             slices
                 .iter()
-                .any(|s| s.sector == "Real Estate" && s.industry == Some("REIT - Specialty")),
-            "data-center REIT exposure should be in the discovery pool"
+                .any(|s| s.sector == "Financial Services" && s.industry.is_none()),
+            "financials should be in the discovery pool as investable names and macro tells",
+        );
+        assert!(
+            slices
+                .iter()
+                .any(|s| s.sector == "Consumer Defensive" && s.industry.is_none()),
+            "staples/agriculture exposure should be in the discovery pool",
         );
     }
 }

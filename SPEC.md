@@ -10,17 +10,17 @@
 These are the load-bearing decisions. Every requirement below serves them.
 
 - **Product A, not B.** v1 produces *trade ideas for a human to evaluate and execute manually*. It does **not** trade autonomously. Success = better/faster discretionary decisions, **not** autonomous P&L.
-- **The edge, named honestly.** Be *earlier than your own past information bandwidth* — and earlier than the retail crowd — at spotting **tech-infrastructure inflections before the FOMO**. The mechanism is **information diffusion**: public facts are not instantly *priced*; the gap between "available" and "fully diffused" is the trading window (cf. post-earnings drift). The benchmark is the **late retail crowd / passive tech beta (QQQ, SMH)** — *not* institutions. Expected outcome is **modest and compounding (~9–13% annualized target)**, not 20%+.
+- **The edge, named honestly.** Be *earlier than your own past information bandwidth* — and earlier than the retail crowd — at spotting **evidence-backed market inflections before the FOMO**. The mechanism is **information diffusion**: public facts are not instantly *priced*; the gap between "available" and "fully diffused" is the trading window (cf. post-earnings drift). Tech infrastructure is an important current theme, not a hard boundary. Copper, wheat, financials, staples, energy, healthcare, and any other liquid market can matter when the evidence creates a falsifiable money-making view. The benchmark is the relevant passive alternative for the decision (broad market, sector ETF, commodity proxy, or sector beta) — *not* institutions. Expected outcome is **modest and compounding (~9–13% annualized target)**, not 20%+.
 - **The edge is not predictive.** It is (1) information synthesis the user couldn't do manually at scale, (2) systematic discipline most retail never applies, (3) a cost structure the user controls. None claim to out-forecast institutions.
 - **Core product statement (verbatim):** *"LLM combining technical analysis with informational context to generate trade ideas for me to evaluate and execute manually. The technical scanner detects events; the context layer maintains qualitative state per ticker; the LLM combines them into trade ideas. The system's value is producing better trade ideas than I'd generate manually, faster than I could synthesize the inputs myself."*
 - **North star — flexibility.** The system must get *better with more data*: pluggable indicators/signals/prompts, an extensible taxonomy, and a recorded rationale on every decision so the corpus becomes a learning signal.
-- **Validation is forward and observable.** The primary edge **cannot be backtested** (no clean point-in-time data; LLM hindsight contamination). It is validated forward by **lead-time-to-consensus** + **forecast calibration**, benchmarked against passive tech beta.
+- **Validation is forward and observable.** The primary edge **cannot be backtested** (no clean point-in-time data; LLM hindsight contamination). It is validated forward by **lead-time-to-consensus** + **forecast calibration**, benchmarked against the relevant passive alternative for each decision.
 
 ---
 
 ## 1. System Overview
 
-A single-operator, thesis-driven trading **intelligence** platform that continuously maintains synthesized, structured context on a curated universe of technology-infrastructure equities, scans a broader universe to *discover* emerging theses before they reach consensus, and uses an LLM to combine that qualitative context with technical/regime signals into structured trade ideas. Each idea is a versioned **thesis** with an explicit edge rationale, falsifiable forecast, and machine- and narrative-evaluable conditions for conviction, entry, invalidation, and exit. In v1 the system **alerts a human who decides and executes manually**; an independent risk overlay enforces hard limits; a reflection layer compares thesis to outcome and feeds the corpus that tunes discovery over time. The system is built so the context layer is valuable as a standalone thinking tool even before any trade is placed, and so that semi-autonomous execution can be added later (v2) by changing *who pulls the trigger*, not the underlying objects.
+A single-operator, thesis-driven trading **intelligence** platform that continuously maintains synthesized, structured context on a curated universe of liquid equities and market factors, scans a broader universe to *discover* emerging theses before they reach consensus, and uses an LLM to combine that qualitative context with technical/regime signals into structured trade ideas. Each idea is a versioned **thesis** with an explicit edge rationale, falsifiable forecast, and machine- and narrative-evaluable conditions for conviction, entry, invalidation, and exit. In v1 the system **alerts a human who decides and executes manually**; an independent risk overlay enforces hard limits; a reflection layer compares thesis to outcome and feeds the corpus that tunes discovery over time. The system is built so the context layer is valuable as a standalone thinking tool even before any trade is placed, and so that semi-autonomous execution can be added later (v2) by changing *who pulls the trigger*, not the underlying objects.
 
 ---
 
@@ -40,7 +40,7 @@ A single-operator, thesis-driven trading **intelligence** platform that continuo
 12. **Integrity / anti-self-deception.** Theses are append-only and versioned; the original edge rationale and invalidation conditions are immutable; the system flags revisions that *weaken* the original invalidation ("tell us if we're nuts").
 13. **Extensibility.** Indicators, discovery signals, and prompts are versioned registry components; regime classifier, promotion rule, and thesis conditions are config expressions over them. Every alert/decision records which component+config versions produced it.
 14. **Self-built point-in-time corpus.** All ingested data is stored append-only and ingestion-timestamped; history is never overwritten.
-15. **Validation harness.** Measure lead-time-to-consensus per alert and forecast calibration per thesis; benchmark realized decisions against passive tech beta.
+15. **Validation harness.** Measure lead-time-to-consensus per alert and forecast calibration per thesis; benchmark realized decisions against the relevant passive alternative.
 
 ---
 
@@ -249,7 +249,7 @@ The most-reused event in the system: it fires **fulfillment/exit** for discovery
 
 ## 8. Risk and Operational Requirements
 
-**Framing:** the user is a **concentrated specialist by design** — tech infrastructure *is* the edge. The risk overlay does **not** force sector diversification (that would dilute the edge). It controls name-level blowup, total drawdown, leverage, liquidity, and regime.
+**Framing:** the user is a **concentrated specialist by design**. The product edge is not sector purity; it is finding evidence-backed opportunities that can make money before they become obvious. The risk overlay does **not** force sector diversification for its own sake. It controls name-level blowup, total drawdown, leverage, liquidity, and regime, and it surfaces concentration when a theme becomes crowded.
 
 **Hard limits (config v1, independent veto):**
 
@@ -277,15 +277,15 @@ Each phase is independently useful; the system can stop at any phase and still d
 - **Phase 0 — foundation (weeks).** NATS/JetStream, Postgres schema, provider abstraction, config/registry, ingestion framework, append-only store. *Gate: events flow end-to-end and are replayable.*
 - **Phase 1 — context layer (months 1–6).** Free-source ingestion; 3-band ticker context; LLM context maintainer over a ~10-name seed Tier-1 (incl. SPY); state-machine skeleton. *Gate: context is accurate and current enough that the user **actually consults it** to answer "what's the state of X?" — useful with zero trading.*
 - **Phase 2 — discovery + alerts + tracking (months 6–9).** Discovery scanner over the haystack; regime service; thesis engine emitting `actionable` alerts; manual position tracking; risk overlay pre-trade checks. *Gate: alerts are relevant; lead-time-to-consensus is measurable; false-positive rate tolerable.*
-- **Phase 3 — iterate (months 9–15).** Tune signals/prompts against the recorded corpus; add paid data in ladder order; build reflection layer + signal-weight feedback. *Gate: lead-time + calibration positive in aggregate; **beats passive tech beta (QQQ/SMH)** on decision quality.*
+- **Phase 3 — iterate (months 9–15).** Tune signals/prompts against the recorded corpus; add paid data in ladder order; build reflection layer + signal-weight feedback. *Gate: lead-time + calibration positive in aggregate; **beats the relevant passive benchmark** on decision quality.*
 - **v2 — semi-autonomous execution (after 18–24 months of real use).** Per-trade-type auto-execution, earned only by demonstrated alert precision; same objects, risk overlay becomes the hard gate on the execution path.
 
 **Validation harness (primary metrics):**
 1. **Lead-time-to-consensus** — per alert: timestamp(alert) → timestamp(consensus/fulfillment). Forward, point-in-time. ~30–50 data points/yr (alert-level), far more than trade-level.
 2. **Forecast calibration** — per thesis: logged forecast vs realized (scoring only; never drives exits).
-3. **Benchmark** — realized decisions vs passive tech beta, not vs zero.
+3. **Benchmark** — realized decisions vs the relevant passive alternative, not vs zero.
 
-**Kill criterion:** if after ~12 months the system is not materially beating passive tech beta on decision quality, it is **reassessed, not extended**. No sunk-cost continuation. (Even on kill, the context layer remains a useful research tool — but that is a consolation, not the goal.)
+**Kill criterion:** if after ~12 months the system is not materially beating the relevant passive alternatives on decision quality, it is **reassessed, not extended**. No sunk-cost continuation. (Even on kill, the context layer remains a useful research tool — but that is a consolation, not the goal.)
 
 ---
 

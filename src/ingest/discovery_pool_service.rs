@@ -90,20 +90,34 @@ fn nomination_theme(sector: Option<&str>, industry: Option<&str>) -> &'static st
     } else if industry.contains("Communication Equipment") || industry.contains("Computer Hardware")
     {
         "AI networking, optics, and hardware infrastructure"
+    } else if industry.contains("Software") || sector == "Technology" {
+        "software and technology platform inflections"
     } else if industry.contains("Electrical")
         || industry.contains("Utility")
         || industry.contains("Utilities")
         || sector == "Utilities"
     {
         "AI power, grid, and cooling bottlenecks"
-    } else if industry.contains("Copper") || sector == "Basic Materials" {
-        "AI grid materials and copper bottlenecks"
-    } else if industry.contains("REIT") {
-        "data-center real estate and capacity"
-    } else if industry.contains("Software") {
-        "software infrastructure for AI/cloud operations"
+    } else if industry.contains("Engineering & Construction") {
+        "AI power, grid, and data-center construction"
+    } else if is_grid_materials_industry(industry) {
+        "industrial metals and infrastructure inputs"
+    } else if is_agriculture_industry(industry) || sector == "Consumer Defensive" {
+        "agriculture, food, and staples pricing power"
+    } else if sector == "Financial Services" {
+        "credit, liquidity, and rate-sensitive financials"
+    } else if sector == "Energy" {
+        "energy supply, inflation, and industrial input costs"
+    } else if sector == "Healthcare" {
+        "healthcare defensives and product/regulatory inflections"
+    } else if sector == "Real Estate" {
+        "real assets, financing costs, and capacity constraints"
+    } else if sector == "Consumer Cyclical" {
+        "consumer cycle and discretionary demand inflections"
+    } else if sector == "Communication Services" {
+        "media, advertising, and connectivity demand inflections"
     } else {
-        "the tech-infrastructure watch universe"
+        "cross-sector opportunity radar"
     }
 }
 
@@ -115,20 +129,34 @@ fn nomination_business_fit(sector: Option<&str>, industry: Option<&str>) -> &'st
     } else if industry.contains("Communication Equipment") || industry.contains("Computer Hardware")
     {
         "AI clusters need faster interconnect, optics, storage, and server hardware"
+    } else if industry.contains("Software") || sector == "Technology" {
+        "software and platform shifts can re-rate revenue durability, margins, or adoption"
     } else if industry.contains("Electrical")
         || industry.contains("Utility")
         || industry.contains("Utilities")
         || sector == "Utilities"
     {
         "data-center growth is increasingly gated by power availability and thermal management"
-    } else if industry.contains("Copper") || sector == "Basic Materials" {
-        "grid buildout and electrical equipment demand can transmit AI capex into materials"
-    } else if industry.contains("REIT") {
-        "leased data-center capacity can become a bottleneck when AI demand accelerates"
-    } else if industry.contains("Software") {
-        "AI infrastructure needs secure, observable, automated cloud/software operations"
+    } else if industry.contains("Engineering & Construction") {
+        "AI data centers require grid interconnect, power construction, and thermal infrastructure"
+    } else if is_grid_materials_industry(industry) {
+        "commodity and infrastructure cycles can create large revisions when supply/demand shifts"
+    } else if is_agriculture_industry(industry) || sector == "Consumer Defensive" {
+        "food, crop, input-cost, and brand pricing cycles can move earnings and inflation expectations"
+    } else if sector == "Financial Services" {
+        "credit quality, deposit costs, rates, and capital markets activity can inflect faster than consensus"
+    } else if sector == "Energy" {
+        "supply discipline, geopolitics, inventories, and demand can move cash flows and inflation inputs"
+    } else if sector == "Healthcare" {
+        "regulatory, reimbursement, trial, and product-cycle events can create company-specific edges"
+    } else if sector == "Real Estate" {
+        "cap rates, financing costs, occupancy, and asset scarcity can change faster than stale NAV assumptions"
+    } else if sector == "Consumer Cyclical" {
+        "consumer demand, inventory, and margin cycles can inflect before broad estimates adjust"
+    } else if sector == "Communication Services" {
+        "advertising, subscriber, content, and network cycles can create measurable revisions"
     } else {
-        "its sector/industry screen matched the infrastructure-adjacent discovery universe"
+        "it is a liquid pool member with enough local evidence to deserve a first-pass review"
     }
 }
 
@@ -140,20 +168,106 @@ fn suggested_watchlists(sector: Option<&str>, industry: Option<&str>) -> Vec<&'s
     } else if industry.contains("Communication Equipment") || industry.contains("Computer Hardware")
     {
         vec!["AI Infrastructure", "Networking/Optics"]
+    } else if industry.contains("Software") || sector == "Technology" {
+        vec!["Technology", "Software Infrastructure"]
     } else if industry.contains("Electrical")
         || industry.contains("Utility")
         || industry.contains("Utilities")
         || sector == "Utilities"
     {
         vec!["AI Power/Grid"]
-    } else if industry.contains("Copper") || sector == "Basic Materials" {
-        vec!["Copper/Materials"]
-    } else if industry.contains("REIT") {
-        vec!["Data Centers"]
-    } else if industry.contains("Software") {
-        vec!["Software Infrastructure"]
+    } else if industry.contains("Engineering & Construction") {
+        vec!["AI Power/Grid", "Data Centers"]
+    } else if is_grid_materials_industry(industry) {
+        vec!["Metals/Materials", "Cyclicals"]
+    } else if is_agriculture_industry(industry) || sector == "Consumer Defensive" {
+        vec!["Staples/Agriculture", "Inflation"]
+    } else if sector == "Financial Services" {
+        vec!["Financials", "Macro/Rates"]
+    } else if sector == "Energy" {
+        vec!["Energy", "Inflation"]
+    } else if sector == "Healthcare" {
+        vec!["Healthcare"]
+    } else if sector == "Real Estate" {
+        vec!["Real Estate", "Macro/Rates"]
+    } else if sector == "Consumer Cyclical" {
+        vec!["Consumer Cycle"]
+    } else if sector == "Communication Services" {
+        vec!["Communication Services"]
     } else {
-        vec!["AI Infrastructure"]
+        vec!["Cross-Sector Opportunities"]
+    }
+}
+
+fn is_grid_materials_industry(industry: &str) -> bool {
+    industry.contains("Copper")
+        || industry.contains("Steel")
+        || industry.contains("Aluminum")
+        || industry.contains("Industrial Metals")
+        || industry.contains("Other Industrial Metals")
+        || industry.contains("Silver")
+        || industry.contains("Gold")
+        || industry.contains("Metals")
+        || industry.contains("Mining")
+        || industry.contains("Construction Materials")
+        || industry.contains("Industrial Materials")
+        || industry.contains("Chemicals")
+}
+
+fn is_agriculture_industry(industry: &str) -> bool {
+    industry.contains("Agricultural")
+        || industry.contains("Farm")
+        || industry.contains("Food")
+        || industry.contains("Packaged Foods")
+}
+
+fn nomination_domain_fit(sector: Option<&str>, industry: Option<&str>) -> f64 {
+    let sector = sector.unwrap_or_default();
+    let industry = industry.unwrap_or_default();
+    if industry.contains("Semiconductor") {
+        88.0
+    } else if industry.contains("Communication Equipment") || industry.contains("Computer Hardware")
+    {
+        82.0
+    } else if industry.contains("Software") || sector == "Technology" {
+        70.0
+    } else if industry.contains("Electrical")
+        || industry.contains("Utility")
+        || industry.contains("Utilities")
+        || sector == "Utilities"
+    {
+        76.0
+    } else if industry.contains("Engineering & Construction") {
+        68.0
+    } else if is_grid_materials_industry(industry) {
+        72.0
+    } else if is_agriculture_industry(industry) || sector == "Consumer Defensive" {
+        70.0
+    } else if sector == "Energy" {
+        68.0
+    } else if sector == "Basic Materials" {
+        62.0
+    } else if sector == "Financial Services" {
+        62.0
+    } else if sector == "Real Estate" {
+        58.0
+    } else if sector == "Healthcare"
+        || sector == "Consumer Cyclical"
+        || sector == "Communication Services"
+    {
+        55.0
+    } else {
+        45.0
+    }
+}
+
+fn nomination_tier(domain_fit: f64) -> i32 {
+    if domain_fit >= 80.0 {
+        1
+    } else if domain_fit >= 60.0 {
+        2
+    } else {
+        3
     }
 }
 
@@ -315,10 +429,12 @@ async fn queue_research_nominations(pool: &PgPool, limit: i64) -> Result<usize> 
         let theme = nomination_theme(sector.as_deref(), industry.as_deref());
         let business_fit = nomination_business_fit(sector.as_deref(), industry.as_deref());
         let suggested_watchlists = suggested_watchlists(sector.as_deref(), industry.as_deref());
+        let domain_fit = nomination_domain_fit(sector.as_deref(), industry.as_deref());
+        let proposed_tier = nomination_tier(domain_fit);
         let inserted = sqlx::query(
             r#"INSERT INTO discovery_candidate
-                 (symbol, signal_name, signal_value, reasoning, config_version)
-               SELECT $1, $2, $3, $4, $5
+                 (symbol, signal_name, signal_value, domain_fit, proposed_tier, reasoning, config_version)
+               SELECT $1, $2, $3, $4, $5, $6, $7
                 WHERE NOT EXISTS (
                       SELECT 1 FROM discovery_candidate
                        WHERE symbol = $1
@@ -329,6 +445,8 @@ async fn queue_research_nominations(pool: &PgPool, limit: i64) -> Result<usize> 
         .bind(&symbol)
         .bind(RESEARCH_NOMINATION_SIGNAL)
         .bind(data_score as f64)
+        .bind(domain_fit)
+        .bind(proposed_tier)
         .bind(&reasoning)
         .bind(RESEARCH_NOMINATION_CONFIG_VERSION)
         .fetch_optional(pool)
@@ -349,6 +467,8 @@ async fn queue_research_nominations(pool: &PgPool, limit: i64) -> Result<usize> 
             "sector": sector,
             "industry": industry,
             "market_cap": market_cap,
+            "domain_fit": domain_fit,
+            "proposed_tier": proposed_tier,
             "nomination_reasons": {
                 "theme": theme,
                 "business_fit": business_fit,
@@ -495,7 +615,24 @@ mod tests {
         );
         assert!(reason.contains("Research nomination"));
         assert!(reason.contains("not a trade signal"));
-        assert!(reason.contains("software infrastructure"));
+        assert!(reason.contains("software and technology platform inflections"));
         assert!(reason.contains("price, news, estimates, fundamentals"));
+    }
+
+    #[test]
+    fn nomination_scope_handles_commodities_and_financials() {
+        assert_eq!(
+            nomination_theme(Some("Basic Materials"), Some("Copper")),
+            "industrial metals and infrastructure inputs"
+        );
+        assert_eq!(
+            suggested_watchlists(Some("Consumer Defensive"), Some("Agricultural Inputs")),
+            vec!["Staples/Agriculture", "Inflation"]
+        );
+        assert_eq!(
+            nomination_theme(Some("Financial Services"), Some("Banks - Regional")),
+            "credit, liquidity, and rate-sensitive financials"
+        );
+        assert!(nomination_domain_fit(Some("Consumer Defensive"), Some("Farm Products")) >= 70.0);
     }
 }

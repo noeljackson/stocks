@@ -827,6 +827,7 @@
                 {@const reasons = [...reasonMap.values()]}
                 {@const interpretations = reasonMap.size}
                 {@const rawInputCount = new Set(g.items.flatMap(rawSignals)).size}
+                {@const deferred = g.items.find((it) => it.fsm_state === "operator_deferred")}
                 <li class="att-card sev-{g.severity}">
                   <div class="att-row1">
                     {#if g.symbol}
@@ -852,6 +853,9 @@
                       system declined to draft thesis
                     {:else}
                       {g.kind.replace(/_/g, " ")}
+                    {/if}
+                    {#if deferred?.resurface_at}
+                      · resurfaced {relativeTime(deferred.resurface_at)}
                     {/if}
                   </div>
 
@@ -1074,7 +1078,7 @@
             {@const disc = sysStatus.discovery as { last_pass_at: string|null; open_candidates: number; by_signal: { signal: string; count: number }[]; pool_size: number }}
             {@const cog = sysStatus.cognition as { contexts_24h: number; contexts_total_symbols: number; thesis_by_state: { state: string; count: number }[] }}
             {@const ev = sysStatus.evidence as { open_requirements: number; by_state: { state: string; count: number }[] }}
-            {@const att = sysStatus.attention as { open_items: number; by_kind: { kind: string; count: number }[] }}
+            {@const att = sysStatus.attention as { open_items: number; deferred_items?: number; by_kind: { kind: string; count: number }[]; by_state?: { state: string; count: number }[]; by_owner?: { owner: string; count: number }[] }}
             {@const llm = sysStatus.llm as { calls_24h: number; avg_latency_ms: number|null; by_prompt: { prompt: string; count: number; avg_ms: number|null; last_at: string|null }[] }}
             {@const health = (sysStatus.source_health ?? []) as { source: string; last_status: string; last_started_at: string|null; last_success_at: string|null; last_failure_at: string|null; last_failure_kind?: string|null; last_error?: string|null; retry_after_at?: string|null; rows_seen: number; rows_inserted: number; symbols_attempted: number; symbols_failed: number }[]}
             {@const priceFresh = sysStatus.price_freshness as { expected_latest_session?: string|null; actual_latest_session?: string|null; symbols_total?: number; symbols_fresh?: number; status?: string }}
@@ -1174,12 +1178,27 @@
               <section class="diag">
                 <h5>Attention</h5>
                 <dl class="meta-list inline">
-                  <dt>open items</dt><dd>{att.open_items}</dd>
+                  <dt>visible</dt><dd>{att.open_items}</dd>
+                  <dt>deferred</dt><dd>{att.deferred_items ?? 0}</dd>
                 </dl>
                 {#if att.by_kind?.length}
                   <ul class="chips">
                     {#each att.by_kind as k (k.kind)}
                       <li class="chip">{k.kind}: <strong>{k.count}</strong></li>
+                    {/each}
+                  </ul>
+                {/if}
+                {#if att.by_state?.length}
+                  <ul class="chips">
+                    {#each att.by_state as s (s.state)}
+                      <li class="chip">{s.state}: <strong>{s.count}</strong></li>
+                    {/each}
+                  </ul>
+                {/if}
+                {#if att.by_owner?.length}
+                  <ul class="chips">
+                    {#each att.by_owner as o (o.owner)}
+                      <li class="chip">{o.owner}: <strong>{o.count}</strong></li>
                     {/each}
                   </ul>
                 {/if}

@@ -110,6 +110,49 @@ attention.
 | `invalidation_hit` | evaluator/staler | Evidence may refute a thesis condition. | review transition/decision |
 | `outcome_ready` | reflection | A forecast horizon is ready to score. | score outcome |
 
+### Attention State Machine
+
+`attention_item.status` is the coarse terminal state (`open`, `resolved`,
+`dismissed`). `attention_item.fsm_state` is the operational state the product
+uses to explain ownership and retry/resurface behavior.
+
+```text
+queued
+  -> evaluating
+  -> waiting_on_data
+  -> ready_for_review
+  -> operator_deferred
+  -> actionable
+  -> resolved
+  -> dismissed
+  -> blocked
+```
+
+Each state transition appends `attention_state_history`:
+
+```text
+attention_id
+from_state -> to_state
+owner: system | operator | source | cognition | risk
+reason
+next_retry_at
+resurface_at
+source_ref
+transitioned_at
+```
+
+The visible attention queue is not "all rows with `status = open`." It is:
+
+```text
+open attention
+minus operator_deferred rows whose resurface_at is still in the future
+plus operator_deferred rows once resurface_at is due
+```
+
+This makes `Defer 7d` a real snooze instead of a terminal dismissal. Deferred
+items remain auditable in diagnostics and state history while staying out of
+the operator's active queue until they are due.
+
 ## Discovery Composition
 
 Raw detector firings are facts, not operator interpretations. The scanner first

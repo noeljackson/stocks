@@ -898,14 +898,34 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
 
     // ---- attention queue ----
     let attention = {
-        let open: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM attention_item WHERE status = 'open'")
-                .fetch_one(pool)
-                .await
-                .unwrap_or(0);
+        let open: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*) FROM attention_item
+                WHERE status = 'open'
+                  AND (
+                    fsm_state <> 'operator_deferred'
+                    OR (resurface_at IS NOT NULL AND resurface_at <= now())
+                  )"#,
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        let deferred: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*) FROM attention_item
+                WHERE status = 'open'
+                  AND fsm_state = 'operator_deferred'
+                  AND (resurface_at IS NULL OR resurface_at > now())"#,
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
         let by_kind: Vec<serde_json::Value> = sqlx::query(
             r#"SELECT kind, COUNT(*) AS n FROM attention_item
-                WHERE status = 'open' GROUP BY kind ORDER BY n DESC"#,
+                WHERE status = 'open'
+                  AND (
+                    fsm_state <> 'operator_deferred'
+                    OR (resurface_at IS NOT NULL AND resurface_at <= now())
+                  )
+             GROUP BY kind ORDER BY n DESC"#,
         )
         .fetch_all(pool)
         .await
@@ -918,7 +938,45 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
             })
         })
         .collect();
-        json!({"open_items": open, "by_kind": by_kind})
+        let by_state: Vec<serde_json::Value> = sqlx::query(
+            r#"SELECT fsm_state, COUNT(*) AS n FROM attention_item
+                WHERE status = 'open'
+             GROUP BY fsm_state ORDER BY n DESC, fsm_state"#,
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            json!({
+                "state": r.try_get::<String, _>("fsm_state").unwrap_or_default(),
+                "count": r.try_get::<i64, _>("n").unwrap_or(0),
+            })
+        })
+        .collect();
+        let by_owner: Vec<serde_json::Value> = sqlx::query(
+            r#"SELECT owner, COUNT(*) AS n FROM attention_item
+                WHERE status = 'open'
+             GROUP BY owner ORDER BY n DESC, owner"#,
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            json!({
+                "owner": r.try_get::<String, _>("owner").unwrap_or_default(),
+                "count": r.try_get::<i64, _>("n").unwrap_or(0),
+            })
+        })
+        .collect();
+        json!({
+            "open_items": open,
+            "deferred_items": deferred,
+            "by_kind": by_kind,
+            "by_state": by_state,
+            "by_owner": by_owner,
+        })
     };
 
     // ---- llm audit ----
@@ -1060,7 +1118,11 @@ async fn get_brain_status(
                 WHERE symbol = $1 AND blocking_state <> 'satisfied'
                   AND (next_retry_at IS NULL OR next_retry_at <= now())) AS due_evidence,
               (SELECT count(*) FROM attention_item
-                WHERE symbol = $1 AND status = 'open') AS open_attention
+                WHERE symbol = $1 AND status = 'open'
+                  AND (
+                    fsm_state <> 'operator_deferred'
+                    OR (resurface_at IS NOT NULL AND resurface_at <= now())
+                  )) AS open_attention
         "#,
     )
     .bind(&symbol)
@@ -1175,6 +1237,10 @@ async fn get_brain_status(
         r#"SELECT kind, count(*) AS n
              FROM attention_item
             WHERE symbol = $1 AND status = 'open'
+              AND (
+                fsm_state <> 'operator_deferred'
+                OR (resurface_at IS NOT NULL AND resurface_at <= now())
+              )
          GROUP BY kind
          ORDER BY n DESC, kind"#,
     )

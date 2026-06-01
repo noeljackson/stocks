@@ -2,7 +2,13 @@ import asyncio
 
 import pytest
 
-from stocks.cognition_service import _await_with_ack_progress, _run_symbol_once, _sweep_trigger
+from stocks.cognition_service import (
+    _await_with_ack_progress,
+    _effective_sweep_interval_seconds,
+    _effective_sweep_limit,
+    _run_symbol_once,
+    _sweep_trigger,
+)
 
 
 class FakeMsg:
@@ -74,3 +80,23 @@ def test_sweep_trigger_bootstraps_missing_evidence_without_open_thesis() -> None
 
 def test_sweep_trigger_falls_back_to_maintenance_without_open_thesis() -> None:
     assert _sweep_trigger(4, None) == "maintenance_sweep"
+
+
+def test_effective_sweep_interval_caps_stale_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COGNITION_SWEEP_SECONDS", "900")
+    monkeypatch.setenv("COGNITION_OPEN_THESIS_MAX_AGE_MINUTES", "30")
+
+    assert _effective_sweep_interval_seconds() == 300
+
+
+def test_effective_sweep_interval_preserves_disable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COGNITION_SWEEP_SECONDS", "0")
+
+    assert _effective_sweep_interval_seconds() == 0
+
+
+def test_effective_sweep_limit_floors_stale_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COGNITION_MAX_SYMBOLS_PER_SWEEP", "5")
+    monkeypatch.setenv("COGNITION_MIN_SYMBOLS_PER_SWEEP", "20")
+
+    assert _effective_sweep_limit() == 20

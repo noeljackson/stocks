@@ -364,11 +364,16 @@ context. A no-change re-evaluation updates `last_evaluated_at` only, so the
 30-minute loop can prove it ran without creating fake thesis versions.
 
 Runtime knobs:
-- `COGNITION_SWEEP_SECONDS` (default 900; set 0 to disable)
+- `COGNITION_SWEEP_SECONDS` (default 300; set 0 to disable)
 - `COGNITION_CONTEXT_MAX_AGE_HOURS` (default 12)
 - `COGNITION_OPEN_THESIS_MAX_AGE_MINUTES` (default 30)
 - `COGNITION_DECLINE_RETRY_HOURS` (default 6)
-- `COGNITION_MAX_SYMBOLS_PER_SWEEP` (default 5)
+- `COGNITION_MAX_SYMBOLS_PER_SWEEP` (default 20)
+- `COGNITION_MIN_SYMBOLS_PER_SWEEP` (default 20)
+
+The worker caps nonzero sweep intervals at half the open-thesis freshness window
+and floors batch size at `COGNITION_MIN_SYMBOLS_PER_SWEEP`, so stale runtime
+config cannot silently starve the open-thesis update loop.
 
 ## State Ownership
 

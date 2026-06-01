@@ -157,6 +157,26 @@ async def _persist_thesis(
     return thesis_id
 
 
+async def _resolve_stale_incomplete_attention(
+    pool: asyncpg.Pool,
+    symbol: str,
+    thesis_id: uuid.UUID,
+) -> None:
+    """A successful draft supersedes prior no-thesis attention for the symbol."""
+    await pool.execute(
+        """UPDATE attention_item
+              SET status = 'resolved',
+                  resolved_at = now(),
+                  resolution_kind = 'thesis_drafted',
+                  source_ref = source_ref || $2::jsonb
+            WHERE status = 'open'
+              AND kind = 'thesis_incomplete'
+              AND symbol = $1""",
+        symbol,
+        json.dumps({"resolved_by_thesis_id": str(thesis_id)}),
+    )
+
+
 def _context_has_substance(context: dict | None) -> bool:
     if not context:
         return False
@@ -300,6 +320,7 @@ async def draft(symbol: str) -> dict:
             return parsed
 
         thesis_id = await _persist_thesis(pool, symbol, parsed)
+        await _resolve_stale_incomplete_attention(pool, symbol, thesis_id)
         log.info(
             "persisted thesis %s for %s at state=forming (input=%d output=%d)",
             thesis_id, symbol, resp.usage.input_tokens, resp.usage.output_tokens,

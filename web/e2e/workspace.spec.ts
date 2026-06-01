@@ -78,7 +78,26 @@ async function mockApi(page: Page): Promise<Calls> {
       return;
     }
     if (path === "/api/alerts") {
-      await json(route, []);
+      await json(route, [
+        {
+          id: 1001,
+          thesis_id: null,
+          symbol: null,
+          kind: "risk",
+          payload: { reasons: ["global portfolio drawdown warning"] },
+          acknowledged: false,
+          created_at: "2026-06-01T00:00:00Z",
+        },
+        {
+          id: 1002,
+          thesis_id: null,
+          symbol: "OKTA",
+          kind: "state_transition",
+          payload: { reasons: ["OKTA thesis moved to forming"] },
+          acknowledged: false,
+          created_at: "2026-06-01T00:01:00Z",
+        },
+      ]);
       return;
     }
     if (path === "/api/regime") {
@@ -610,6 +629,16 @@ test("symbol routes deep-link selected ticker and keep navigation state", async 
 
   await expect(page.locator(".symbol-box input")).toHaveValue("NVDA");
   await expect(page).toHaveURL(/\/symbol\/NVDA$/);
+});
+
+test("symbol alerts tab excludes global alerts", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/symbol/OKTA");
+
+  await page.getByRole("button", { name: "alerts" }).click();
+
+  await expect(page.getByText("OKTA thesis moved to forming")).toBeVisible();
+  await expect(page.getByText("global portfolio drawdown warning")).not.toBeVisible();
 });
 
 test("evidence tab shows retrieved research sources", async ({ page }) => {

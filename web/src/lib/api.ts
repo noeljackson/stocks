@@ -1,7 +1,7 @@
 export interface Alert {
   id: number;
   thesis_id?: string | null;
-  symbol?: string;
+  symbol?: string | null;
   kind: string;
   payload?: Record<string, unknown>;
   acknowledged: boolean;

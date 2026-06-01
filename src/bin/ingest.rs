@@ -28,6 +28,8 @@ use stocks::platform::{bus::Bus, config::Config, logging, store::Store, subjects
 use stocks::sentiment;
 use tracing::{error, info};
 
+const EDGAR_FILING_ACTION: &str = "sec_edgar_submissions";
+
 #[tokio::main]
 async fn main() -> Result<()> {
     logging::init("ingest");
@@ -561,10 +563,34 @@ async fn main() -> Result<()> {
                 if let Err(e) = store.mark_source_started("edgar", attempted).await {
                     error!(error = %e, "edgar source health start record failed");
                 }
+                if let Err(e) = store
+                    .mark_source_tasks_fetching(&[EDGAR_FILING_ACTION], &symbols, "ingest.edgar")
+                    .await
+                {
+                    error!(error = %e, "edgar source task claim failed");
+                }
                 match adapter.poll_symbols(&symbols).await {
-                    Ok((events, missing_cik_count, failed_fetch_count)) => {
-                        let rows_seen = events.len() as i64;
-                        match persist_events(&store, &bus, "edgar", events).await {
+                    Ok(result) => {
+                        let rows_seen = result.events.len() as i64;
+                        let symbols_with_rows: Vec<String> = result
+                            .events
+                            .iter()
+                            .map(|ev| ev.symbol.to_ascii_uppercase())
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .into_iter()
+                            .collect();
+                        let successful_edgar_symbols: Vec<String> = symbols
+                            .iter()
+                            .filter(|s| {
+                                !result
+                                    .failed_fetch_symbols
+                                    .contains(&s.to_ascii_uppercase())
+                            })
+                            .cloned()
+                            .collect();
+                        let missing_cik_count = result.missing_cik_count();
+                        let failed_fetch_count = result.failed_fetch_count();
+                        match persist_events(&store, &bus, "edgar", result.events).await {
                             Ok((stored, published)) => {
                                 let failed = (missing_cik_count + failed_fetch_count) as i32;
                                 if let Err(e) = store
@@ -578,6 +604,31 @@ async fn main() -> Result<()> {
                                     .await
                                 {
                                     error!(error = %e, "edgar source health success record failed");
+                                }
+                                if let Err(e) = store
+                                    .complete_source_tasks_for_attempt(
+                                        EDGAR_FILING_ACTION,
+                                        &successful_edgar_symbols,
+                                        &symbols_with_rows,
+                                        "ingest.edgar",
+                                        chrono::Duration::minutes(30),
+                                    )
+                                    .await
+                                {
+                                    error!(error = %e, "edgar source task completion failed");
+                                }
+                                if let Err(e) = store
+                                    .fail_source_tasks_for_attempt(
+                                        EDGAR_FILING_ACTION,
+                                        &result.failed_fetch_symbols,
+                                        "ingest.edgar",
+                                        "failed",
+                                        "one or more SEC submissions requests failed",
+                                        None,
+                                    )
+                                    .await
+                                {
+                                    error!(error = %e, "edgar source task failure record failed");
                                 }
                                 if stored > 0 {
                                     info!(
@@ -603,6 +654,19 @@ async fn main() -> Result<()> {
                                 {
                                     error!(error = %record_err, "edgar source health failure record failed");
                                 }
+                                if let Err(task_err) = store
+                                    .fail_source_tasks_for_attempt(
+                                        EDGAR_FILING_ACTION,
+                                        &symbols,
+                                        "ingest.edgar",
+                                        source_health::failure_kind(&message),
+                                        &message,
+                                        None,
+                                    )
+                                    .await
+                                {
+                                    error!(error = %task_err, "edgar source task failure record failed");
+                                }
                                 error!(error = %e, "edgar filings persist failed");
                             }
                         }
@@ -619,6 +683,19 @@ async fn main() -> Result<()> {
                             .await
                         {
                             error!(error = %record_err, "edgar source health failure record failed");
+                        }
+                        if let Err(task_err) = store
+                            .fail_source_tasks_for_attempt(
+                                EDGAR_FILING_ACTION,
+                                &symbols,
+                                "ingest.edgar",
+                                source_health::failure_kind(&message),
+                                &message,
+                                None,
+                            )
+                            .await
+                        {
+                            error!(error = %task_err, "edgar source task failure record failed");
                         }
                         error!(error = %e, "edgar filings poll failed");
                     }

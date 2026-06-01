@@ -73,6 +73,7 @@ proposed discovery candidates, capped per provider loop. Dev defaults are
 |---|---|---|---|---|---|
 | Company facts (XBRL) | Evaluator metrics (`SYMBOL.gross_margin_pct`, etc.), context maintainer fundamentals block | **SEC EDGAR** | free, public | `/api/xbrl/companyfacts/CIK<N>.json` | wired — `src/ingest/xbrl.rs`; tiered deep universe so active tickers and top candidates acquire facts without starving the freshness loop |
 | CIK lookup | Resolving ticker → CIK before XBRL pull | SEC EDGAR | free | `/files/company_tickers.json` | wired — `src/ingest/sec.rs`; fetched dynamically with seeded fallback for known ADRs |
+| Filing metadata | 8-K/10-Q/10-K submission watch between slower XBRL fact refreshes | SEC EDGAR | free | `/submissions/CIK<N>.json` | wired — `src/ingest/edgar.rs`; owns `sec_edgar_submissions` source tasks on a 30-minute freshness loop |
 | Earnings calendar (upcoming + history) | Goalpost dates, horizon_at validation, beat/miss pattern | **FMP** | Starter | `/stable/earnings?symbol=` returns `epsActual/epsEstimated/revenueActual/revenueEstimated/lastUpdated`. `/stable/earnings-calendar?from=&to=` for global upcoming | not wired |
 | Company profile | Cluster classification context, market cap | FMP | Starter | `/stable/profile?symbol=` | not wired |
 | Insider transactions (Form 4/144) | Cross-check LLM context narrative claims | SEC EDGAR | free | `/cgi-bin/browse-edgar?action=getcompany&CIK=...&type=4` | not wired |

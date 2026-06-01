@@ -88,6 +88,7 @@ def test_context_user_message_includes_normalized_evidence_items() -> None:
 def test_assess_evidence_requirements_reports_missing_inputs() -> None:
     missing = assess_evidence_requirements({
         "price_bars": 12,
+        "filing_events": 1,
         "company_facts": 0,
         "recent_news": 0,
         "estimate_snapshots": 4,
@@ -115,10 +116,19 @@ def test_llm_missing_evidence_maps_fundamental_items_to_company_facts() -> None:
     }) == "company_facts"
 
 
+def test_llm_missing_evidence_maps_recent_filing_checks_to_edgar_metadata() -> None:
+    assert canonical_requirement_key({
+        "requirement_key": "recent_8k_check",
+        "source_type": "sec_filings",
+        "reason": "Need recent filing metadata for 8-K events.",
+    }) == "filing_metadata"
+
+
 def test_assess_evidence_requirements_attaches_source_health_state() -> None:
     missing = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "filing_events": 1,
             "company_facts": 0,
             "recent_news": 1,
             "estimate_snapshots": 4,
@@ -146,10 +156,45 @@ def test_assess_evidence_requirements_attaches_source_health_state() -> None:
     assert facts["source_ref"]["source_health"][0]["source"] == "xbrl"
 
 
+def test_assess_evidence_requirements_tracks_edgar_filing_metadata() -> None:
+    missing = assess_evidence_requirements(
+        {
+            "price_bars": 12,
+            "filing_events": 0,
+            "company_facts": 2,
+            "recent_news": 1,
+            "estimate_snapshots": 4,
+            "analyst_price_target_snapshots": 1,
+            "research_evidence": 1,
+        },
+        {
+            "edgar": {
+                "source": "edgar",
+                "last_status": "no_new_rows",
+                "last_failure_kind": None,
+                "last_error": None,
+                "retry_after_at": None,
+                "rows_seen": 0,
+                "rows_inserted": 0,
+            },
+        },
+    )
+
+    [filings] = missing
+    assert filings["requirement_key"] == "filing_metadata"
+    assert filings["source_type"] == "filings"
+    assert filings["fetch_actions"] == ["sec_edgar_submissions"]
+    [task] = build_source_tasks("MU", filings)
+    assert task["action"] == "sec_edgar_submissions"
+    assert task["provider"] == "sec"
+    assert task["state"] == "no_rows"
+
+
 def test_assess_evidence_requirements_marks_running_sources_as_fetching() -> None:
     missing = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "filing_events": 1,
             "company_facts": 0,
             "recent_news": 1,
             "estimate_snapshots": 4,
@@ -178,6 +223,7 @@ def test_assess_evidence_requirements_marks_checked_sources_as_missing() -> None
     missing = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "filing_events": 1,
             "company_facts": 0,
             "recent_news": 1,
             "estimate_snapshots": 4,
@@ -207,6 +253,7 @@ def test_assess_evidence_requirements_tracks_product_research() -> None:
     missing = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "filing_events": 1,
             "company_facts": 2,
             "recent_news": 1,
             "estimate_snapshots": 4,
@@ -237,6 +284,7 @@ def test_product_research_ignores_global_health_until_symbol_checked() -> None:
     missing = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "filing_events": 1,
             "company_facts": 2,
             "recent_news": 1,
             "estimate_snapshots": 4,
@@ -268,6 +316,7 @@ def test_assess_evidence_requirements_tracks_analyst_opinion() -> None:
     missing = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "filing_events": 1,
             "company_facts": 2,
             "recent_news": 1,
             "estimate_snapshots": 4,
@@ -302,6 +351,7 @@ def test_build_source_tasks_maps_missing_requirement_to_fetch_work() -> None:
     [news] = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "filing_events": 1,
             "company_facts": 2,
             "recent_news": 0,
             "estimate_snapshots": 4,
@@ -336,6 +386,7 @@ def test_build_source_tasks_maps_rate_limit_to_provider_pause() -> None:
     [estimates] = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "filing_events": 1,
             "company_facts": 2,
             "recent_news": 1,
             "estimate_snapshots": 0,
@@ -380,6 +431,7 @@ def test_build_source_tasks_applies_provider_wide_pause() -> None:
     [price] = assess_evidence_requirements(
         {
             "price_bars": 0,
+            "filing_events": 1,
             "company_facts": 2,
             "recent_news": 1,
             "estimate_snapshots": 4,
@@ -402,6 +454,7 @@ def test_build_source_tasks_applies_provider_wide_pause() -> None:
 def test_assess_evidence_requirements_empty_when_core_inputs_present() -> None:
     assert assess_evidence_requirements({
         "price_bars": 260,
+        "filing_events": 1,
         "company_facts": 20,
         "recent_news": 5,
         "estimate_snapshots": 10,

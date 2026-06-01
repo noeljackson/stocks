@@ -875,11 +875,10 @@ the trigger for basic acquisition.
 Current implementation note: the first active source-task worker owns
 Python-native web research (`gdelt_doc_search`, `bing_news_rss_search`) and is
 embedded in the cognition service. Rust ingest loops own source tasks for FMP,
-Massive, XBRL, FRED, CBOE, and sentiment scoring. Those expensive Rust loops
-now use a tiered deep-research universe or benchmark-scoped macro tasks instead
-of the entire screener pool. EDGAR filing freshness still needs the same direct
-task-claiming contract, and future factor/commodity adapters should follow that
-pattern from the start.
+Massive, XBRL, EDGAR, FRED, CBOE, and sentiment scoring. Those expensive Rust
+loops now use a tiered deep-research universe or benchmark-scoped macro tasks
+instead of the entire screener pool. Future factor/commodity adapters should
+follow that direct task-claiming contract from the start.
 
 ### Phase 3: Build The Parent Brain
 

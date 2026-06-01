@@ -335,8 +335,14 @@ impl Store {
                 WHERE scope = $4
                   AND target_id = ANY($1::text[])
                   AND action = ANY($2::text[])
-                  AND state IN ('queued', 'no_rows', 'failed', 'rate_limited', 'satisfied')
-                  AND due_at <= now()"#,
+                  AND due_at <= now()
+                  AND (
+                      state IN ('queued', 'no_rows', 'failed', 'rate_limited', 'satisfied')
+                      OR (
+                          state = 'fetching'
+                          AND updated_at < now() - interval '15 minutes'
+                      )
+                  )"#,
         )
         .bind(target_ids)
         .bind(&actions)

@@ -177,7 +177,9 @@ requirement says what is needed; source tasks say which provider/action should
 run, when it is due, whether it is rate-limited, and what retry state applies.
 Satisfied tasks are fresh-until `due_at`, not terminal; when a task becomes due
 the owning worker may claim it and re-check the source without making the ticker
-look blank.
+look blank. A `fetching` task whose claim is older than 15 minutes is treated as
+reclaimable work; this prevents an interrupted worker from leaving evidence
+acquisition stuck forever.
 
 The thesis engine also feeds this FSM. If it declines to draft because the
 context is too thin and returns structured `missing_evidence`, cognition maps
@@ -223,6 +225,7 @@ fmp_grades_historical             Rust ingest fmp_analyst_opinion loop claims/co
 fmp_price_target_news             Rust ingest fmp_analyst_opinion loop claims/completes
 sec_company_tickers_cik_lookup    Rust XBRL loop claims/completes
 sec_companyfacts_xbrl             Rust XBRL loop claims/completes
+sec_edgar_submissions             Rust EDGAR loop claims/completes
 fred_macro                        Rust FRED loop claims/completes benchmark task
 cboe_crowd_sentiment              Rust CBOE loop claims/completes benchmark task
 gdelt_doc_search                  Python source_task worker
@@ -235,10 +238,9 @@ new or recurring `fmp_price_backfill`, `fmp_news`, and analyst-opinion tasks are
 held in `rate_limited` until that retry time instead of being claimed by another
 worker path immediately.
 
-Remaining gap: #128 should make EDGAR filing freshness and future market/factor
-adapters claim and complete their `source_task` rows directly. The main
-price/news/estimate/opinion/XBRL/FRED/CBOE loops now own task rows as well as
-source health.
+Remaining gap: #128 should make future market/factor adapters claim and
+complete their `source_task` rows directly. The main price/news/estimate/
+opinion/XBRL/EDGAR/FRED/CBOE loops now own task rows as well as source health.
 
 ## Execution Loop
 
@@ -512,12 +514,11 @@ Current gaps:
   are no longer starved behind the broad screener pool.
 - #128: provider-wide retry gates now pause source tasks, and due source tasks
   move their symbols to the front of the expensive ingest scan universe. The
-  FMP price, estimates, analyst-opinion, news, XBRL, FRED, and CBOE loops now
-  claim/complete their source tasks directly; EDGAR filing freshness still
-  needs the same ownership path.
+  FMP price, estimates, analyst-opinion, news, XBRL, EDGAR, FRED, and CBOE
+  loops now claim/complete their source tasks directly.
 - #136: evidence requirements and source tasks are synchronized from source
-  health; Rust source loops still report through source health instead of
-  claiming every `source_task` row directly.
+  health. Remaining producer adoption work is for future factor/commodity
+  adapters and attention retry/blocked transitions.
 - #130: product/theme web retrieval has a first GDELT/Bing-backed slice; paid
   semantic search may still be needed if recall is too weak.
 - #93: normalized evidence items now have a first slice. News, estimate
@@ -754,6 +755,7 @@ implemented first slice
   FMP analyst opinion loop claims/completes consensus, grades, and target-news source tasks
   news loop claims/completes FMP, Massive, and configured LLM sentiment source tasks
   XBRL loop claims/completes SEC CIK lookup and companyfacts source tasks
+  EDGAR loop claims/completes SEC submission source tasks
   FRED loop claims/completes macro benchmark source task
   CBOE loop claims/completes crowd sentiment benchmark source task
   active ticker evidence sync bootstraps newly added requirement keys
@@ -761,7 +763,6 @@ implemented first slice
   cognition sweep refreshes open evidence rows before choosing targets
 
 missing
-  EDGAR filing freshness claims/completes source_task rows directly
   full producer adoption for attention retry/blocked transitions
   broader macro/factor/commodity data coverage for parent thesis generation
   paid semantic research provider if GDELT recall is insufficient

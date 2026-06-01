@@ -27,6 +27,7 @@ import asyncpg
 from . import config
 from .context_maintainer import _llm_cfg, _provider_name, _repo_root  # noqa: PLC2701
 from .context_maintainer import refresh as refresh_context
+from .evidence import load_open_evidence_requirements
 from .llm import new_provider
 from .prompts import AsyncpgRecorder, invoke, load
 
@@ -230,6 +231,7 @@ def _normalize_monitoring_draft(symbol: str, parsed: dict) -> dict:
     out["trigger_conditions"] = out.get("trigger_conditions") or []
     out["invalidation_conditions"] = out.get("invalidation_conditions") or []
     out["fulfillment_conditions"] = out.get("fulfillment_conditions") or []
+    out["missing_evidence"] = out.get("missing_evidence") or []
     out["conviction_tier"] = out.get("conviction_tier") or "low"
     out["instrument"] = out.get("instrument") or "equity"
     return out
@@ -265,6 +267,7 @@ async def draft(symbol: str) -> dict:
                     ),
                 }
         prior = await _load_prior_thesis(pool, symbol)
+        missing_evidence = await load_open_evidence_requirements(pool, symbol)
         if prior is not None:
             log.info(
                 "found prior thesis %s v%d state=%s — drafting fresh anyway "
@@ -284,6 +287,7 @@ async def draft(symbol: str) -> dict:
                 "symbol": symbol,
                 "today": today,
                 "context": context,
+                "missing_evidence": missing_evidence,
                 "cluster_thesis": None,  # populated when #1 cluster-thesis work lands
                 "prior_thesis": _summarize_prior(prior) if prior else None,
             },

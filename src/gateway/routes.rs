@@ -31,6 +31,10 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/theses", get(list_theses))
         .route("/api/thesis-declines", get(list_thesis_declines))
         .route(
+            "/api/evidence-requirements",
+            get(list_evidence_requirements),
+        )
+        .route(
             "/api/theses/{thesis_id}/transition",
             post(transition_thesis),
         )
@@ -110,6 +114,22 @@ async fn list_thesis_declines(
         Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
         Err(e) => {
             warn!(symbol = %sym, error = %e, "list_thesis_declines failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn list_evidence_requirements(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<ThesesQuery>,
+) -> impl IntoResponse {
+    let Some(sym) = q.symbol else {
+        return (StatusCode::BAD_REQUEST, "symbol query param required").into_response();
+    };
+    match gw.store.evidence_requirements_for_symbol(&sym).await {
+        Ok(v) => (StatusCode::OK, Json(v)).into_response(),
+        Err(e) => {
+            warn!(symbol = %sym, error = %e, "list_evidence_requirements failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
@@ -845,6 +865,36 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
         })
     };
 
+    // ---- evidence requirements ----
+    let evidence = {
+        let by_state: Vec<serde_json::Value> = sqlx::query(
+            r#"SELECT blocking_state, COUNT(*) AS n
+                 FROM evidence_requirement
+             GROUP BY blocking_state ORDER BY n DESC"#,
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            json!({
+                "state": r.try_get::<String, _>("blocking_state").unwrap_or_default(),
+                "count": r.try_get::<i64, _>("n").unwrap_or(0),
+            })
+        })
+        .collect();
+        let open: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM evidence_requirement WHERE blocking_state <> 'satisfied'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        json!({
+            "open_requirements": open,
+            "by_state": by_state,
+        })
+    };
+
     // ---- attention queue ----
     let attention = {
         let open: i64 =
@@ -923,6 +973,7 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
         "price_freshness": price_freshness,
         "discovery": discovery,
         "cognition": cognition,
+        "evidence": evidence,
         "attention": attention,
         "llm": llm,
     });

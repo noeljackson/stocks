@@ -15,6 +15,7 @@
     dismissAttention,
     fetchDecisions,
     fetchDiscoveryPool,
+    fetchEvidenceRequirements,
     fetchPendingCandidates,
     fetchRegime,
     fetchThesisDeclines,
@@ -31,6 +32,7 @@
     type AttentionItem,
     type Calibration,
     type DecisionRow,
+    type EvidenceRequirement,
     type MarketState,
     type PendingCandidate,
     type PoolMember,
@@ -48,7 +50,7 @@
   import { PaneGroup, Pane, PaneResizer } from "paneforge";
 
   // ---------- workspace state ----------
-  type RightTab = "overview" | "context" | "theses" | "alerts" | "decisions";
+  type RightTab = "overview" | "context" | "evidence" | "theses" | "alerts" | "decisions";
   type BottomMode = "attention" | "events" | "discovery" | "decisions" | "calibration" | "diagnostics";
 
   let selectedSymbol = $state<string | null>(null);
@@ -160,6 +162,22 @@
     return status;
   }
 
+  function evidenceActions(req: EvidenceRequirement): string[] {
+    const actions = req.source_ref?.fetch_actions;
+    return Array.isArray(actions)
+      ? actions.filter((a): a is string => typeof a === "string")
+      : [];
+  }
+
+  function evidenceCounts(req: EvidenceRequirement): string {
+    const counts = req.source_ref?.counts;
+    if (!counts || typeof counts !== "object" || Array.isArray(counts)) return "";
+    return Object.entries(counts)
+      .filter(([, v]) => typeof v === "number")
+      .map(([k, v]) => `${k.replace(/_/g, " ")} ${v}`)
+      .join(" · ");
+  }
+
   // Group attention items by (kind, symbol). For candidate_review this
   // collapses N candidates on the same ticker into one card; for other
   // kinds it's typically 1 item per group.
@@ -210,6 +228,7 @@
 
   // ---------- selected-symbol-scoped data ----------
   let symbolContext = $state<TickerContext | null | undefined>(undefined);
+  let symbolEvidence = $state<EvidenceRequirement[] | undefined>(undefined);
   let symbolTheses = $state<ThesisDetail[] | null | undefined>(undefined);
   let symbolDeclines = $state<ThesisDecline[] | null | undefined>(undefined);
   let symbolDecisions = $state<DecisionRow[] | null | undefined>(undefined);
@@ -351,17 +370,20 @@
     if (selectedSymbol === symbol) return;
     selectedSymbol = symbol;
     symbolContext = undefined;
+    symbolEvidence = undefined;
     symbolTheses = undefined;
     symbolDeclines = undefined;
     symbolDecisions = undefined;
     // Fetch detail in parallel.
-    const [ctx, theses, declines, decisions] = await Promise.all([
+    const [ctx, evidence, theses, declines, decisions] = await Promise.all([
       fetchTickerContext(symbol).catch(() => null),
+      fetchEvidenceRequirements(symbol).catch(() => []),
       fetchTheses(symbol).catch(() => []),
       fetchThesisDeclines(symbol).catch(() => []),
       fetchDecisions(symbol).catch(() => []),
     ]);
     symbolContext = ctx;
+    symbolEvidence = evidence;
     symbolTheses = theses;
     symbolDeclines = declines;
     symbolDecisions = decisions;
@@ -988,6 +1010,7 @@
             {@const ing = (sysStatus.ingest ?? {}) as Record<string, { last_at: string|null; count_24h: number; symbols_24h?: number }>}
             {@const disc = sysStatus.discovery as { last_pass_at: string|null; open_candidates: number; by_signal: { signal: string; count: number }[]; pool_size: number }}
             {@const cog = sysStatus.cognition as { contexts_24h: number; contexts_total_symbols: number; thesis_by_state: { state: string; count: number }[] }}
+            {@const ev = sysStatus.evidence as { open_requirements: number; by_state: { state: string; count: number }[] }}
             {@const att = sysStatus.attention as { open_items: number; by_kind: { kind: string; count: number }[] }}
             {@const llm = sysStatus.llm as { calls_24h: number; avg_latency_ms: number|null; by_prompt: { prompt: string; count: number; avg_ms: number|null; last_at: string|null }[] }}
             {@const health = (sysStatus.source_health ?? []) as { source: string; last_status: string; last_started_at: string|null; last_success_at: string|null; last_failure_at: string|null; last_failure_kind?: string|null; last_error?: string|null; retry_after_at?: string|null; rows_seen: number; rows_inserted: number; symbols_attempted: number; symbols_failed: number }[]}
@@ -1065,6 +1088,20 @@
                 {#if cog.thesis_by_state?.length}
                   <ul class="chips">
                     {#each cog.thesis_by_state as s (s.state)}
+                      <li class="chip">{s.state}: <strong>{s.count}</strong></li>
+                    {/each}
+                  </ul>
+                {/if}
+              </section>
+
+              <section class="diag">
+                <h5>Evidence</h5>
+                <dl class="meta-list inline">
+                  <dt>open requirements</dt><dd>{ev.open_requirements}</dd>
+                </dl>
+                {#if ev.by_state?.length}
+                  <ul class="chips">
+                    {#each ev.by_state as s (s.state)}
                       <li class="chip">{s.state}: <strong>{s.count}</strong></li>
                     {/each}
                   </ul>
@@ -1187,7 +1224,7 @@
       <section class="detail-section">
         {#if selectedSymbol}
           <nav class="tabs">
-            {#each ["overview", "context", "theses", "alerts", "decisions"] as RightTab[] as t}
+            {#each ["overview", "context", "evidence", "theses", "alerts", "decisions"] as RightTab[] as t}
               <button class:active={rightTab === t} onclick={() => (rightTab = t)}>{t}</button>
             {/each}
           </nav>
@@ -1210,6 +1247,33 @@
                 <p class="muted">Loading…</p>
               {:else}
                 <ContextPanel ctx={symbolContext ?? null} symbol={selectedSymbol} />
+              {/if}
+            {:else if rightTab === "evidence"}
+              {#if symbolEvidence === undefined}
+                <p class="muted">Loading…</p>
+              {:else if symbolEvidence.length === 0}
+                <p class="muted">No evidence requirements recorded for <strong>{selectedSymbol}</strong> yet.</p>
+              {:else}
+                <ul class="evidence-list">
+                  {#each symbolEvidence as req (req.id)}
+                    <li class="evidence-card state-{req.blocking_state}">
+                      <div class="evidence-row">
+                        <strong>{req.source_type.replace(/_/g, " ")}</strong>
+                        <span class="badge tiny">{req.priority}</span>
+                        <span class="badge tiny">{req.blocking_state}</span>
+                        {#if req.next_retry_at}<span class="muted">retry {relativeTime(req.next_retry_at)}</span>{/if}
+                      </div>
+                      <p>{req.reason}</p>
+                      {#if evidenceActions(req).length}
+                        <p class="muted">will try {evidenceActions(req).map((a) => a.replace(/_/g, " ")).join(", ")}</p>
+                      {/if}
+                      {#if evidenceCounts(req)}
+                        <p class="muted">{evidenceCounts(req)}</p>
+                      {/if}
+                      {#if req.last_error}<p class="error-text">{req.last_error}</p>{/if}
+                    </li>
+                  {/each}
+                </ul>
               {/if}
             {:else if rightTab === "theses"}
               {#if symbolTheses === undefined || symbolDeclines === undefined}
@@ -1649,6 +1713,28 @@
     display: flex; align-items: baseline; gap: .4rem; margin-bottom: .25rem;
   }
   .decline-card p { margin: 0; color: #bac2de; line-height: 1.35; }
+  .evidence-list {
+    list-style: none; padding: 0; margin: 0;
+    display: flex; flex-direction: column; gap: .45rem;
+  }
+  .evidence-card {
+    border: 1px solid #1f2733;
+    border-radius: 4px;
+    background: #0c1019;
+    padding: .55rem .65rem;
+    font-size: .8rem;
+  }
+  .evidence-card.state-missing,
+  .evidence-card.state-partial,
+  .evidence-card.state-blocked {
+    border-color: rgba(249, 226, 175, .35);
+  }
+  .evidence-card.state-satisfied { opacity: .72; }
+  .evidence-row {
+    display: flex; gap: .4rem; align-items: baseline; flex-wrap: wrap; margin-bottom: .25rem;
+  }
+  .evidence-card p { margin: 0; color: #bac2de; line-height: 1.35; }
+  .error-text { color: rgb(243, 139, 168) !important; }
 
   /* Generic */
   .kind { font-size: .65rem; text-transform: uppercase; letter-spacing: .05em; }

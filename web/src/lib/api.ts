@@ -141,6 +141,29 @@ export async function fetchThesisDeclines(symbol: string): Promise<ThesisDecline
   return ((await r.json()) as ThesisDecline[] | null) ?? [];
 }
 
+export interface EvidenceRequirement {
+  id: number;
+  symbol: string;
+  requirement_key: string;
+  source_type: string;
+  reason: string;
+  priority: "low" | "medium" | "high" | "blocking";
+  blocking_state: "missing" | "fetching" | "partial" | "blocked" | "satisfied";
+  attempts: number;
+  next_retry_at?: string | null;
+  last_error?: string | null;
+  source_ref: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  satisfied_at?: string | null;
+}
+
+export async function fetchEvidenceRequirements(symbol: string): Promise<EvidenceRequirement[]> {
+  const r = await fetch(`/api/evidence-requirements?symbol=${encodeURIComponent(symbol)}`);
+  if (!r.ok) throw new Error(`evidence requirements ${r.status}`);
+  return ((await r.json()) as EvidenceRequirement[] | null) ?? [];
+}
+
 export interface TickerContext {
   symbol: string;
   version: number;

@@ -1,6 +1,7 @@
 import datetime as dt
 
 from stocks.context_maintainer import _build_price_snapshot
+from stocks.evidence import assess_evidence_requirements
 
 
 def _bar(day: int, close: float, volume: float = 100.0):
@@ -47,3 +48,24 @@ def test_price_snapshot_handles_short_history_without_fake_sma():
     assert snap["sma_20"] is None
     assert snap["sma_200"] is None
     assert snap["pct_vs_sma_200"] is None
+
+
+def test_assess_evidence_requirements_reports_missing_inputs() -> None:
+    missing = assess_evidence_requirements({
+        "price_bars": 12,
+        "company_facts": 0,
+        "recent_news": 0,
+        "estimate_snapshots": 4,
+    })
+
+    keys = {r["requirement_key"] for r in missing}
+    assert keys == {"company_facts", "recent_news"}
+
+
+def test_assess_evidence_requirements_empty_when_core_inputs_present() -> None:
+    assert assess_evidence_requirements({
+        "price_bars": 260,
+        "company_facts": 20,
+        "recent_news": 5,
+        "estimate_snapshots": 10,
+    }) == []

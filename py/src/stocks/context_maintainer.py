@@ -20,10 +20,19 @@ from pathlib import Path
 import asyncpg
 
 from . import config
+from .evidence import load_evidence_counts, sync_evidence_requirements
 from .llm import TransportConfig, detect, new_provider
 from .prompts import AsyncpgRecorder, invoke, load
 
 log = logging.getLogger("context_maintainer")
+
+
+class BlockingEvidenceMissing(RuntimeError):
+    def __init__(self, symbol: str, missing: list[dict]) -> None:
+        self.symbol = symbol
+        self.missing = missing
+        keys = ", ".join(r["requirement_key"] for r in missing)
+        super().__init__(f"{symbol} missing blocking evidence: {keys}")
 
 
 def _provider_name(cfg: config.Config) -> str:
@@ -324,6 +333,8 @@ def _build_user_message(
     price_snapshot: dict | None,
     news: list[dict],
     estimate_revisions: list[dict],
+    evidence_counts: dict[str, int],
+    missing_evidence: list[dict],
     today: str,
 ) -> str:
     """The system prompt is the rendered template. This user message carries
@@ -338,6 +349,8 @@ def _build_user_message(
             "price_snapshot": price_snapshot,
             "recent_news": news,
             "estimate_revisions": estimate_revisions,
+            "evidence_counts": evidence_counts,
+            "missing_evidence": missing_evidence,
         },
         indent=2,
         default=str,
@@ -421,9 +434,11 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
         price_snapshot = await _load_price_snapshot(pool, symbol)
         news = await _load_recent_news(pool, symbol, since)
         estimate_revisions = await _load_estimate_revisions(pool, symbol, since)
+        evidence_counts = await load_evidence_counts(pool, symbol)
+        missing_evidence = await sync_evidence_requirements(pool, symbol, evidence_counts)
         log.info(
             "symbol=%s prior=%s events_count=%d facts_count=%d "
-            "news_count=%d revisions_count=%d price=%s",
+            "news_count=%d revisions_count=%d price=%s missing_evidence=%d",
             symbol,
             f"v{prior['version']}" if prior else "none",
             len(events),
@@ -431,7 +446,16 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
             len(news),
             len(estimate_revisions),
             "yes" if price_snapshot else "no",
+            len(missing_evidence),
         )
+        blocking_evidence = [r for r in missing_evidence if r["priority"] == "blocking"]
+        if blocking_evidence:
+            log.info(
+                "symbol=%s blocking_evidence=%s; skipping context LLM",
+                symbol,
+                [r["requirement_key"] for r in blocking_evidence],
+            )
+            raise BlockingEvidenceMissing(symbol, blocking_evidence)
 
         # Skip only when there is no newly timestamped signal and the prior row
         # already has the price-aware market band. Legacy contexts need one
@@ -463,6 +487,8 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
             price_snapshot,
             news,
             estimate_revisions,
+            evidence_counts,
+            missing_evidence,
             today,
         )
         provider = new_provider(_llm_cfg(cfg))

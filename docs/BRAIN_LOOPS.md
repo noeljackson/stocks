@@ -488,6 +488,11 @@ What works now:
 - Evidence checklists are bootstrapped for old tickers.
 - Open theses are explicitly due for re-evaluation after 30 minutes.
 - Fresh drafts reconcile into one canonical open thesis per symbol.
+- Draft/reconcile runs attach the latest normalized evidence facts to the
+  thesis via `thesis_evidence`, so the current view can be inspected back to
+  concrete source rows.
+- Malformed draft JSON is retried through the same audited prompt path instead
+  of crashing the cognition update loop on the first bad model response.
 - Dev cognition sweep runs every 5 minutes over up to 20 active symbols by
   default, so a larger universe is not starved behind a five-symbol batch.
 - Each sweep now refreshes open evidence requirements from the latest source
@@ -513,8 +518,11 @@ Current gaps:
 - #93: normalized evidence items now have a first slice. News, estimate
   revisions, and analyst price-target events are backfilled and new ingest rows
   create `evidence_item` records. Context and thesis prompts now receive those
-  facts directly; the remaining work is producer coverage for filings, price
-  action, regime/context shifts, and explicit thesis-evidence links.
+  facts directly, thesis drafting/reconciliation records `thesis_evidence`
+  links for the current fact set, and the thesis UI shows those linked facts.
+  The remaining work is producer coverage for filings, price action,
+  regime/context shifts, and more selective LLM-picked support/contradiction
+  labels.
 
 Selected-symbol status now exposes the first slice of #128:
 
@@ -583,6 +591,8 @@ What works now:
 - The DB enforces one non-closed/non-disqualified thesis per symbol.
 - Duplicate open theses were retired into history.
 - The UI shows one current thesis and a separate retired-history section.
+- The UI shows linked evidence facts for the current thesis, ordered by
+  evidence weight and recency.
 - Consensus crossings without a thesis now create `thesis_incomplete`
   attention instead of fake `thesis.updated` events.
 

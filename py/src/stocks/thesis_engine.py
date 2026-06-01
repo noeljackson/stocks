@@ -134,11 +134,48 @@ async def _load_evidence_items(
     return out
 
 
+def _evidence_weight(item: dict) -> float | None:
+    strength = item.get("strength")
+    polarity = item.get("polarity")
+    if isinstance(strength, (int, float)):
+        return max(0.0, min(1.0, float(strength)))
+    if isinstance(polarity, (int, float)):
+        return max(0.0, min(1.0, abs(float(polarity))))
+    return None
+
+
+async def _link_thesis_evidence(
+    pool: asyncpg.Pool,
+    thesis_id: uuid.UUID,
+    evidence_items: list[dict],
+) -> None:
+    rows = [
+        (thesis_id, int(item["id"]), _evidence_weight(item), "system")
+        for item in evidence_items[:25]
+        if item.get("id") is not None
+    ]
+    if not rows:
+        return
+    await pool.executemany(
+        """INSERT INTO thesis_evidence (thesis_id, evidence_id, weight, added_by)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (thesis_id, evidence_id) DO UPDATE SET
+             weight = GREATEST(
+               COALESCE(thesis_evidence.weight, 0.0),
+               COALESCE(EXCLUDED.weight, 0.0)
+             ),
+             added_by = EXCLUDED.added_by""",
+        rows,
+    )
+
+
 def _extract_json(content: str) -> dict:
     s = content.strip()
+    clean_error = ""
     try:
         return json.loads(s)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        clean_error = str(e)
         pass
     for fence in ("```json", "```"):
         if s.startswith(fence):
@@ -153,8 +190,67 @@ def _extract_json(content: str) -> dict:
     start = s.find("{")
     end = s.rfind("}")
     if start >= 0 and end > start:
-        return json.loads(s[start:end + 1])
-    raise ValueError(f"could not parse JSON from LLM response: {s[:200]}")
+        try:
+            return json.loads(s[start:end + 1])
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"could not parse JSON object from LLM response: {e.msg} "
+                f"at line {e.lineno} column {e.colno}: {s[:200]}"
+            ) from e
+    raise ValueError(f"could not parse JSON from LLM response: {clean_error}: {s[:200]}")
+
+
+async def _invoke_draft_json(
+    *,
+    provider,
+    pool: asyncpg.Pool,
+    prompt,
+    user_msg: str,
+    provider_name: str,
+    model: str,
+    symbol: str,
+    today: str,
+    max_retries: int = 2,
+):
+    current_user = user_msg
+    last_error: Exception | None = None
+    for attempt in range(max_retries + 1):
+        resp = await invoke(
+            provider=provider,
+            recorder=AsyncpgRecorder(pool),
+            prompt=prompt,
+            vars={"symbol": symbol, "today": today},
+            user_message=current_user,
+            provider_name=provider_name,
+            model=model,
+            max_tokens=4096,
+        )
+        try:
+            return _extract_json(resp.content), resp
+        except ValueError as e:
+            last_error = e
+            if attempt >= max_retries:
+                raise RuntimeError(
+                    "draft-thesis returned invalid JSON after "
+                    f"{max_retries + 1} attempts: {e}"
+                ) from e
+            log.warning(
+                "draft-thesis JSON parse failed for %s (attempt %d/%d); retrying: %s",
+                symbol,
+                attempt + 1,
+                max_retries + 1,
+                e,
+            )
+            current_user = (
+                f"{user_msg}\n\n"
+                "[Previous draft-thesis response was invalid JSON. "
+                "Reply ONLY with one complete valid JSON object matching the "
+                "draft-thesis prompt contract. Do not include prose or markdown "
+                f"fences. JSON parse error: {e}.]\n\n"
+                "[Invalid response excerpt]\n"
+                f"{resp.content[:3000]}"
+            )
+    raise RuntimeError(f"draft-thesis retry loop exited unexpectedly: {last_error}")
 
 
 async def _persist_thesis(
@@ -615,17 +711,16 @@ async def draft(symbol: str) -> dict:
             provider_name, cfg.model_deep, prompt.name, prompt.hash[:12],
         )
 
-        resp = await invoke(
+        parsed, resp = await _invoke_draft_json(
             provider=provider,
-            recorder=AsyncpgRecorder(pool),
+            pool=pool,
             prompt=prompt,
-            vars={"symbol": symbol, "today": today},
-            user_message=user_msg,
+            user_msg=user_msg,
             provider_name=provider_name,
             model=cfg.model_deep,
-            max_tokens=4096,
+            symbol=symbol,
+            today=today,
         )
-        parsed = _extract_json(resp.content)
 
         kind = _draft_kind(parsed, context)
         if kind == "monitoring":
@@ -637,6 +732,7 @@ async def draft(symbol: str) -> dict:
             )
             if prior is not None:
                 await _record_decline_reconciliation(pool, prior, parsed, context)
+                await _link_thesis_evidence(pool, prior["thesis_id"], evidence_items)
                 parsed["_reconciled_existing_thesis"] = True
                 parsed["_reconciliation_classification"] = "invalidates_existing_view"
             return parsed
@@ -649,6 +745,7 @@ async def draft(symbol: str) -> dict:
         else:
             thesis_id = await _persist_thesis(pool, symbol, parsed)
             await _resolve_stale_incomplete_attention(pool, symbol, thesis_id)
+        await _link_thesis_evidence(pool, thesis_id, evidence_items)
         log.info(
             "persisted/reconciled thesis %s for %s (input=%d output=%d)",
             thesis_id, symbol, resp.usage.input_tokens, resp.usage.output_tokens,

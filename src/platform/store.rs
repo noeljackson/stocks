@@ -1731,6 +1731,45 @@ impl Store {
                 })
                 .collect();
 
+            let evidence_rows = sqlx::query(
+                r#"SELECT ei.id, ei.symbol, ei.kind, ei.observed_at, ei.source,
+                          ei.source_id, ei.source_ref, ei.summary, ei.strength,
+                          ei.polarity, ei.url, ei.created_at,
+                          te.weight, te.added_by
+                     FROM thesis_evidence te
+                     JOIN evidence_item ei ON ei.id = te.evidence_id
+                    WHERE te.thesis_id = $1
+                 ORDER BY te.weight DESC NULLS LAST, ei.observed_at DESC, ei.id DESC
+                    LIMIT 25"#,
+            )
+            .bind(thesis_id)
+            .fetch_all(&self.pool)
+            .await
+            .context("thesis_evidence")?;
+            let evidence_items: Vec<serde_json::Value> = evidence_rows
+                .into_iter()
+                .map(|r| {
+                    let observed_at: DateTime<Utc> = r.try_get("observed_at")?;
+                    let created_at: DateTime<Utc> = r.try_get("created_at")?;
+                    Ok(serde_json::json!({
+                        "id": r.try_get::<i64, _>("id")?,
+                        "symbol": r.try_get::<String, _>("symbol")?,
+                        "kind": r.try_get::<String, _>("kind")?,
+                        "observed_at": observed_at,
+                        "source": r.try_get::<String, _>("source")?,
+                        "source_id": r.try_get::<String, _>("source_id")?,
+                        "source_ref": r.try_get::<serde_json::Value, _>("source_ref")?,
+                        "summary": r.try_get::<String, _>("summary")?,
+                        "strength": r.try_get::<Option<f64>, _>("strength")?,
+                        "polarity": r.try_get::<Option<f64>, _>("polarity")?,
+                        "url": r.try_get::<Option<String>, _>("url")?,
+                        "created_at": created_at,
+                        "weight": r.try_get::<Option<f64>, _>("weight")?,
+                        "added_by": r.try_get::<String, _>("added_by")?,
+                    }))
+                })
+                .collect::<Result<Vec<_>>>()?;
+
             let forecast: serde_json::Value = row.try_get("forecast")?;
             let conviction_conditions: serde_json::Value = row.try_get("conviction_conditions")?;
             let trigger_conditions: serde_json::Value = row.try_get("trigger_conditions")?;
@@ -1800,6 +1839,7 @@ impl Store {
                 updated_at: row.try_get("updated_at")?,
                 last_evaluated_at: row.try_get("last_evaluated_at").ok(),
                 history,
+                evidence_items,
                 substance: Some(substance_summary),
             });
         }

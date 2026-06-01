@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Condition, ThesisDetail } from "./api";
+  import type { Condition, EvidenceItem, ThesisDetail } from "./api";
 
   let { thesis }: { thesis: ThesisDetail } = $props();
 
@@ -38,6 +38,7 @@
   let forecastDirection = $derived(forecastField("direction"));
   let forecastMagnitude = $derived(forecastField("magnitude_rough"));
   let forecastHorizon = $derived(forecastField("horizon_event"));
+  let linkedEvidence = $derived(thesis.evidence_items ?? []);
 
   // Substance checklist (#10): which structural slots are filled.
   let sub = $derived(thesis.substance);
@@ -67,6 +68,35 @@
 
   function shortTs(s: string): string {
     return new Date(s).toLocaleString();
+  }
+
+  function evidenceTone(item: EvidenceItem): string {
+    if (item.polarity === null || item.polarity === undefined) return "neutral";
+    if (item.polarity > 0.15) return "positive";
+    if (item.polarity < -0.15) return "negative";
+    return "neutral";
+  }
+
+  function pct(value: number | null | undefined): string | null {
+    if (value === null || value === undefined) return null;
+    return `${Math.round(value * 100)}`;
+  }
+
+  function evidenceMeta(item: EvidenceItem): string {
+    const parts = [
+      item.kind.replace(/_/g, " "),
+      item.source.replace(/_/g, " "),
+      shortTs(item.observed_at),
+    ];
+    const weight = pct(item.weight);
+    const strength = pct(item.strength);
+    if (weight) parts.push(`weight ${weight}`);
+    if (strength) parts.push(`strength ${strength}`);
+    if (item.polarity !== null && item.polarity !== undefined) {
+      const polarity = item.polarity > 0 ? `+${item.polarity.toFixed(2)}` : item.polarity.toFixed(2);
+      parts.push(`polarity ${polarity}`);
+    }
+    return parts.join(" · ");
   }
 </script>
 
@@ -130,6 +160,25 @@
     <p class="warn">⚠ Edge rationale has changed from v1.
       Original: <em>"{thesis.immutable_original.edge_rationale}"</em>
     </p>
+  {/if}
+
+  {#if linkedEvidence.length > 0}
+    <h4>Linked evidence</h4>
+    <ul class="linked-evidence">
+      {#each linkedEvidence.slice(0, 8) as item (item.id)}
+        <li class="linked-evidence-item tone-{evidenceTone(item)}">
+          <div class="evidence-row">
+            {#if item.url}
+              <a href={item.url} target="_blank" rel="noreferrer">{item.summary}</a>
+            {:else}
+              <strong>{item.summary}</strong>
+            {/if}
+            <span class="badge tiny">{item.kind.replace(/_/g, " ")}</span>
+          </div>
+          <p class="muted">{evidenceMeta(item)}</p>
+        </li>
+      {/each}
+    </ul>
   {/if}
 
   <div class="two-col">
@@ -263,8 +312,27 @@
   .badge {
     display: inline-block; padding: 0.05rem 0.4rem; border-radius: 4px; font-size: 0.7rem;
   }
+  .badge.tiny { font-size: 0.65rem; text-transform: uppercase; }
   .badge.danger { background: rgba(243, 139, 168, 0.18); color: rgb(243, 139, 168); }
   .badge.ok { background: rgba(166, 227, 161, 0.15); color: rgb(166, 227, 161); }
+
+  .linked-evidence {
+    list-style: none; padding: 0; margin: 0.25rem 0 0.75rem 0;
+    display: flex; flex-direction: column; gap: 0.3rem;
+  }
+  .linked-evidence-item {
+    background: #11161f; border: 1px solid #1f2733; border-left: 3px solid #45567a;
+    border-radius: 4px; padding: 0.4rem 0.6rem;
+  }
+  .linked-evidence-item.tone-positive { border-left-color: rgb(166, 227, 161); }
+  .linked-evidence-item.tone-negative { border-left-color: rgb(243, 139, 168); }
+  .linked-evidence-item.tone-neutral { border-left-color: rgb(137, 180, 250); }
+  .evidence-row {
+    display: flex; gap: 0.4rem; align-items: baseline; flex-wrap: wrap; margin-bottom: 0.2rem;
+  }
+  .evidence-row a { color: #89b4fa; text-decoration: none; }
+  .evidence-row a:hover { text-decoration: underline; }
+  .linked-evidence p { margin: 0; font-size: 0.8rem; }
 
   .hist { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
   .hist li {

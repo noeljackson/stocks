@@ -179,6 +179,11 @@ Satisfied tasks are fresh-until `due_at`, not terminal; when a task becomes due
 the owning worker may claim it and re-check the source without making the ticker
 look blank.
 
+Due `source_task` rows also feed the tiered deep-research universe ahead of
+ordinary active tickers and proposed candidates. This means missing/stale
+evidence creates provider work pressure even before every Rust ingest adapter
+fully claims and completes task rows itself.
+
 Current ownership:
 
 ```text
@@ -446,7 +451,8 @@ Current gaps:
   are no longer starved behind the broad screener pool.
 - #128: provider-wide retry gates now pause source tasks, but Rust market-data
   adapters still write source-health summaries instead of claiming every
-  source_task row directly.
+  source_task row directly. Due source tasks do, however, now move their symbols
+  to the front of the expensive ingest scan universe.
 - #136: evidence requirements and source tasks are synchronized from source
   health; Rust source loops still report through source health instead of
   claiming every `source_task` row directly.
@@ -668,6 +674,7 @@ implemented first slice
   source_task rows track acquisition action/state/due time
   satisfied source_task rows requeue when freshness is due
   provider-wide rate-limit pauses are applied to all matching source tasks
+  due source_task symbols are prioritized by expensive ingest loops
   active ticker evidence sync bootstraps newly added requirement keys
   Python source_task worker claims and runs due web research tasks
   cognition sweep refreshes open evidence rows before choosing targets

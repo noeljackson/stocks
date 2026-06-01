@@ -250,6 +250,22 @@ impl Store {
     pub async fn priority_scan_symbols(&self, limit: i64) -> Result<Vec<String>> {
         let rows: Vec<(String,)> = sqlx::query_as(
             r#"WITH ranked AS (
+                  SELECT target_id AS symbol,
+                         -1 AS source_rank,
+                         CASE priority
+                           WHEN 'blocking' THEN 0
+                           WHEN 'high' THEN 1
+                           WHEN 'medium' THEN 2
+                           ELSE 3
+                         END AS tier_rank,
+                         100.0 AS fit_rank,
+                         due_at AS last_ranked_at
+                    FROM source_task
+                   WHERE scope = 'symbol'
+                     AND state IN ('queued', 'no_rows', 'failed', 'rate_limited', 'satisfied')
+                     AND due_at <= now()
+                     AND target_id <> ''
+                  UNION ALL
                   SELECT symbol,
                          0 AS source_rank,
                          tier AS tier_rank,

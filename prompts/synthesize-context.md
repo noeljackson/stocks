@@ -8,8 +8,11 @@ You are given:
 1. `prior_context` — the prior context for this ticker (may be null if this is the first pass).
 2. `new_events` — raw `ingest_event` rows (filings, macro observations, etc.) accumulated since the last context update.
 3. `company_facts` — structured XBRL facts pulled from SEC filings. For each concept (Revenues, GrossProfit, OperatingIncomeLoss, NetIncomeLoss, NetCashProvidedByUsedInOperatingActivities, etc.), the latest 2 observations across periods. Use these to fill `structural.fundamentals` with REAL numbers — never null when a fact is present.
+4. `price_snapshot` — latest daily close plus SMA 20D/50D/100D/200D, distance from available-window high, and volume versus 20-day average. Use this to describe current market setup; do not treat it as a thesis by itself.
+5. `recent_news` — recent scored articles for this ticker. Use these for narrative shifts and pending catalysts.
+6. `estimate_revisions` — analyst consensus drift events. Use these for `narrative.analyst_trajectory`.
 
-Your output is **strictly JSON** with exactly these two top-level keys: `structural` and `narrative`. No prose, no markdown fences, no commentary.
+Your output is **strictly JSON** with exactly these three top-level keys: `structural`, `narrative`, and `market`. No prose, no markdown fences, no commentary.
 
 ```
 {
@@ -30,6 +33,21 @@ Your output is **strictly JSON** with exactly these two top-level keys: `structu
     "lagged_positioning": {
       "notes": "13F flows, short interest changes from filings — explicitly note these are LAGGED."
     }
+  },
+  "market": {
+    "price_state": {
+      "as_of": "YYYY-MM-DD",
+      "close": <number or null>,
+      "sma_20": <number or null>,
+      "sma_50": <number or null>,
+      "sma_100": <number or null>,
+      "sma_200": <number or null>,
+      "pct_vs_sma_200": <number or null>,
+      "pct_vs_available_window_high": <number or null>,
+      "volume_vs_20d_avg": <number or null>
+    },
+    "technical_context": "One sentence tying price_snapshot together, e.g. extended +0.0% from high and +45% vs 200D SMA, or basing below 200D. Name the SMA window.",
+    "attention_reason": "Why this ticker is worth operator attention now, using price/news/revision evidence. If there is no reason, say no current attention reason."
   },
   "narrative": {
     "themes": ["theme 1", "theme 2", "..."],
@@ -52,6 +70,7 @@ Your output is **strictly JSON** with exactly these two top-level keys: `structu
 - **Cite sources inline** for narrative claims: "(8-K 2026-04-12)", "(10-Q 2026-04-30)". The reader should know which event in the corpus a claim came from.
 - **Evolve, don't replace.** If a prior context exists, your job is to update it — keep what's still true, supersede what's been overtaken by new evidence, and explicitly note what's been *invalidated* by recent filings.
 - **Anchor to today.** If a prior thesis said "watch Q1 earnings" and Q1 has now reported, mark it resolved with the outcome.
-- **Market band is NOT your job.** Price, volume, technicals, options flow — leave to the market-band raw indicator pipeline (not LLM-synthesized per SPEC §5.2).
+- **Market context is allowed, but be precise.** Never say "SMA" without the window. Write "200-day SMA", "50-day SMA", etc. Do not manufacture RSI/options facts unless they are in the input.
+- **Do not confuse evidence with edge.** A volume spike at all-time highs may be an exhaustion/attention cue, not early discovery. Say that plainly in `market.attention_reason`.
 
 Output the JSON. Nothing else.

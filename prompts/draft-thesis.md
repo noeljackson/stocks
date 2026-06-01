@@ -29,6 +29,12 @@ The user message contains:
 - `prior_thesis` — any prior thesis we've drafted (may be null)
 - `today` — anchor date
 
+Use these canonical `missing_evidence[].requirement_key` values when possible:
+`price_history`, `company_facts`, `recent_news`, `analyst_estimates`,
+`analyst_opinion`, and `product_research`. If product, customer, commodity,
+roadmap, benchmark, or theme evidence is missing, use `product_research` so the
+research retrieval loop can fetch it.
+
 The context narrative may include `research_sources` from targeted company,
 product, commodity, macro, sector, or theme web retrieval. Treat these as
 first-class evidence when evaluating roadmaps, benchmarks, deployment claims,

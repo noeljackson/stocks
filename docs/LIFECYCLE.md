@@ -65,6 +65,8 @@ discovery_pool                              active ticker/watchlist universe
      ticker_context version                 honest no-edge / waiting decline
      structural/narrative/market            thesis_incomplete attention
      evidence state updated                 missing evidence visible
+                                             LLM missing_evidence re-enters
+                                             evidence_requirement/source_task
               │
               ▼
           thesis state machine
@@ -216,6 +218,23 @@ creating attention. Resolvers must close attention through a transition path
 that updates the coarse `status`, moves `fsm_state` to `resolved` or
 `dismissed`, and appends `attention_state_history`. Updating `status` alone is
 ambiguous and should be treated as a bug.
+
+For `thesis_incomplete`, `fsm_state` describes whether the operator should act:
+
+```text
+LLM/context returns missing_evidence
+  -> sync evidence_requirement + source_task
+  -> fsm_state = waiting_on_data
+  -> owner = source
+
+LLM/context has enough evidence but no edge
+  -> fsm_state = ready_for_review
+  -> owner = operator
+```
+
+This prevents "no thesis" from hiding two different states: the system is still
+fetching evidence, or the system has enough evidence and currently sees no
+tradeable edge.
 
 The canonical manual transition endpoint is:
 

@@ -179,6 +179,31 @@ Satisfied tasks are fresh-until `due_at`, not terminal; when a task becomes due
 the owning worker may claim it and re-check the source without making the ticker
 look blank.
 
+The thesis engine also feeds this FSM. If it declines to draft because the
+context is too thin and returns structured `missing_evidence`, cognition maps
+those requirements back to canonical acquisition keys:
+
+```text
+LLM missing_evidence
+  price/fundamental/news/estimate/opinion/product-research need
+        |
+        v
+canonical evidence_requirement
+        |
+        v
+source_task rows for the owning provider
+        |
+        v
+thesis_incomplete attention = waiting_on_data / owner=source
+```
+
+That distinction matters operationally: `waiting_on_data` means the system
+should fetch or retry sources; `ready_for_review` means the system found no
+edge with sufficient evidence and the operator may dismiss or keep monitoring.
+Product, customer, commodity, benchmark, roadmap, and other theme-specific
+requests map to `product_research`, so a DELL/AMD-style "need public adoption
+evidence" decline creates web-research pressure instead of becoming inert text.
+
 Due `source_task` rows also feed the tiered deep-research universe ahead of
 ordinary active tickers and proposed candidates. This means missing/stale
 evidence creates provider work pressure even before every Rust ingest adapter

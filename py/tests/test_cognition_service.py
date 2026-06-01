@@ -4,6 +4,7 @@ import pytest
 
 from stocks.cognition_service import (
     _await_with_ack_progress,
+    _decline_attention_assignment,
     _effective_sweep_interval_seconds,
     _effective_sweep_limit,
     _run_symbol_once,
@@ -80,6 +81,21 @@ def test_sweep_trigger_bootstraps_missing_evidence_without_open_thesis() -> None
 
 def test_sweep_trigger_falls_back_to_maintenance_without_open_thesis() -> None:
     assert _sweep_trigger(4, None) == "maintenance_sweep"
+
+
+def test_decline_assignment_waits_on_llm_missing_evidence() -> None:
+    assert _decline_attention_assignment([], [{
+        "requirement_key": "product_research",
+        "reason": "Need product adoption research.",
+    }]) == ("waiting_on_data", "source", "missing_evidence")
+
+
+def test_decline_assignment_routes_true_no_edge_to_operator_review() -> None:
+    assert _decline_attention_assignment([]) == (
+        "ready_for_review",
+        "operator",
+        "thesis_declined",
+    )
 
 
 def test_effective_sweep_interval_caps_stale_config(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -348,6 +348,55 @@ async def _load_analyst_opinion(pool: asyncpg.Pool, symbol: str) -> dict:
     }
 
 
+async def _load_evidence_items(
+    pool: asyncpg.Pool,
+    symbol: str,
+    since: dt.datetime | None,
+    limit: int = 50,
+) -> list[dict]:
+    if since is None:
+        rows = await pool.fetch(
+            """SELECT id, kind, observed_at, source, source_id, source_ref,
+                      summary, strength, polarity, url
+                 FROM evidence_item
+                WHERE symbol = $1
+             ORDER BY observed_at DESC, id DESC
+                LIMIT $2""",
+            symbol,
+            limit,
+        )
+    else:
+        rows = await pool.fetch(
+            """SELECT id, kind, observed_at, source, source_id, source_ref,
+                      summary, strength, polarity, url
+                 FROM evidence_item
+                WHERE symbol = $1 AND observed_at > $2
+             ORDER BY observed_at DESC, id DESC
+                LIMIT $3""",
+            symbol,
+            since,
+            limit,
+        )
+    out = []
+    for r in rows:
+        source_ref = r["source_ref"]
+        if isinstance(source_ref, str):
+            source_ref = json.loads(source_ref)
+        out.append({
+            "id": r["id"],
+            "kind": r["kind"],
+            "observed_at": r["observed_at"].isoformat(),
+            "source": r["source"],
+            "source_id": r["source_id"],
+            "summary": r["summary"],
+            "strength": _f(r["strength"]),
+            "polarity": _f(r["polarity"]),
+            "url": r["url"],
+            "source_ref": source_ref,
+        })
+    return out
+
+
 async def _load_events(
     pool: asyncpg.Pool, symbol: str, since: dt.datetime | None, limit: int,
 ) -> list[dict]:
@@ -397,6 +446,7 @@ def _build_user_message(
     estimate_revisions: list[dict],
     analyst_opinion: dict,
     research_evidence: list[dict],
+    evidence_items: list[dict],
     evidence_counts: dict[str, object],
     missing_evidence: list[dict],
     today: str,
@@ -415,6 +465,7 @@ def _build_user_message(
             "estimate_revisions": estimate_revisions,
             "analyst_opinion": analyst_opinion,
             "research_evidence": research_evidence,
+            "evidence_items": evidence_items,
             "evidence_counts": evidence_counts,
             "missing_evidence": missing_evidence,
         },
@@ -501,6 +552,7 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
         news = await _load_recent_news(pool, symbol, since)
         estimate_revisions = await _load_estimate_revisions(pool, symbol, since)
         analyst_opinion = await _load_analyst_opinion(pool, symbol)
+        evidence_items = await _load_evidence_items(pool, symbol, since)
         await refresh_research_evidence(
             pool,
             symbol,
@@ -514,7 +566,8 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
         )
         log.info(
             "symbol=%s prior=%s events_count=%d facts_count=%d "
-            "news_count=%d revisions_count=%d analyst_opinion_events=%d research_count=%d "
+            "news_count=%d revisions_count=%d analyst_opinion_events=%d "
+            "evidence_items=%d research_count=%d "
             "price=%s missing_evidence=%d",
             symbol,
             f"v{prior['version']}" if prior else "none",
@@ -523,6 +576,7 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
             len(news),
             len(estimate_revisions),
             len(analyst_opinion.get("recent_price_target_events", [])),
+            len(evidence_items),
             len(research_evidence),
             "yes" if price_snapshot else "no",
             len(missing_evidence),
@@ -545,6 +599,7 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
             and not facts
             and not news
             and not estimate_revisions
+            and not evidence_items
             and not research_evidence
             and prior is not None
             and prior_has_market
@@ -569,6 +624,7 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
             estimate_revisions,
             analyst_opinion,
             research_evidence,
+            evidence_items,
             evidence_counts,
             missing_evidence,
             today,

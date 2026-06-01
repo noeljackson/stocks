@@ -512,8 +512,9 @@ Current gaps:
   semantic search may still be needed if recall is too weak.
 - #93: normalized evidence items now have a first slice. News, estimate
   revisions, and analyst price-target events are backfilled and new ingest rows
-  create `evidence_item` records. Context/thesis prompts still need to consume
-  this layer directly instead of only raw table slices.
+  create `evidence_item` records. Context and thesis prompts now receive those
+  facts directly; the remaining work is producer coverage for filings, price
+  action, regime/context shifts, and explicit thesis-evidence links.
 
 Selected-symbol status now exposes the first slice of #128:
 

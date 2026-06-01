@@ -1,6 +1,7 @@
 import datetime as dt
+import json
 
-from stocks.context_maintainer import _build_price_snapshot
+from stocks.context_maintainer import _build_price_snapshot, _build_user_message
 from stocks.evidence import (
     assess_evidence_requirements,
     build_satisfied_source_tasks,
@@ -54,6 +55,34 @@ def test_price_snapshot_handles_short_history_without_fake_sma():
     assert snap["sma_20"] is None
     assert snap["sma_200"] is None
     assert snap["pct_vs_sma_200"] is None
+
+
+def test_context_user_message_includes_normalized_evidence_items() -> None:
+    msg = _build_user_message(
+        "MU",
+        prior=None,
+        events=[],
+        facts=[],
+        price_snapshot=None,
+        news=[],
+        estimate_revisions=[],
+        analyst_opinion={},
+        research_evidence=[],
+        evidence_items=[{
+            "kind": "news",
+            "observed_at": "2026-06-01T12:00:00Z",
+            "source": "fmp",
+            "summary": "MU HBM customer win",
+            "strength": 0.8,
+            "polarity": 0.5,
+        }],
+        evidence_counts={},
+        missing_evidence=[],
+        today="2026-06-01",
+    )
+
+    parsed = json.loads(msg)
+    assert parsed["evidence_items"][0]["summary"] == "MU HBM customer win"
 
 
 def test_assess_evidence_requirements_reports_missing_inputs() -> None:

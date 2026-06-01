@@ -167,6 +167,51 @@ export async function fetchEvidenceRequirements(symbol: string): Promise<Evidenc
   return ((await r.json()) as EvidenceRequirement[] | null) ?? [];
 }
 
+export interface BrainSourceStatus {
+  source: string;
+  status: "fresh" | "stale" | "missing" | "running" | "failed" | "rate_limited";
+  last_changed_at?: string | null;
+  last_checked_at?: string | null;
+  retry_after_at?: string | null;
+  failure_kind?: string | null;
+  last_error?: string | null;
+  max_age_minutes?: number | null;
+  detail?: Record<string, unknown>;
+  source_health?: Record<string, unknown>;
+  version?: number | null;
+  thesis_id?: string | null;
+  state?: string | null;
+  direction?: string | null;
+}
+
+export interface BrainStatus {
+  symbol: string;
+  as_of: string;
+  active_ticker: boolean;
+  status: "fresh" | "due" | "stale" | "waiting_on_evidence" | "blocked";
+  next_action: string;
+  reason: string;
+  freshness_target_minutes: number;
+  sources: BrainSourceStatus[];
+  evidence: {
+    rows: number;
+    open: number;
+    blocking: number;
+    due: number;
+  };
+  attention: {
+    open: number;
+    by_kind: { kind: string; count: number }[];
+  };
+}
+
+export async function fetchBrainStatus(symbol: string): Promise<BrainStatus | null> {
+  const r = await fetch(`/api/brain-status?symbol=${encodeURIComponent(symbol)}`);
+  if (r.status === 204) return null;
+  if (!r.ok) throw new Error(`brain-status ${r.status}`);
+  return (await r.json()) as BrainStatus;
+}
+
 export interface TickerContext {
   symbol: string;
   version: number;

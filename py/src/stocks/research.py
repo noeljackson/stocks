@@ -485,7 +485,8 @@ async def refresh_research_evidence(
     disabled_providers: set[str] = set()
     rows_seen = 0
     rows_inserted = 0
-    failures = 0
+    provider_failures = 0
+    query_failures = 0
     await _mark_started(pool, 1)
     try:
         last_request_at: float | None = None
@@ -525,7 +526,7 @@ async def refresh_research_evidence(
                     if results:
                         break
                 except Exception as exc:  # noqa: BLE001
-                    failures += 1
+                    provider_failures += 1
                     error = str(exc)
                     await _record_run(
                         pool,
@@ -542,18 +543,24 @@ async def refresh_research_evidence(
                         "research query failed symbol=%s provider=%s query=%r: %s",
                         symbol,
                         provider.name,
-                        query,
-                        exc,
-                    )
+                            query,
+                            exc,
+                        )
             if not query_had_success:
-                failures += 1
+                query_failures += 1
         await _record_success(
             pool,
             rows_seen=rows_seen,
             rows_inserted=rows_inserted,
             symbols_attempted=1,
-            symbols_failed=1 if failures == len(queries) else 0,
+            symbols_failed=1 if query_failures == len(queries) else 0,
         )
+        if provider_failures:
+            log.info(
+                "research completed with provider failures symbol=%s failures=%d",
+                symbol,
+                provider_failures,
+            )
         return rows_inserted
     except Exception as exc:  # noqa: BLE001
         await _record_failure(pool, str(exc))

@@ -1,7 +1,12 @@
 import datetime as dt
 
 from stocks.context_maintainer import _build_price_snapshot
-from stocks.evidence import assess_evidence_requirements, build_source_tasks
+from stocks.evidence import (
+    assess_evidence_requirements,
+    build_satisfied_source_tasks,
+    build_source_tasks,
+    source_task_due_at,
+)
 
 
 def _bar(day: int, close: float, volume: float = 100.0):
@@ -246,3 +251,57 @@ def test_assess_evidence_requirements_empty_when_core_inputs_present() -> None:
         "estimate_snapshots": 10,
         "research_evidence": 3,
     }) == []
+
+
+def test_satisfied_source_task_due_at_uses_requirement_freshness_window() -> None:
+    last_check = dt.datetime(2026, 6, 1, 14, 0, tzinfo=dt.UTC)
+
+    due_at = source_task_due_at("product_research", last_check_at=last_check)
+
+    assert due_at == dt.datetime(2026, 6, 1, 14, 30, tzinfo=dt.UTC)
+
+
+def test_build_satisfied_source_tasks_marks_fresh_requirement_satisfied() -> None:
+    now = dt.datetime.now(dt.UTC)
+    tasks = build_satisfied_source_tasks(
+        "MU",
+        "product_research",
+        {
+            "source_type": "web_research",
+            "priority": "high",
+            "fetch_actions": ["gdelt_doc_search", "bing_news_rss_search"],
+        },
+        {
+            "research_evidence": 2,
+            "research_run_last_at": (now - dt.timedelta(minutes=5)).isoformat(),
+            "research_evidence_last_retrieved_at": (now - dt.timedelta(minutes=5)).isoformat(),
+        },
+        {},
+    )
+
+    assert {task["state"] for task in tasks} == {"satisfied"}
+    assert {task["provider"] for task in tasks} == {"gdelt", "bing"}
+    assert all(task["due_at"] > now for task in tasks)
+
+
+def test_build_satisfied_source_tasks_requeues_stale_requirement() -> None:
+    now = dt.datetime.now(dt.UTC)
+    tasks = build_satisfied_source_tasks(
+        "MU",
+        "product_research",
+        {
+            "source_type": "web_research",
+            "priority": "high",
+            "fetch_actions": ["gdelt_doc_search"],
+        },
+        {
+            "research_evidence": 2,
+            "research_run_last_at": (now - dt.timedelta(hours=2)).isoformat(),
+            "research_evidence_last_retrieved_at": (now - dt.timedelta(hours=2)).isoformat(),
+        },
+        {},
+    )
+
+    [task] = tasks
+    assert task["state"] == "queued"
+    assert task["source_ref"]["acquisition_state"] == "freshness_due"

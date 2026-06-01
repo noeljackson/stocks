@@ -223,6 +223,9 @@ refresh-context: ## Refresh ticker_context for one symbol (SYMBOL=NVDA make refr
 research: ## Run product/theme web research for one symbol (SYMBOL=AMD make research)
 	cd py && $(RUN) .venv/bin/python -m stocks.research $(SYMBOL) $(if $(FORCE),--force)
 
+source-tasks: ## Run due Python-owned source tasks once (LIMIT=5)
+	cd py && $(RUN) .venv/bin/python -m stocks.source_tasks --once $(if $(LIMIT),--limit $(LIMIT))
+
 draft-thesis: ## Draft a thesis from the latest ticker_context (SYMBOL=NVDA make draft-thesis)
 	cd py && $(RUN) .venv/bin/python -m stocks.thesis_engine $(SYMBOL)
 

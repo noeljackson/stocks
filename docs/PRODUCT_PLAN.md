@@ -227,6 +227,10 @@ source_task
   state: queued | fetching | satisfied | no_rows | rate_limited | failed | blocked
 ```
 
+`satisfied` means fresh until `due_at`. It does not mean the system is done
+checking that source. When `due_at` passes, the task is eligible to be claimed
+again so missing or stale evidence becomes work automatically.
+
 Target freshness:
 
 ```text
@@ -816,6 +820,12 @@ diagnostics from task state
 
 Goal: stale or missing data creates work automatically. The UI should never be
 the trigger for basic acquisition.
+
+Current implementation note: the first active source-task worker owns
+Python-native web research (`gdelt_doc_search`, `bing_news_rss_search`) and is
+embedded in the cognition service. Rust ingest loops still own FMP, Massive,
+EDGAR, XBRL, FRED, and sentiment scoring. The remaining scheduler work is to
+centralize those provider limiters behind the same task-claiming contract.
 
 ### Phase 3: Build The Parent Brain
 

@@ -167,6 +167,7 @@ make py-setup && make run-context
 # frontend (dev, with API proxy to :8080)
 make web-install        # npm ci --ignore-scripts (from lockfile)
 make web-dev            # vite dev server
+make web-e2e            # Playwright workflow tests with mocked API
 
 # or build the SPA into the gateway binary:
 make web-build && make run-gateway   # SPA served at :8080
@@ -175,7 +176,7 @@ make web-build && make run-gateway   # SPA served at :8080
 ## Build & verify
 
 ```bash
-make verify   # cargo check + cargo test + web supply-chain scan + npm audit + k8s render
+make verify   # cargo check + cargo test + web supply-chain scan + npm audit + Playwright + k8s render
 make py-check # ruff + pytest
 ```
 

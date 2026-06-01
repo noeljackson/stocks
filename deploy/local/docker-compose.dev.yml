@@ -165,8 +165,8 @@ services:
       - gateway
 
   # Cognition consumer (#100): on discovery.confirmed, runs context_maintainer
-  # + thesis_engine + sharpen + challenge for the symbol. Closes the manual
-  # `make refresh-context SYMBOL=X` gap.
+  # + thesis_engine + sharpen + challenge for the symbol. Also runs a bounded
+  # maintenance sweep over active tickers so stale/no-context names retry.
   cognition:
     image: python:3.12-slim
     container_name: stocks-cognition
@@ -188,6 +188,10 @@ services:
       - LLM_MODEL_DEEP
       - LLM_MODEL_ROUTINE
       - LLM_MODEL_TRIAGE
+      - COGNITION_SWEEP_SECONDS=${COGNITION_SWEEP_SECONDS:-900}
+      - COGNITION_CONTEXT_MAX_AGE_HOURS=${COGNITION_CONTEXT_MAX_AGE_HOURS:-12}
+      - COGNITION_DECLINE_RETRY_HOURS=${COGNITION_DECLINE_RETRY_HOURS:-6}
+      - COGNITION_MAX_SYMBOLS_PER_SWEEP=${COGNITION_MAX_SYMBOLS_PER_SWEEP:-5}
     command: >-
       sh -c "pip install -q -e . && python -m stocks.cognition_service"
     depends_on:

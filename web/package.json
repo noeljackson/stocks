@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "check": "svelte-check --tsconfig ./tsconfig.json"
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "lightweight-charts": "5.2.0",
@@ -14,6 +15,7 @@
     "uplot": "1.6.32"
   },
   "devDependencies": {
+    "@playwright/test": "1.60.0",
     "@sveltejs/vite-plugin-svelte": "7.1.2",
     "svelte": "5.56.0",
     "svelte-check": "4.4.8",

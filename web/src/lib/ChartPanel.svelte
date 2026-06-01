@@ -38,7 +38,7 @@
     200: "#94e2d5",
   };
   let interval = $state<Interval>("1D");
-  let range = $state<Range>("1Y");
+  let range = $state<Range>("ALL");
 
   let container: HTMLDivElement | null = null;
   let chart: IChartApi | null = null;
@@ -283,7 +283,7 @@
         <span class="muted">{candles.length} bars</span>
       </span>
     {/if}
-    <span class="meta">
+    <span class="meta" data-testid="chart-interval-status">
       <span class="muted">interval</span>
       <strong>{interval}</strong>
       <span class="muted">{range}</span>
@@ -302,12 +302,20 @@
     {/if}
     <span class="interval-picker" aria-label="Chart interval">
       {#each INTERVALS as intv}
-        <button class:active={interval === intv} onclick={() => chooseInterval(intv)}>{intv}</button>
+        <button
+          class:active={interval === intv}
+          data-testid={`interval-${intv}`}
+          onclick={() => chooseInterval(intv)}
+        >{intv}</button>
       {/each}
     </span>
     <span class="range-picker" aria-label="Chart range">
       {#each RANGES as r}
-        <button class:active={range === r} onclick={() => (range = r)}>{r}</button>
+        <button
+          class:active={range === r}
+          data-testid={`range-${r}`}
+          onclick={() => (range = r)}
+        >{r}</button>
       {/each}
     </span>
     {#if loading}<span class="muted">loading…</span>{/if}

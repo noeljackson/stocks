@@ -144,6 +144,25 @@ The thesis engine may decline. A decline is not failure when there is no
 measurable edge. Example: a mega-cap can have fresh context and still get no
 thesis if the facts are already consensus and there is no undiffused edge.
 
+The cognition service also runs a bounded maintenance sweep over active tickers.
+This is what makes the system continuously work instead of depending on manual
+refreshes or UI tab opens:
+
+```text
+active ticker with no/stale context
+  -> refresh ticker_context
+  -> if no open thesis, draft monitoring/actionable thesis or record decline
+
+active ticker with no thesis and an old decline
+  -> retry after COGNITION_DECLINE_RETRY_HOURS
+```
+
+Runtime knobs:
+- `COGNITION_SWEEP_SECONDS` (default 900; set 0 to disable)
+- `COGNITION_CONTEXT_MAX_AGE_HOURS` (default 12)
+- `COGNITION_DECLINE_RETRY_HOURS` (default 6)
+- `COGNITION_MAX_SYMBOLS_PER_SWEEP` (default 5)
+
 ## State Ownership
 
 Use these ownership boundaries when changing behavior:

@@ -115,7 +115,7 @@ clippy: ## cargo clippy on all targets, deny warnings
 	cargo clippy --all-targets -- -D warnings
 
 # ---- Frontend (supply-chain hardened) ----
-.PHONY: web-install web-audit web-scan web-build web-dev
+.PHONY: web-install web-audit web-scan web-build web-dev web-e2e
 web-install: ## Install pinned deps with NO lifecycle scripts (from lockfile)
 	cd web && npm ci --ignore-scripts
 
@@ -130,6 +130,10 @@ web-build: ## Build SPA into internal/web/dist (embedded by gateway via rust-emb
 
 web-dev: ## Vite dev server
 	cd web && npm run dev
+
+web-e2e: ## Playwright UI workflow tests (mocked API, no DB mutation)
+	cd web && npx playwright install chromium
+	cd web && npm run test:e2e
 
 # ---- run (local dev; build once with `make build`, then ./target/release/<bin>) ----
 # $(RUN) injects infisical when installed (see top of file). Override with
@@ -259,5 +263,5 @@ k8s-apply: ## Apply to the current kube-context
 
 # ---- verify everything ----
 .PHONY: verify
-verify: check test web-scan web-audit k8s-render ## Build + lint + scan + tests + manifest render
+verify: check test web-scan web-audit web-e2e k8s-render ## Build + lint + scan + tests + manifest render
 	@echo "VERIFY OK"

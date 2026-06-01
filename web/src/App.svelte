@@ -17,6 +17,7 @@
     fetchDiscoveryPool,
     fetchPendingCandidates,
     fetchRegime,
+    fetchThesisDeclines,
     fetchTheses,
     fetchTickerContext,
     fetchTickers,
@@ -35,6 +36,7 @@
     type PoolMember,
     type StreamEvent,
     type ThesisDetail,
+    type ThesisDecline,
     type Ticker,
     type TickerContext,
     type Watchlist,
@@ -198,6 +200,7 @@
   // ---------- selected-symbol-scoped data ----------
   let symbolContext = $state<TickerContext | null | undefined>(undefined);
   let symbolTheses = $state<ThesisDetail[] | null | undefined>(undefined);
+  let symbolDeclines = $state<ThesisDecline[] | null | undefined>(undefined);
   let symbolDecisions = $state<DecisionRow[] | null | undefined>(undefined);
   let activeThesisDirections = $derived.by<string[]>(() => {
     if (!symbolTheses) return [];
@@ -338,15 +341,18 @@
     selectedSymbol = symbol;
     symbolContext = undefined;
     symbolTheses = undefined;
+    symbolDeclines = undefined;
     symbolDecisions = undefined;
     // Fetch detail in parallel.
-    const [ctx, theses, decisions] = await Promise.all([
+    const [ctx, theses, declines, decisions] = await Promise.all([
       fetchTickerContext(symbol).catch(() => null),
       fetchTheses(symbol).catch(() => []),
+      fetchThesisDeclines(symbol).catch(() => []),
       fetchDecisions(symbol).catch(() => []),
     ]);
     symbolContext = ctx;
     symbolTheses = theses;
+    symbolDeclines = declines;
     symbolDecisions = decisions;
   }
 
@@ -1163,25 +1169,44 @@
                 <ContextPanel ctx={symbolContext ?? null} symbol={selectedSymbol} />
               {/if}
             {:else if rightTab === "theses"}
-              {#if symbolTheses === undefined}
+              {#if symbolTheses === undefined || symbolDeclines === undefined}
                 <p class="muted">Loading…</p>
-              {:else if symbolTheses && symbolTheses.length > 0}
-                {#if activeThesisDirections.length > 1}
-                  <p class="decision-warning">
-                    Conflicting open thesis directions: {activeThesisDirections.join(" / ")}.
-                    Do not treat this symbol as a single clean signal until one thesis is selected or retired.
+              {:else}
+                {#if symbolTheses && symbolTheses.length > 0}
+                  {#if activeThesisDirections.length > 1}
+                    <p class="decision-warning">
+                      Conflicting open thesis directions: {activeThesisDirections.join(" / ")}.
+                      Do not treat this symbol as a single clean signal until one thesis is selected or retired.
+                    </p>
+                  {/if}
+                  {#each symbolTheses as t (t.thesis_id)}
+                    <ThesisDetails thesis={t} />
+                  {/each}
+                {/if}
+                {#if symbolDeclines && symbolDeclines.length > 0}
+                  <section class="declines">
+                    <h4>Declined thesis attempts</h4>
+                    <ul>
+                      {#each symbolDeclines as d (d.id)}
+                        <li class="decline-card status-{d.status}">
+                          <div class="decline-hdr">
+                            <span class="badge tiny">{d.status}</span>
+                            {#if d.resolution_kind}<span class="muted">{d.resolution_kind}</span>{/if}
+                            <span class="muted">{shortTs(d.created_at)}</span>
+                          </div>
+                          <p>{d.reason ?? "The thesis engine declined without a recorded reason."}</p>
+                        </li>
+                      {/each}
+                    </ul>
+                  </section>
+                {/if}
+                {#if (!symbolTheses || symbolTheses.length === 0) && (!symbolDeclines || symbolDeclines.length === 0)}
+                  <p class="muted">
+                    No thesis attempts for <strong>{selectedSymbol}</strong> yet.
+                    The system should either draft a monitoring thesis or show a
+                    declined attempt with a reason.
                   </p>
                 {/if}
-                {#each symbolTheses as t (t.thesis_id)}
-                  <ThesisDetails thesis={t} />
-                {/each}
-              {:else}
-                <p class="muted">
-                  No theses for <strong>{selectedSymbol}</strong>. The cognition
-                  pipeline drafts one automatically when the context is fresh —
-                  if none appears, the engine honestly declined (insufficient
-                  edge in the available evidence).
-                </p>
               {/if}
             {:else if rightTab === "alerts"}
               <div class="alert-toolbar">
@@ -1559,6 +1584,28 @@
     background: rgba(249,226,175,.08);
     font-size: .78rem;
   }
+  .declines {
+    display: flex; flex-direction: column; gap: .45rem;
+  }
+  .declines h4 { margin: .25rem 0 0; font-size: .82rem; }
+  .declines ul {
+    list-style: none; padding: 0; margin: 0;
+    display: flex; flex-direction: column; gap: .45rem;
+  }
+  .decline-card {
+    border: 1px solid #1f2733;
+    border-radius: 4px;
+    background: #0c1019;
+    padding: .55rem .65rem;
+    font-size: .8rem;
+  }
+  .decline-card.status-open { border-color: rgba(249, 226, 175, .35); }
+  .decline-card.status-resolved { opacity: .72; }
+  .decline-card.status-dismissed { opacity: .6; }
+  .decline-hdr {
+    display: flex; align-items: baseline; gap: .4rem; margin-bottom: .25rem;
+  }
+  .decline-card p { margin: 0; color: #bac2de; line-height: 1.35; }
 
   /* Generic */
   .kind { font-size: .65rem; text-transform: uppercase; letter-spacing: .05em; }

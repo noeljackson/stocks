@@ -1668,7 +1668,7 @@
               <section class="diag wide">
                 <h5>Source health</h5>
                 <table class="diag-tbl">
-                  <thead><tr><th>source</th><th>status</th><th>last checked</th><th>seen</th><th>new</th><th>symbols</th><th>retry</th></tr></thead>
+                  <thead><tr><th>source</th><th>status</th><th>last result</th><th>checked rows</th><th>new rows</th><th>symbols</th><th>retry</th></tr></thead>
                   <tbody>
                     {#each health as h (h.source)}
                       <tr title={h.last_error ?? ""}>

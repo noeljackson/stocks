@@ -824,8 +824,11 @@ the trigger for basic acquisition.
 Current implementation note: the first active source-task worker owns
 Python-native web research (`gdelt_doc_search`, `bing_news_rss_search`) and is
 embedded in the cognition service. Rust ingest loops still own FMP, Massive,
-EDGAR, XBRL, FRED, and sentiment scoring. The remaining scheduler work is to
-centralize those provider limiters behind the same task-claiming contract.
+EDGAR, XBRL, FRED, and sentiment scoring. Those expensive Rust loops now use a
+tiered deep-research universe, not the entire screener pool: active tickers
+first, then Tier 1/2 proposed candidates, capped per provider pass. The
+remaining scheduler work is to centralize those provider limiters behind the
+same task-claiming contract.
 
 ### Phase 3: Build The Parent Brain
 

@@ -23,13 +23,17 @@ use tracing::{info, warn};
 use super::fmp_estimates::{
     FmpEstimatesAdapter, NormalizedEstimate, decode_response, diff_snapshots, normalize,
 };
-use super::{rate_limit, source_health};
+use super::{max_symbols_from_env, rate_limit, source_health};
 use crate::platform::store::Store;
 
-/// One pass over scan_pool ∪ universe (#104). Returns revision events emitted.
+/// One pass over the tiered deep-research universe. Returns revision events emitted.
 pub async fn run_once(pool: &PgPool, adapter: &FmpEstimatesAdapter) -> Result<usize> {
     let store = Store { pool: pool.clone() };
-    let symbols = store.scan_pool_symbols().await.unwrap_or_default();
+    let max_symbols = max_symbols_from_env("FMP_ESTIMATES_MAX_SYMBOLS_PER_PASS", 100);
+    let symbols = store
+        .priority_scan_symbols(max_symbols)
+        .await
+        .unwrap_or_default();
     source_health::mark_started(pool, "fmp_estimates", symbols.len() as i32).await?;
     let mut total_revisions = 0;
     let mut rows_seen = 0;

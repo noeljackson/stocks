@@ -108,21 +108,48 @@ benchmarks needed for regime/relative context
 Current local dev cadence:
 
 ```text
-FMP price bars          every 30m    discovery_pool + benchmarks
+FMP price bars          every 30m    active tickers + top candidates + benchmarks
 FMP screener/pool       every 24h    broad investible pool
-FMP estimates           every 30m    scan universe
+FMP estimates           every 30m    active tickers + top candidates
+FMP analyst opinion     every 30m    active tickers + top candidates
 CBOE crowd sentiment    every 30m    market-wide sentiment
-FMP + Massive news      every 30m    scan universe
+FMP + Massive news      every 30m    active tickers + top candidates
 GDELT/Bing research     on context   selected ticker product/theme queries
-XBRL company facts      every 6h     scan universe
-EDGAR filings           every 30m    scan universe via dynamic SEC CIK map
+XBRL company facts      every 6h     active tickers + top candidates
+EDGAR filings           every 30m    active tickers + top candidates via dynamic SEC CIK map
 FRED macro              every 30m    macro series
 ```
 
 The current cadence now aims source checks at the desired 30-minute freshness
 SLA for sources that can move intraday. XBRL remains slower because company
 facts are large and update through filings, while EDGAR is the intraday filing
-watch. The target brain loop is:
+watch.
+
+Expensive per-symbol loops use a tiered deep-research universe instead of the
+whole screener pool:
+
+```text
+rank 0: active ticker/watchlist universe
+rank 1: proposed discovery candidates with tier 1/2 rank
+limit: provider-specific max symbols per pass
+```
+
+The broad screener pool still discovers candidates, but deep data follows
+promotion pressure. This prevents a 1,000-symbol pool from starving active
+tickers and keeps the source freshness loop within the 30-minute target.
+
+Current dev pass caps:
+
+```text
+FMP_PRICE_MAX_SYMBOLS_PER_PASS         125
+FMP_ESTIMATES_MAX_SYMBOLS_PER_PASS     100
+FMP_OPINION_MAX_SYMBOLS_PER_PASS        75
+NEWS_MAX_SYMBOLS_PER_PASS              100
+EDGAR_MAX_SYMBOLS_PER_PASS             100
+XBRL_MAX_SYMBOLS_PER_PASS              100
+```
+
+The target brain loop is:
 
 ```text
 source due
@@ -150,6 +177,9 @@ fmp_news                          Rust ingest news loop
 massive_news                      Rust ingest news loop
 llm_sentiment_scoring             Rust ingest news loop scorer
 fmp_analyst_estimates             Rust ingest fmp_estimates loop
+fmp_price_target_consensus        Rust ingest fmp_analyst_opinion loop
+fmp_grades_historical             Rust ingest fmp_analyst_opinion loop
+fmp_price_target_news             Rust ingest fmp_analyst_opinion loop
 sec_company_tickers_cik_lookup    Rust EDGAR/XBRL loops
 sec_companyfacts_xbrl             Rust XBRL loop
 gdelt_doc_search                  Python source_task worker
@@ -345,9 +375,12 @@ What works now:
 
 Current gaps:
 
-- #128: the sweep is bounded and passive; it is not yet a full freshness SLA.
-- #136: evidence requirements are synchronized from source health, but fetch
-  actions are not yet a dedicated per-source task queue.
+- #128: the sweep is still split across source loops and cognition, but the
+  expensive source loops now use a tiered deep-research universe so active names
+  are no longer starved behind the broad screener pool.
+- #136: evidence requirements and source tasks are synchronized from source
+  health; Rust source loops still report through source health instead of
+  claiming every `source_task` row directly.
 - #130: product/theme web retrieval has a first GDELT/Bing-backed slice; paid
   semantic search may still be needed if recall is too weak.
 - #93: normalized evidence items are still missing; context/thesis use raw table
@@ -568,7 +601,6 @@ missing
   full producer adoption for attention retry/blocked transitions
   macro/sector thesis generation and scheduled re-evaluation
   paid semantic research provider if GDELT recall is insufficient
-  analyst price targets/recommendations
   real broker/position execution state
   review packets
   decision replay
@@ -579,5 +611,5 @@ missing
 1. #128: make freshness orchestration real.
 2. #147: finish producer adoption for waiting/retry/blocked attention states.
 3. #143/#129: add macro and sector theses.
-4. #116 and the remaining #130 uplift: improve evidence depth for real forward views.
+4. Remaining #130 uplift: improve product/theme evidence recall for real forward views.
 5. #131/#25/#5: link decisions to real positions/fills.

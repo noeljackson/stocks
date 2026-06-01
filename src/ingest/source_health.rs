@@ -5,12 +5,19 @@ use sqlx::PgPool;
 pub async fn mark_started(pool: &PgPool, source: &str, symbols_attempted: i32) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO source_health
-             (source, last_started_at, last_status, symbols_attempted, updated_at)
-           VALUES ($1, now(), 'running', $2, now())
+             (source, last_started_at, last_status, symbols_attempted,
+              symbols_failed, rows_seen, rows_inserted, updated_at)
+           VALUES ($1, now(), 'running', $2, 0, 0, 0, now())
            ON CONFLICT (source) DO UPDATE SET
                last_started_at = EXCLUDED.last_started_at,
                last_status = 'running',
                symbols_attempted = EXCLUDED.symbols_attempted,
+               symbols_failed = 0,
+               rows_seen = 0,
+               rows_inserted = 0,
+               last_failure_kind = NULL,
+               last_error = NULL,
+               retry_after_at = NULL,
                updated_at = now()"#,
     )
     .bind(source)

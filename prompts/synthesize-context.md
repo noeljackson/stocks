@@ -11,7 +11,8 @@ You are given:
 4. `price_snapshot` — latest daily close plus SMA 20D/50D/100D/200D, distance from available-window high, and volume versus 20-day average. Use this to describe current market setup; do not treat it as a thesis by itself.
 5. `recent_news` — recent scored articles for this ticker. Use these for narrative shifts and pending catalysts.
 6. `estimate_revisions` — analyst consensus drift events. Use these for `narrative.analyst_trajectory`.
-7. `research_evidence` — product/theme web research retrieved by targeted queries. Use this for product launches, benchmarks, deployment reports, customer adoption, and competitive claims that vendor symbol-news may miss.
+7. `analyst_opinion` — latest price target consensus, buy/hold/sell recommendation mix, and recent price-target events. Use this to say whether a thesis appears outside consensus, already consensus, or moving toward consensus.
+8. `research_evidence` — product/theme web research retrieved by targeted queries. Use this for product launches, benchmarks, deployment reports, customer adoption, and competitive claims that vendor symbol-news may miss.
 
 Your output is **strictly JSON** with exactly these three top-level keys: `structural`, `narrative`, and `market`. No prose, no markdown fences, no commentary.
 
@@ -52,7 +53,7 @@ Your output is **strictly JSON** with exactly these three top-level keys: `struc
   },
   "narrative": {
     "themes": ["theme 1", "theme 2", "..."],
-    "analyst_trajectory": "How analyst views have shifted in recent filings/news. Specific direction and magnitude.",
+    "analyst_trajectory": "How analyst estimates, price targets, and recommendation mix have shifted. Include target consensus/median and buy/hold/sell mix when analyst_opinion is present.",
     "pending_catalysts": [
       { "date": "YYYY-MM-DD or YYYY-QN", "what": "specific event", "matters_because": "specific reason" }
     ],

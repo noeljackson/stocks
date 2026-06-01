@@ -1,9 +1,8 @@
 """Context maintainer service (SPEC §3, §5.2).
 
-Phase A (#7): single-symbol CLI that reads ingest_event rows for a ticker,
-calls GLM-5.1 with prompts/synthesize-context.md, persists a new
-ticker_context row. No NATS subscription, no other tickers, no scheduling —
-prove the loop on NVDA first.
+Phase A (#7): single-symbol CLI that reads a ticker's event, fundamental,
+price, news, and estimate-revision evidence, calls GLM-5.1 with
+prompts/synthesize-context.md, and persists a new ticker_context row.
 
 Usage:  python -m stocks.context_maintainer SYMBOL [--limit N]
 Example: python -m stocks.context_maintainer NVDA
@@ -53,7 +52,7 @@ def _llm_cfg(cfg: config.Config) -> TransportConfig:
 
 async def _load_prior_context(pool: asyncpg.Pool, symbol: str) -> dict | None:
     row = await pool.fetchrow(
-        """SELECT version, structural, narrative, created_at
+        """SELECT version, structural, narrative, market, created_at
              FROM ticker_context
             WHERE symbol = $1
          ORDER BY version DESC
@@ -68,6 +67,7 @@ async def _load_prior_context(pool: asyncpg.Pool, symbol: str) -> dict | None:
         "version": row["version"],
         "structural": _j(row["structural"]),
         "narrative": _j(row["narrative"]),
+        "market": _j(row["market"]),
         "as_of": row["created_at"].isoformat(),
     }
 
@@ -105,6 +105,176 @@ async def _load_company_facts(pool: asyncpg.Pool, symbol: str) -> list[dict]:
             "filed_at": r["filed_at"].isoformat() if r["filed_at"] else None,
         })
     return out
+
+
+def _f(value) -> float | None:
+    return None if value is None else float(value)
+
+
+def _round(value: float | None, places: int = 2) -> float | None:
+    return None if value is None else round(value, places)
+
+
+def _build_price_snapshot(rows) -> dict | None:
+    """Summarize daily price state from oldest-to-newest rows.
+
+    The SMA ribbon and context both mean trading-day moving averages. A 200-day
+    SMA must be computed from 200 daily closes even when the current chart range
+    is much shorter.
+    """
+    if not rows:
+        return None
+    ordered = sorted(rows, key=lambda r: r["ts"])
+    latest = ordered[-1]
+    closes = [_f(r["close"]) for r in ordered if r["close"] is not None]
+    volumes = [_f(r["volume"]) for r in ordered if r["volume"] is not None]
+    if not closes:
+        return None
+
+    def sma(window: int) -> float | None:
+        if len(closes) < window:
+            return None
+        return sum(closes[-window:]) / window
+
+    def pct_vs(value: float | None) -> float | None:
+        if value in (None, 0):
+            return None
+        return ((closes[-1] - value) / value) * 100.0
+
+    highs = [_f(r["high"]) for r in ordered if r["high"] is not None]
+    high_window = highs[-252:] if highs else []
+    high_252d = max(high_window) if high_window else None
+    volume_avg_20 = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else None
+    latest_volume = _f(latest["volume"])
+    volume_vs_20d = (
+        latest_volume / volume_avg_20
+        if latest_volume is not None and volume_avg_20 not in (None, 0)
+        else None
+    )
+    sma_20 = sma(20)
+    sma_50 = sma(50)
+    sma_100 = sma(100)
+    sma_200 = sma(200)
+    return {
+        "as_of": latest["ts"].isoformat(),
+        "close": _round(closes[-1]),
+        "sma_20": _round(sma_20),
+        "sma_50": _round(sma_50),
+        "sma_100": _round(sma_100),
+        "sma_200": _round(sma_200),
+        "pct_vs_sma_20": _round(pct_vs(sma_20)),
+        "pct_vs_sma_50": _round(pct_vs(sma_50)),
+        "pct_vs_sma_100": _round(pct_vs(sma_100)),
+        "pct_vs_sma_200": _round(pct_vs(sma_200)),
+        "available_window_high": _round(high_252d),
+        "pct_vs_available_window_high": _round(pct_vs(high_252d)),
+        "volume": _round(latest_volume, 0),
+        "volume_vs_20d_avg": _round(volume_vs_20d),
+        "bars_used": len(closes),
+    }
+
+
+async def _load_price_snapshot(pool: asyncpg.Pool, symbol: str) -> dict | None:
+    rows = await pool.fetch(
+        """SELECT ts, open, high, low, close, volume
+             FROM price_bar
+            WHERE symbol = $1
+         ORDER BY ts DESC
+            LIMIT 260""",
+        symbol,
+    )
+    return _build_price_snapshot(rows)
+
+
+async def _load_recent_news(
+    pool: asyncpg.Pool,
+    symbol: str,
+    since: dt.datetime | None,
+    limit: int = 20,
+) -> list[dict]:
+    if since is None:
+        rows = await pool.fetch(
+            """SELECT id, title, publisher, published_at, source, sentiment,
+                      sentiment_polarity, sentiment_confidence, sentiment_rationale, url
+                 FROM news_article
+                WHERE symbol = $1
+             ORDER BY published_at DESC
+                LIMIT $2""",
+            symbol,
+            limit,
+        )
+    else:
+        rows = await pool.fetch(
+            """SELECT id, title, publisher, published_at, source, sentiment,
+                      sentiment_polarity, sentiment_confidence, sentiment_rationale, url
+                 FROM news_article
+                WHERE symbol = $1 AND published_at > $2
+             ORDER BY published_at DESC
+                LIMIT $3""",
+            symbol,
+            since,
+            limit,
+        )
+    return [
+        {
+            "id": r["id"],
+            "title": r["title"],
+            "publisher": r["publisher"],
+            "published_at": r["published_at"].isoformat(),
+            "source": r["source"],
+            "sentiment": r["sentiment"],
+            "sentiment_polarity": _f(r["sentiment_polarity"]),
+            "sentiment_confidence": r["sentiment_confidence"],
+            "sentiment_rationale": r["sentiment_rationale"],
+            "url": r["url"],
+        }
+        for r in rows
+    ]
+
+
+async def _load_estimate_revisions(
+    pool: asyncpg.Pool,
+    symbol: str,
+    since: dt.datetime | None,
+    limit: int = 20,
+) -> list[dict]:
+    if since is None:
+        rows = await pool.fetch(
+            """SELECT id, fiscal_period_end, period_kind, eps_delta, eps_delta_pct,
+                      revenue_delta, revenue_delta_pct, direction, detected_at
+                 FROM estimate_revision
+                WHERE symbol = $1
+             ORDER BY detected_at DESC
+                LIMIT $2""",
+            symbol,
+            limit,
+        )
+    else:
+        rows = await pool.fetch(
+            """SELECT id, fiscal_period_end, period_kind, eps_delta, eps_delta_pct,
+                      revenue_delta, revenue_delta_pct, direction, detected_at
+                 FROM estimate_revision
+                WHERE symbol = $1 AND detected_at > $2
+             ORDER BY detected_at DESC
+                LIMIT $3""",
+            symbol,
+            since,
+            limit,
+        )
+    return [
+        {
+            "id": r["id"],
+            "fiscal_period_end": r["fiscal_period_end"].isoformat(),
+            "period_kind": r["period_kind"],
+            "direction": r["direction"],
+            "eps_delta": _f(r["eps_delta"]),
+            "eps_delta_pct": _f(r["eps_delta_pct"]),
+            "revenue_delta": _f(r["revenue_delta"]),
+            "revenue_delta_pct": _f(r["revenue_delta_pct"]),
+            "detected_at": r["detected_at"].isoformat(),
+        }
+        for r in rows
+    ]
 
 
 async def _load_events(
@@ -151,6 +321,9 @@ def _build_user_message(
     prior: dict | None,
     events: list[dict],
     facts: list[dict],
+    price_snapshot: dict | None,
+    news: list[dict],
+    estimate_revisions: list[dict],
     today: str,
 ) -> str:
     """The system prompt is the rendered template. This user message carries
@@ -162,6 +335,9 @@ def _build_user_message(
             "prior_context": prior,
             "new_events": events,
             "company_facts": facts,
+            "price_snapshot": price_snapshot,
+            "recent_news": news,
+            "estimate_revisions": estimate_revisions,
         },
         indent=2,
         default=str,
@@ -200,6 +376,7 @@ async def _persist_context(
     symbol: str,
     structural: dict,
     narrative: dict,
+    market: dict,
     prior_version: int | None,
 ) -> int:
     """Append a new ticker_context row. Idempotent in the sense that a fresh
@@ -212,12 +389,13 @@ async def _persist_context(
               narrative,  narrative_as_of,
               market,     market_as_of,
               created_at)
-           VALUES ($1, $2, $3::jsonb, $4, $5::jsonb, $4, '{}'::jsonb, NULL, $4)""",
+           VALUES ($1, $2, $3::jsonb, $4, $5::jsonb, $4, $6::jsonb, $4, $4)""",
         symbol,
         new_version,
         json.dumps(structural),
         now,
         json.dumps(narrative),
+        json.dumps(market),
     )
     return new_version
 
@@ -240,20 +418,33 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
         since = dt.datetime.fromisoformat(prior["as_of"]) if prior else None
         events = await _load_events(pool, symbol, since, limit)
         facts = await _load_company_facts(pool, symbol)
+        price_snapshot = await _load_price_snapshot(pool, symbol)
+        news = await _load_recent_news(pool, symbol, since)
+        estimate_revisions = await _load_estimate_revisions(pool, symbol, since)
         log.info(
-            "symbol=%s prior=%s events_count=%d facts_count=%d",
+            "symbol=%s prior=%s events_count=%d facts_count=%d "
+            "news_count=%d revisions_count=%d price=%s",
             symbol,
             f"v{prior['version']}" if prior else "none",
             len(events),
             len(facts),
+            len(news),
+            len(estimate_revisions),
+            "yes" if price_snapshot else "no",
         )
 
-        # Skip only when NO new signal at all: no events AND prior already saw
-        # these facts (heuristic: if `facts` list hasn't grown since prior, no
-        # point re-synthesizing). For v1 we just check events — facts arrive
-        # in bulk on first XBRL pass and we want that to trigger a fresh synth.
-        # A subsequent run with no new events + no new facts will still skip.
-        if not events and not facts and prior is not None:
+        # Skip only when there is no newly timestamped signal and the prior row
+        # already has the price-aware market band. Legacy contexts need one
+        # refresh so they stop looking like blank slates.
+        prior_has_market = bool(prior and prior.get("market"))
+        if (
+            not events
+            and not facts
+            and not news
+            and not estimate_revisions
+            and prior is not None
+            and prior_has_market
+        ):
             log.info("no new signal since v%d — skipping refresh", prior["version"])
             return prior["version"]
 
@@ -264,7 +455,16 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
             raise RuntimeError("prompts/synthesize-context.md missing")
 
         today = dt.date.today().isoformat()
-        user_msg = _build_user_message(symbol, prior, events, facts, today)
+        user_msg = _build_user_message(
+            symbol,
+            prior,
+            events,
+            facts,
+            price_snapshot,
+            news,
+            estimate_revisions,
+            today,
+        )
         provider = new_provider(_llm_cfg(cfg))
         provider_name = _provider_name(cfg)
         log.info("calling LLM provider=%s model=%s prompt=%s@%s",
@@ -285,8 +485,9 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
         parsed = _extract_json(resp.content)
         structural = parsed.get("structural", {})
         narrative = parsed.get("narrative", {})
+        market = parsed.get("market", {})
         new_version = await _persist_context(
-            pool, symbol, structural, narrative, prior["version"] if prior else None
+            pool, symbol, structural, narrative, market, prior["version"] if prior else None
         )
         log.info(
             "persisted ticker_context v%d for %s (input_tokens=%d output_tokens=%d)",

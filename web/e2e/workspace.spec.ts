@@ -74,7 +74,11 @@ async function mockApi(page: Page): Promise<Calls> {
     const path = url.pathname;
 
     if (path === "/api/stream") {
-      await route.fulfill({ status: 200, contentType: "text/event-stream", body: ":\n\n" });
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: 'data: {"subject":"stream.connected","kind":"stream","payload":{"status":"open"}}\n\n',
+      });
       return;
     }
     if (path === "/api/alerts") {
@@ -629,6 +633,15 @@ test("symbol routes deep-link selected ticker and keep navigation state", async 
 
   await expect(page.locator(".symbol-box input")).toHaveValue("NVDA");
   await expect(page).toHaveURL(/\/symbol\/NVDA$/);
+});
+
+test("event stream surfaces connection events in the drawer", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: /events/ }).click();
+
+  await expect(page.getByText("stream.connected")).toBeVisible();
 });
 
 test("symbol alerts tab excludes global alerts", async ({ page }) => {

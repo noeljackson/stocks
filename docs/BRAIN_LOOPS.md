@@ -166,7 +166,6 @@ What works now:
 
 Current gaps:
 
-- #147: attention status is still too flat for queued/evaluating/deferred/blocked.
 - #143/#129: macro and sector theses do not yet steer discovery ranking.
 
 ## Attention Loop
@@ -174,14 +173,15 @@ Current gaps:
 Attention is not an event log. It means "the operator or system needs to make
 progress here."
 
-Current simplified state:
+Implemented first slice:
 
 ```text
-open -> resolved
-open -> dismissed
+ready_for_review -> resolved
+ready_for_review -> dismissed
+ready_for_review -> operator_deferred --hidden until resurface_at--> visible again
 ```
 
-Desired state machine:
+Full target state machine:
 
 ```text
 queued
@@ -209,8 +209,8 @@ source_ref
 
 Current gaps:
 
-- #147: implement the real attention FSM.
-- #121: defer needs to actually resurface later.
+- #147: waiting-on-data, blocked, evaluating, and retry producers still need to
+  use the FSM consistently.
 - #89: each attention item should open a review packet with the same resolve
   grammar.
 - #126: the workspace needs an explicit operator workflow rail.
@@ -471,14 +471,16 @@ implemented or mostly working
 partially working
   30-minute brain freshness
   evidence acquisition FSM
+  attention FSM
   thesis reconciliation timeline
   decision/outcome validation
 
 implemented first slice
   selected-symbol brain status and next action
+  Defer 7d attention snooze/resurface
 
 missing
-  attention FSM
+  full attention FSM producer adoption
   macro/sector brain
   external research retrieval
   analyst price targets/recommendations
@@ -490,7 +492,7 @@ missing
 ## Highest-Leverage Next Work
 
 1. #128: make freshness orchestration real.
-2. #147: replace flat attention status with an FSM.
+2. #147: finish producer adoption for waiting/retry/blocked attention states.
 3. #143/#129: add macro and sector theses.
 4. #130 and #116: improve evidence depth for real forward views.
 5. #131/#25/#5: link decisions to real positions/fills.

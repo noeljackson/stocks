@@ -330,52 +330,172 @@ impl Store {
         resolution_kind: &str,
         resolution_ref: serde_json::Value,
     ) -> Result<u64> {
-        let res = sqlx::query(
-            r#"UPDATE attention_item
-                  SET status = 'resolved', resolved_at = now(),
-                      resolution_kind = $4, resolution_ref = $5::jsonb
-                WHERE status = 'open'
-                  AND kind = $1
-                  AND ($2::uuid IS NULL OR thesis_id = $2)
-                  AND ($3::bigint IS NULL OR candidate_id = $3)"#,
+        let rows: i64 = sqlx::query_scalar(
+            r#"WITH matched AS (
+                    SELECT id, fsm_state
+                      FROM attention_item
+                     WHERE status = 'open'
+                       AND kind = $1
+                       AND ($2::uuid IS NULL OR thesis_id = $2)
+                       AND ($3::bigint IS NULL OR candidate_id = $3)
+                     FOR UPDATE
+                 ),
+                 updated AS (
+                    UPDATE attention_item ai
+                       SET status = 'resolved',
+                           fsm_state = 'resolved',
+                           owner = 'system',
+                           resolved_at = now(),
+                           resolution_kind = $4,
+                           resolution_ref = $5::jsonb,
+                           next_retry_at = NULL,
+                           resurface_at = NULL,
+                           state_reason = $4
+                      FROM matched m
+                     WHERE ai.id = m.id
+                 RETURNING ai.id,
+                           m.fsm_state AS from_state,
+                           ai.fsm_state AS to_state,
+                           ai.owner,
+                           ai.state_reason,
+                           ai.next_retry_at,
+                           ai.resurface_at,
+                           ai.resolution_ref
+                 ),
+                 inserted AS (
+                    INSERT INTO attention_state_history
+                         (attention_id, from_state, to_state, owner, reason,
+                          next_retry_at, resurface_at, source_ref)
+                    SELECT id, from_state, to_state, owner, state_reason,
+                           next_retry_at, resurface_at, resolution_ref
+                      FROM updated
+                 RETURNING 1
+                 )
+              SELECT COUNT(*) FROM updated"#,
         )
         .bind(kind)
         .bind(thesis_id)
         .bind(candidate_id)
         .bind(resolution_kind)
         .bind(resolution_ref)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await
         .context("resolve_attention")?;
-        Ok(res.rows_affected())
+        Ok(rows as u64)
     }
 
     /// Mark items as dismissed (operator chose "not relevant"). Same filter
     /// shape as resolve_attention.
     pub async fn dismiss_attention(&self, id: i64, reason: Option<&str>) -> Result<bool> {
-        let res = sqlx::query(
-            r#"UPDATE attention_item
-                  SET status = 'dismissed', resolved_at = now(),
-                      resolution_kind = 'dismissed',
-                      resolution_ref = jsonb_build_object('reason', COALESCE($2::text, ''))
-                WHERE id = $1 AND status = 'open'"#,
-        )
-        .bind(id)
-        .bind(reason)
-        .execute(&self.pool)
-        .await
-        .context("dismiss_attention")?;
-        Ok(res.rows_affected() > 0)
+        let rows: i64 = if reason == Some("defer") {
+            sqlx::query_scalar(
+                r#"WITH matched AS (
+                        SELECT id, fsm_state
+                          FROM attention_item
+                         WHERE id = $1 AND status = 'open'
+                         FOR UPDATE
+                     ),
+                     updated AS (
+                        UPDATE attention_item ai
+                           SET status = 'open',
+                               fsm_state = 'operator_deferred',
+                               owner = 'operator',
+                               resolved_at = NULL,
+                               resolution_kind = 'deferred',
+                               resolution_ref = jsonb_build_object('reason', 'defer'),
+                               next_retry_at = NULL,
+                               resurface_at = now() + interval '7 days',
+                               state_reason = 'defer'
+                          FROM matched m
+                         WHERE ai.id = m.id
+                     RETURNING ai.id,
+                               m.fsm_state AS from_state,
+                               ai.fsm_state AS to_state,
+                               ai.owner,
+                               ai.state_reason,
+                               ai.next_retry_at,
+                               ai.resurface_at,
+                               ai.resolution_ref
+                     ),
+                     inserted AS (
+                        INSERT INTO attention_state_history
+                             (attention_id, from_state, to_state, owner, reason,
+                              next_retry_at, resurface_at, source_ref)
+                        SELECT id, from_state, to_state, owner, state_reason,
+                               next_retry_at, resurface_at, resolution_ref
+                          FROM updated
+                     RETURNING 1
+                     )
+                  SELECT COUNT(*) FROM updated"#,
+            )
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await
+            .context("defer_attention")?
+        } else {
+            sqlx::query_scalar(
+                r#"WITH matched AS (
+                        SELECT id, fsm_state
+                          FROM attention_item
+                         WHERE id = $1 AND status = 'open'
+                         FOR UPDATE
+                     ),
+                     updated AS (
+                        UPDATE attention_item ai
+                           SET status = 'dismissed',
+                               fsm_state = 'dismissed',
+                               owner = 'operator',
+                               resolved_at = now(),
+                               resolution_kind = 'dismissed',
+                               resolution_ref = jsonb_build_object('reason', COALESCE($2::text, '')),
+                               next_retry_at = NULL,
+                               resurface_at = NULL,
+                               state_reason = COALESCE(NULLIF($2::text, ''), 'dismissed')
+                          FROM matched m
+                         WHERE ai.id = m.id
+                     RETURNING ai.id,
+                               m.fsm_state AS from_state,
+                               ai.fsm_state AS to_state,
+                               ai.owner,
+                               ai.state_reason,
+                               ai.next_retry_at,
+                               ai.resurface_at,
+                               ai.resolution_ref
+                     ),
+                     inserted AS (
+                        INSERT INTO attention_state_history
+                             (attention_id, from_state, to_state, owner, reason,
+                              next_retry_at, resurface_at, source_ref)
+                        SELECT id, from_state, to_state, owner, state_reason,
+                               next_retry_at, resurface_at, resolution_ref
+                          FROM updated
+                     RETURNING 1
+                     )
+                  SELECT COUNT(*) FROM updated"#,
+            )
+            .bind(id)
+            .bind(reason)
+            .fetch_one(&self.pool)
+            .await
+            .context("dismiss_attention")?
+        };
+        Ok(rows > 0)
     }
 
     /// Open attention items, severity-then-recency ordering.
     pub async fn list_attention(&self, status: &str, limit: i64) -> Result<Vec<serde_json::Value>> {
         let rows = sqlx::query(
             r#"SELECT id, kind, symbol, thesis_id, candidate_id, severity,
-                      status, title, reason, source, source_ref,
-                      created_at, resolved_at, resolution_kind
+                      status, fsm_state, owner, title, reason, source, source_ref,
+                      created_at, resolved_at, resolution_kind,
+                      next_retry_at, resurface_at, state_reason
                  FROM attention_item
                 WHERE status = $1
+                  AND (
+                    $1 <> 'open'
+                    OR fsm_state <> 'operator_deferred'
+                    OR (resurface_at IS NOT NULL AND resurface_at <= now())
+                  )
              ORDER BY
                 CASE severity WHEN 'blocked' THEN 0 WHEN 'decision' THEN 1
                               WHEN 'review' THEN 2 ELSE 3 END,
@@ -391,6 +511,8 @@ impl Store {
             .map(|r| {
                 let created_at: DateTime<Utc> = r.try_get("created_at")?;
                 let resolved_at: Option<DateTime<Utc>> = r.try_get("resolved_at")?;
+                let next_retry_at: Option<DateTime<Utc>> = r.try_get("next_retry_at")?;
+                let resurface_at: Option<DateTime<Utc>> = r.try_get("resurface_at")?;
                 Ok(serde_json::json!({
                     "id": r.try_get::<i64, _>("id")?,
                     "kind": r.try_get::<String, _>("kind")?,
@@ -399,6 +521,8 @@ impl Store {
                     "candidate_id": r.try_get::<Option<i64>, _>("candidate_id")?,
                     "severity": r.try_get::<String, _>("severity")?,
                     "status": r.try_get::<String, _>("status")?,
+                    "fsm_state": r.try_get::<String, _>("fsm_state")?,
+                    "owner": r.try_get::<String, _>("owner")?,
                     "title": r.try_get::<String, _>("title")?,
                     "reason": r.try_get::<Option<String>, _>("reason")?,
                     "source": r.try_get::<String, _>("source")?,
@@ -406,6 +530,9 @@ impl Store {
                     "created_at": created_at,
                     "resolved_at": resolved_at,
                     "resolution_kind": r.try_get::<Option<String>, _>("resolution_kind")?,
+                    "next_retry_at": next_retry_at,
+                    "resurface_at": resurface_at,
+                    "state_reason": r.try_get::<Option<String>, _>("state_reason")?,
                 }))
             })
             .collect()

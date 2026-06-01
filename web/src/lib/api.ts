@@ -400,6 +400,8 @@ export interface AttentionItem {
   candidate_id?: number | null;
   severity: string;
   status: string;
+  fsm_state?: string | null;
+  owner?: string | null;
   title: string;
   reason?: string | null;
   source: string;
@@ -407,6 +409,9 @@ export interface AttentionItem {
   created_at: string;
   resolved_at?: string | null;
   resolution_kind?: string | null;
+  next_retry_at?: string | null;
+  resurface_at?: string | null;
+  state_reason?: string | null;
 }
 
 export async function fetchAttention(status = "open"): Promise<AttentionItem[]> {

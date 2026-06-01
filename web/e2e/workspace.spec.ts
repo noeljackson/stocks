@@ -117,7 +117,14 @@ async function mockApi(page: Page): Promise<Calls> {
           losers: [],
           open_questions: ["Refresh FRED macro series"],
           missing_evidence: ["fred_macro", "market_breadth"],
-          source_ref: {},
+          source_ref: {
+            maintainer: {
+              sources: {
+                fred: { source: "fred", freshness: "fresh", status: "no_new_rows" },
+                cboe: { source: "cboe", freshness: "fresh", status: "no_new_rows" },
+              },
+            },
+          },
           freshness_target_minutes: 720,
           last_evaluated_at: null,
           version: 1,
@@ -145,7 +152,18 @@ async function mockApi(page: Page): Promise<Calls> {
           losers: [],
           open_questions: ["Which challengers have real customer traction?"],
           missing_evidence: ["theme_estimate_revision_breadth"],
-          source_ref: {},
+          source_ref: {
+            maintainer: {
+              coverage: {
+                linked: 2,
+                contexts: 1,
+                open_theses: 1,
+                news: 2,
+                estimates: 2,
+                analyst_opinion: 1,
+              },
+            },
+          },
           freshness_target_minutes: 720,
           last_evaluated_at: null,
           version: 1,
@@ -564,10 +582,12 @@ test("brain tab shows macro and theme theses with linked tickers", async ({ page
 
   await expect(page.locator(".brain-topline")).toContainText("2 active");
   await expect(page.locator(".macro-theme")).toContainText("Macro Regime");
+  await expect(page.locator(".macro-theme")).toContainText("fred fresh");
   await expect(page.locator(".macro-theme")).toContainText("fred_macro");
 
   const theme = page.locator(".brain-theme").filter({ hasText: "AI Compute Infrastructure" });
   await expect(theme).toContainText("AI capex remains the parent theme");
+  await expect(theme).toContainText("1/2 context");
   await expect(theme).toContainText("Core");
   await expect(theme.getByRole("button", { name: /NVDA leader/ })).toBeVisible();
   await expect(theme.getByRole("button", { name: /OKTA/ })).toContainText("forming");

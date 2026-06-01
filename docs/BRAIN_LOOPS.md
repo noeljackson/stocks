@@ -404,11 +404,12 @@ every COGNITION_SWEEP_SECONDS
         |
         v
 select up to COGNITION_MAX_SYMBOLS_PER_SWEEP active tickers where:
-  no context exists
-  evidence checklist is missing
-  context is older than COGNITION_CONTEXT_MAX_AGE_HOURS
   open thesis is older than COGNITION_OPEN_THESIS_MAX_AGE_MINUTES
+  no context exists
+  context is missing market data
+  evidence checklist is missing
   missing evidence retry is due
+  context is older than COGNITION_CONTEXT_MAX_AGE_HOURS
   evidence became satisfied after a decline
   no-thesis decline is older than COGNITION_DECLINE_RETRY_HOURS
         |
@@ -422,12 +423,29 @@ run the same cognition pipeline for selected tickers
 Current defaults:
 
 ```text
-COGNITION_SWEEP_SECONDS                900
+COGNITION_SWEEP_SECONDS                300
 COGNITION_CONTEXT_MAX_AGE_HOURS        12
 COGNITION_OPEN_THESIS_MAX_AGE_MINUTES  30
 COGNITION_DECLINE_RETRY_HOURS          6
-COGNITION_MAX_SYMBOLS_PER_SWEEP        5
+COGNITION_MAX_SYMBOLS_PER_SWEEP        20
 COGNITION_EVIDENCE_SYNC_LIMIT          200
+```
+
+Sweep priority is opinion-first. A stale open thesis outranks broad bootstrap
+work, because the current standing view is what the operator is relying on.
+Each scheduled run records a `sweep_reason` such as `open_thesis_due`,
+`context_missing`, or `evidence_retry_due` into the pipeline source reference so
+the UI/audit trail can explain why the symbol was touched.
+
+```text
+cognition target priority
+  0 open thesis due for re-evaluation
+  1 missing context
+  2 context exists but market context is blank
+  3 evidence checklist missing
+  4 evidence retry due for a no-thesis symbol
+  5 stale context
+  6 older decline retry / maintenance
 ```
 
 What works now:

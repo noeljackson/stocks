@@ -2065,7 +2065,7 @@
               <div class="alert-toolbar">
                 <label class="toggle"><input type="checkbox" bind:checked={showAcked} /> show acked</label>
               </div>
-              {@const syms = alerts.filter((a) => !a.symbol || a.symbol === selectedSymbol)}
+              {@const syms = alerts.filter((a) => a.symbol === selectedSymbol)}
               {#if syms.length === 0}
                 <p class="muted">No alerts for this symbol.</p>
               {:else}

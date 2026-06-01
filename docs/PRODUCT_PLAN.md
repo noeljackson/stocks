@@ -323,6 +323,12 @@ raw source row
   -> available to context/thesis prompts
 ```
 
+Current implementation: `evidence_item` exists for discrete news facts,
+estimate revisions, and analyst price-target events. It is backfilled from
+existing rows, updated by ingest, and visible in the selected-symbol Evidence
+tab. The next step is to make context/thesis prompts select from this fact
+layer before falling back to raw vendor tables.
+
 Evidence requirement examples:
 
 ```text

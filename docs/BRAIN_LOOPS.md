@@ -510,8 +510,10 @@ Current gaps:
   claiming every `source_task` row directly.
 - #130: product/theme web retrieval has a first GDELT/Bing-backed slice; paid
   semantic search may still be needed if recall is too weak.
-- #93: normalized evidence items are still missing; context/thesis use raw table
-  slices rather than a first-class fact layer.
+- #93: normalized evidence items now have a first slice. News, estimate
+  revisions, and analyst price-target events are backfilled and new ingest rows
+  create `evidence_item` records. Context/thesis prompts still need to consume
+  this layer directly instead of only raw table slices.
 
 Selected-symbol status now exposes the first slice of #128:
 

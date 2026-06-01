@@ -495,6 +495,40 @@ async function mockApi(page: Page): Promise<Calls> {
       }]);
       return;
     }
+    if (path === "/api/evidence-items") {
+      const symbol = url.searchParams.get("symbol") ?? "MSFT";
+      await json(route, [
+        {
+          id: 501,
+          symbol,
+          kind: "news",
+          observed_at: "2026-06-01T00:00:00Z",
+          source: "fmp",
+          source_id: "news_article:501",
+          source_ref: { table: "news_article", id: 501 },
+          summary: `${symbol} customer deployment article`,
+          strength: 0.8,
+          polarity: 0.4,
+          url: "https://example.com/evidence",
+          created_at: "2026-06-01T00:01:00Z",
+        },
+        {
+          id: 502,
+          symbol,
+          kind: "estimate_revision",
+          observed_at: "2026-05-31T00:00:00Z",
+          source: "fmp_estimates",
+          source_id: "estimate_revision:502",
+          source_ref: { table: "estimate_revision", id: 502 },
+          summary: `${symbol} annual estimate revision up EPS 3.2%`,
+          strength: 0.5,
+          polarity: 0.7,
+          url: null,
+          created_at: "2026-05-31T00:01:00Z",
+        },
+      ]);
+      return;
+    }
     if (path === "/api/positions") {
       const symbol = url.searchParams.get("symbol");
       await json(route, symbol === "OKTA" ? [{
@@ -703,6 +737,10 @@ test("evidence tab shows retrieved research sources", async ({ page }) => {
 
   const requirement = page.locator(".evidence-card").filter({ hasText: "product/theme web research" }).first();
   await expect(requirement.locator("strong")).toHaveText("web research");
+  await expect(page.locator(".evidence-items")).toContainText("Evidence facts");
+  await expect(page.locator(".evidence-items")).toContainText("customer deployment article");
+  await expect(page.locator(".evidence-items")).toContainText("estimate revision up");
+  await expect(page.locator(".evidence-items")).toContainText("polarity +0.40");
   await expect(page.getByText("Research sources")).toBeVisible();
   await expect(page.getByText("AMD MI355X production deployment expands")).toBeVisible();
   await expect(page.getByText("AMD MI355X deployment benchmark adoption")).toBeVisible();

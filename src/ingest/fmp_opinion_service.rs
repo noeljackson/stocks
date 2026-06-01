@@ -3,6 +3,7 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use anyhow::{Context, Result};
+use sqlx::Row;
 use sqlx::postgres::PgPool;
 use tracing::{info, warn};
 
@@ -277,13 +278,14 @@ async fn insert_price_target_event(
     row: &super::fmp_opinion::NormalizedPriceTargetEvent,
     raw: &serde_json::Value,
 ) -> Result<bool> {
-    let res = sqlx::query(
+    let inserted = sqlx::query(
         r#"INSERT INTO analyst_price_target_event
              (symbol, published_at, news_url, news_title, analyst_name,
               analyst_company, price_target, adj_price_target, price_when_posted,
               news_publisher, news_base_url, raw)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
-           ON CONFLICT DO NOTHING"#,
+           ON CONFLICT DO NOTHING
+           RETURNING id"#,
     )
     .bind(&row.symbol)
     .bind(row.published_at)
@@ -297,10 +299,63 @@ async fn insert_price_target_event(
     .bind(&row.news_publisher)
     .bind(&row.news_base_url)
     .bind(raw)
-    .execute(pool)
+    .fetch_optional(pool)
     .await
     .context("insert analyst_price_target_event")?;
-    Ok(res.rows_affected() > 0)
+    if let Some(inserted) = inserted {
+        let event_id: i64 = inserted.try_get("id")?;
+        upsert_price_target_event_evidence_item(pool, event_id, row).await?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+async fn upsert_price_target_event_evidence_item(
+    pool: &PgPool,
+    event_id: i64,
+    row: &super::fmp_opinion::NormalizedPriceTargetEvent,
+) -> Result<()> {
+    let polarity = match (row.adj_price_target, row.price_when_posted) {
+        (Some(target), Some(price)) if price > 0.0 && target > price * 1.05 => Some(0.5),
+        (Some(target), Some(price)) if price > 0.0 && target < price * 0.95 => Some(-0.5),
+        (Some(_), Some(price)) if price > 0.0 => Some(0.0),
+        _ => None,
+    };
+    sqlx::query(
+        r#"INSERT INTO evidence_item
+             (symbol, kind, observed_at, source, source_id, source_ref,
+              summary, strength, polarity, url)
+           VALUES (
+             $1, 'rating_change', $2, 'fmp_opinion', $3,
+             jsonb_build_object(
+                'table', 'analyst_price_target_event',
+                'id', $4::bigint,
+                'analyst_name', $5::text,
+                'analyst_company', $6::text,
+                'price_target', $7::double precision,
+                'adj_price_target', $8::double precision,
+                'price_when_posted', $9::double precision
+             ),
+             left($10, 500), 0.6, $11, $12
+           )
+           ON CONFLICT (source, source_id) DO NOTHING"#,
+    )
+    .bind(&row.symbol)
+    .bind(row.published_at)
+    .bind(format!("analyst_price_target_event:{event_id}"))
+    .bind(event_id)
+    .bind(&row.analyst_name)
+    .bind(&row.analyst_company)
+    .bind(row.price_target)
+    .bind(row.adj_price_target)
+    .bind(row.price_when_posted)
+    .bind(&row.news_title)
+    .bind(polarity)
+    .bind(&row.news_url)
+    .execute(pool)
+    .await
+    .context("insert analyst_price_target_event evidence_item")?;
+    Ok(())
 }
 
 pub async fn run(pool: PgPool, adapter: FmpOpinionAdapter, interval: Duration) -> Result<()> {

@@ -17,6 +17,7 @@
     dismissAttention,
     fetchDecisions,
     fetchDiscoveryPool,
+    fetchEvidenceItems,
     fetchEvidenceRequirements,
     fetchPendingCandidates,
     fetchPositions,
@@ -41,6 +42,7 @@
     type BrainThesis,
     type Calibration,
     type DecisionRow,
+    type EvidenceItem,
     type EvidenceRequirement,
     type MarketState,
     type PendingCandidate,
@@ -356,6 +358,29 @@
       .join(" · ");
   }
 
+  function evidenceItemTone(item: EvidenceItem): string {
+    if (item.polarity === null || item.polarity === undefined) return "neutral";
+    if (item.polarity > 0.15) return "positive";
+    if (item.polarity < -0.15) return "negative";
+    return "neutral";
+  }
+
+  function evidenceItemMeta(item: EvidenceItem): string {
+    const parts = [
+      item.kind.replace(/_/g, " "),
+      item.source.replace(/_/g, " "),
+      relativeTime(item.observed_at),
+    ];
+    if (item.strength !== null && item.strength !== undefined) {
+      parts.push(`strength ${Math.round(item.strength * 100)}`);
+    }
+    if (item.polarity !== null && item.polarity !== undefined) {
+      const polarity = item.polarity > 0 ? `+${item.polarity.toFixed(2)}` : item.polarity.toFixed(2);
+      parts.push(`polarity ${polarity}`);
+    }
+    return parts.join(" · ");
+  }
+
   // Group attention items by (kind, symbol). For candidate_review this
   // collapses N candidates on the same ticker into one card; for other
   // kinds it's typically 1 item per group.
@@ -477,6 +502,7 @@
   // ---------- selected-symbol-scoped data ----------
   let symbolContext = $state<TickerContext | null | undefined>(undefined);
   let symbolEvidence = $state<EvidenceRequirement[] | undefined>(undefined);
+  let symbolEvidenceItems = $state<EvidenceItem[] | undefined>(undefined);
   let symbolResearch = $state<ResearchEvidence[] | undefined>(undefined);
   let symbolBrain = $state<BrainStatus | null | undefined>(undefined);
   let symbolTheses = $state<ThesisDetail[] | null | undefined>(undefined);
@@ -736,6 +762,7 @@
     selectedSymbol = symbol;
     symbolContext = undefined;
     symbolEvidence = undefined;
+    symbolEvidenceItems = undefined;
     symbolResearch = undefined;
     symbolBrain = undefined;
     symbolTheses = undefined;
@@ -743,9 +770,10 @@
     symbolDecisions = undefined;
     symbolPositions = undefined;
     // Fetch detail in parallel.
-    const [ctx, evidence, research, brain, theses, declines, decisions, positions] = await Promise.all([
+    const [ctx, evidence, evidenceItems, research, brain, theses, declines, decisions, positions] = await Promise.all([
       fetchTickerContext(symbol).catch(() => null),
       fetchEvidenceRequirements(symbol).catch(() => []),
+      fetchEvidenceItems(symbol).catch(() => []),
       fetchResearchEvidence(symbol).catch(() => []),
       fetchBrainStatus(symbol).catch(() => null),
       fetchTheses(symbol).catch(() => []),
@@ -755,6 +783,7 @@
     ]);
     symbolContext = ctx;
     symbolEvidence = evidence;
+    symbolEvidenceItems = evidenceItems;
     symbolResearch = research;
     symbolBrain = brain;
     symbolTheses = theses;
@@ -2066,6 +2095,28 @@
                   {/each}
                 </ul>
               {/if}
+              {#if symbolEvidenceItems === undefined}
+                <p class="muted">Loading evidence facts…</p>
+              {:else if symbolEvidenceItems.length > 0}
+                <section class="evidence-items">
+                  <h4>Evidence facts</h4>
+                  <ul class="evidence-list">
+                    {#each symbolEvidenceItems.slice(0, 20) as item (item.id)}
+                      <li class="evidence-card evidence-item tone-{evidenceItemTone(item)}">
+                        <div class="evidence-row">
+                          {#if item.url}
+                            <a href={item.url} target="_blank" rel="noreferrer">{item.summary}</a>
+                          {:else}
+                            <strong>{item.summary}</strong>
+                          {/if}
+                          <span class="badge tiny">{item.kind.replace(/_/g, " ")}</span>
+                        </div>
+                        <p class="muted">{evidenceItemMeta(item)}</p>
+                      </li>
+                    {/each}
+                  </ul>
+                </section>
+              {/if}
               {#if symbolResearch === undefined}
                 <p class="muted">Loading research sources…</p>
               {:else if symbolResearch.length > 0}
@@ -2809,6 +2860,12 @@
     border-color: rgba(249, 226, 175, .35);
   }
   .evidence-card.state-satisfied { opacity: .72; }
+  .evidence-card.evidence-item {
+    border-left: 3px solid #45567a;
+  }
+  .evidence-card.evidence-item.tone-positive { border-left-color: rgb(166,227,161); }
+  .evidence-card.evidence-item.tone-negative { border-left-color: rgb(243,139,168); }
+  .evidence-card.evidence-item.tone-neutral { border-left-color: rgb(137,180,250); }
   .evidence-row {
     display: flex; gap: .4rem; align-items: baseline; flex-wrap: wrap; margin-bottom: .25rem;
   }

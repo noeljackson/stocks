@@ -259,13 +259,14 @@ async fn insert_revision(
     curr_snapshot_id: i64,
     delta: &super::fmp_estimates::RevisionDelta,
 ) -> Result<()> {
-    sqlx::query(
+    let row = sqlx::query(
         r#"INSERT INTO estimate_revision
              (symbol, fiscal_period_end, period_kind,
               prev_snapshot_id, curr_snapshot_id,
               eps_delta, eps_delta_pct, revenue_delta, revenue_delta_pct,
               direction)
-           VALUES ($1, $2, 'annual', $3, $4, $5, $6, $7, $8, $9)"#,
+           VALUES ($1, $2, 'annual', $3, $4, $5, $6, $7, $8, $9)
+           RETURNING id"#,
     )
     .bind(symbol)
     .bind(curr.fiscal_period_end)
@@ -276,10 +277,111 @@ async fn insert_revision(
     .bind(delta.revenue_delta)
     .bind(delta.revenue_delta_pct)
     .bind(delta.direction)
-    .execute(pool)
+    .fetch_one(pool)
     .await
     .context("insert_revision")?;
+    let revision_id: i64 = row.try_get("id")?;
+    if delta.direction != "initial" {
+        upsert_estimate_revision_evidence_item(
+            pool,
+            revision_id,
+            symbol,
+            curr,
+            prev_snapshot_id,
+            curr_snapshot_id,
+            delta,
+        )
+        .await?;
+    }
     Ok(())
+}
+
+async fn upsert_estimate_revision_evidence_item(
+    pool: &PgPool,
+    revision_id: i64,
+    symbol: &str,
+    curr: &NormalizedEstimate,
+    prev_snapshot_id: Option<i64>,
+    curr_snapshot_id: i64,
+    delta: &super::fmp_estimates::RevisionDelta,
+) -> Result<()> {
+    let strength = ([
+        delta.eps_delta_pct.map(f64::abs),
+        delta.revenue_delta_pct.map(f64::abs),
+        if delta.direction == "initial" {
+            Some(5.0)
+        } else {
+            None
+        },
+    ]
+    .into_iter()
+    .flatten()
+    .fold(0.0_f64, f64::max)
+        / 20.0)
+        .clamp(0.0, 1.0);
+    let polarity = match delta.direction {
+        "up" => Some(0.7),
+        "down" => Some(-0.7),
+        "mixed" => Some(0.0),
+        _ => None,
+    };
+    let summary = estimate_revision_summary(symbol, curr, delta);
+    sqlx::query(
+        r#"INSERT INTO evidence_item
+             (symbol, kind, observed_at, source, source_id, source_ref,
+              summary, strength, polarity)
+           VALUES (
+             $1, 'estimate_revision', now(), 'fmp_estimates', $2,
+             jsonb_build_object(
+                'table', 'estimate_revision',
+                'id', $3::bigint,
+                'fiscal_period_end', $4::date,
+                'period_kind', 'annual',
+                'prev_snapshot_id', $5::bigint,
+                'curr_snapshot_id', $6::bigint,
+                'direction', $7::text,
+                'eps_delta_pct', $8::double precision,
+                'revenue_delta_pct', $9::double precision
+             ),
+             $10, $11, $12
+           )
+           ON CONFLICT (source, source_id) DO NOTHING"#,
+    )
+    .bind(symbol)
+    .bind(format!("estimate_revision:{revision_id}"))
+    .bind(revision_id)
+    .bind(curr.fiscal_period_end)
+    .bind(prev_snapshot_id)
+    .bind(curr_snapshot_id)
+    .bind(delta.direction)
+    .bind(delta.eps_delta_pct)
+    .bind(delta.revenue_delta_pct)
+    .bind(summary)
+    .bind(strength)
+    .bind(polarity)
+    .execute(pool)
+    .await
+    .context("insert estimate_revision evidence_item")?;
+    Ok(())
+}
+
+fn estimate_revision_summary(
+    symbol: &str,
+    curr: &NormalizedEstimate,
+    delta: &super::fmp_estimates::RevisionDelta,
+) -> String {
+    let mut parts = vec![
+        symbol.to_string(),
+        curr.fiscal_period_end.to_string(),
+        format!("estimate revision {}", delta.direction),
+    ];
+    if let Some(v) = delta.eps_delta_pct {
+        parts.push(format!("EPS {v:.1}%"));
+    }
+    if let Some(v) = delta.revenue_delta_pct {
+        parts.push(format!("revenue {v:.1}%"));
+    }
+    parts.join(" ")
 }
 
 /// Long-running service loop.

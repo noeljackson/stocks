@@ -1030,6 +1030,41 @@ impl Store {
             .collect()
     }
 
+    pub async fn evidence_items_for_symbol(&self, symbol: &str) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query(
+            r#"SELECT id, symbol, kind, observed_at, source, source_id,
+                      source_ref, summary, strength, polarity, url, created_at
+                 FROM evidence_item
+                WHERE symbol = $1
+             ORDER BY observed_at DESC, id DESC
+                LIMIT 100"#,
+        )
+        .bind(symbol)
+        .fetch_all(&self.pool)
+        .await
+        .context("evidence_items_for_symbol")?;
+        rows.into_iter()
+            .map(|r| {
+                let observed_at: DateTime<Utc> = r.try_get("observed_at")?;
+                let created_at: DateTime<Utc> = r.try_get("created_at")?;
+                Ok(serde_json::json!({
+                    "id": r.try_get::<i64, _>("id")?,
+                    "symbol": r.try_get::<String, _>("symbol")?,
+                    "kind": r.try_get::<String, _>("kind")?,
+                    "observed_at": observed_at,
+                    "source": r.try_get::<String, _>("source")?,
+                    "source_id": r.try_get::<String, _>("source_id")?,
+                    "source_ref": r.try_get::<serde_json::Value, _>("source_ref")?,
+                    "summary": r.try_get::<String, _>("summary")?,
+                    "strength": r.try_get::<Option<f64>, _>("strength")?,
+                    "polarity": r.try_get::<Option<f64>, _>("polarity")?,
+                    "url": r.try_get::<Option<String>, _>("url")?,
+                    "created_at": created_at,
+                }))
+            })
+            .collect()
+    }
+
     /// Recent decisions for a given symbol — joins through thesis to filter.
     pub async fn decisions_for_symbol(&self, symbol: &str) -> Result<Vec<serde_json::Value>> {
         let rows = sqlx::query(

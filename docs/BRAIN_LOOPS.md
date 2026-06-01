@@ -192,7 +192,7 @@ fmp_price_backfill                Rust ingest fmp_price loop claims/completes
 fmp_news                          Rust ingest news loop
 massive_news                      Rust ingest news loop
 llm_sentiment_scoring             Rust ingest news loop scorer
-fmp_analyst_estimates             Rust ingest fmp_estimates loop
+fmp_analyst_estimates             Rust ingest fmp_estimates loop claims/completes
 fmp_price_target_consensus        Rust ingest fmp_analyst_opinion loop
 fmp_grades_historical             Rust ingest fmp_analyst_opinion loop
 fmp_price_target_news             Rust ingest fmp_analyst_opinion loop
@@ -451,8 +451,8 @@ Current gaps:
   are no longer starved behind the broad screener pool.
 - #128: provider-wide retry gates now pause source tasks, and due source tasks
   move their symbols to the front of the expensive ingest scan universe. The
-  FMP price loop now claims/completes `fmp_price_backfill` tasks directly; the
-  remaining Rust market-data adapters still need the same ownership path.
+  FMP price and estimates loops now claim/complete their source tasks directly;
+  the remaining Rust market-data adapters still need the same ownership path.
 - #136: evidence requirements and source tasks are synchronized from source
   health; Rust source loops still report through source health instead of
   claiming every `source_task` row directly.
@@ -676,6 +676,7 @@ implemented first slice
   provider-wide rate-limit pauses are applied to all matching source tasks
   due source_task symbols are prioritized by expensive ingest loops
   FMP price loop claims/completes fmp_price_backfill source tasks
+  FMP estimates loop claims/completes fmp_analyst_estimates source tasks
   active ticker evidence sync bootstraps newly added requirement keys
   Python source_task worker claims and runs due web research tasks
   cognition sweep refreshes open evidence rows before choosing targets

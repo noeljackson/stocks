@@ -35,20 +35,31 @@ pub async fn run_once(pool: &PgPool, adapter: &FmpEstimatesAdapter) -> Result<us
         .await
         .unwrap_or_default();
     source_health::mark_started(pool, "fmp_estimates", symbols.len() as i32).await?;
+    store
+        .mark_source_tasks_fetching(&["fmp_analyst_estimates"], &symbols, "ingest.fmp_estimates")
+        .await?;
     let mut total_revisions = 0;
     let mut rows_seen = 0;
     let mut symbols_failed = 0;
     let mut saw_rate_limit = false;
+    let mut symbols_with_rows = std::collections::BTreeSet::new();
+    let mut failed_symbols = Vec::new();
+    let mut rate_limited_symbols = Vec::new();
     for symbol in &symbols {
         match scan_one(pool, adapter, symbol).await {
             Ok((seen, revisions)) => {
                 rows_seen += seen;
                 total_revisions += revisions;
+                if seen > 0 {
+                    symbols_with_rows.insert(symbol.clone());
+                }
             }
             Err(e) => {
                 symbols_failed += 1;
+                failed_symbols.push(symbol.clone());
                 if source_health::failure_kind(&e.to_string()) == "rate_limited" {
                     saw_rate_limit = true;
+                    rate_limited_symbols.push(symbol.clone());
                 }
                 warn!(symbol = %symbol, error = %e, "fmp_estimates scan_one failed");
             }
@@ -63,15 +74,58 @@ pub async fn run_once(pool: &PgPool, adapter: &FmpEstimatesAdapter) -> Result<us
         symbols_failed,
     )
     .await?;
+    let successful_symbols: Vec<String> = symbols
+        .iter()
+        .filter(|s| !failed_symbols.contains(s))
+        .cloned()
+        .collect();
+    let symbols_with_rows: Vec<String> = symbols_with_rows.into_iter().collect();
+    store
+        .complete_source_tasks_for_attempt(
+            "fmp_analyst_estimates",
+            &successful_symbols,
+            &symbols_with_rows,
+            "ingest.fmp_estimates",
+            chrono::Duration::minutes(30),
+        )
+        .await?;
+    let non_rate_limited_failures: Vec<String> = failed_symbols
+        .iter()
+        .filter(|s| !rate_limited_symbols.contains(s))
+        .cloned()
+        .collect();
+    if !non_rate_limited_failures.is_empty() {
+        store
+            .fail_source_tasks_for_attempt(
+                "fmp_analyst_estimates",
+                &non_rate_limited_failures,
+                "ingest.fmp_estimates",
+                "failed",
+                "one or more FMP estimates requests failed",
+                None,
+            )
+            .await?;
+    }
     if saw_rate_limit {
+        let retry_after_at = rate_limit::fmp().retry_after_at().await;
         source_health::record_failure(
             pool,
             "fmp_estimates",
             "rate_limited",
             "one or more FMP estimates requests were rate limited",
-            rate_limit::fmp().retry_after_at().await,
+            retry_after_at,
         )
         .await?;
+        store
+            .fail_source_tasks_for_attempt(
+                "fmp_analyst_estimates",
+                &rate_limited_symbols,
+                "ingest.fmp_estimates",
+                "rate_limited",
+                "one or more FMP estimates requests were rate limited",
+                retry_after_at,
+            )
+            .await?;
     }
     Ok(total_revisions)
 }

@@ -23,6 +23,8 @@ Reads:
     COGNITION_MAX_SYMBOLS_PER_SWEEP — default 20
     COGNITION_EVIDENCE_SYNC_LIMIT — default 200
     COGNITION_ACK_PROGRESS_SECONDS — default 10
+    SOURCE_TASK_SWEEP_SECONDS — default 60; set 0 to disable due task worker
+    SOURCE_TASK_MAX_SYMBOLS_PER_SWEEP — default 5
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ from .context_maintainer import BlockingEvidenceMissing
 from .context_maintainer import refresh as refresh_context
 from .evidence import load_open_evidence_requirements, refresh_open_evidence_requirements
 from .sharpen import sharpen as sharpen_thesis
+from .source_tasks import loop as source_task_loop
 from .thesis_engine import draft as draft_thesis
 
 log = logging.getLogger("cognition")
@@ -500,7 +503,7 @@ async def run() -> None:
     log.info("cognition consumer subscribed: stream=%s subject=%s durable=%s",
              STREAM, SUBJECT, DURABLE)
     try:
-        await asyncio.gather(_message_loop(pool, psub), _sweep_loop(pool))
+        await asyncio.gather(_message_loop(pool, psub), _sweep_loop(pool), source_task_loop(pool))
     finally:
         await nc.drain()
         await pool.close()

@@ -7,6 +7,14 @@ import json
 
 import asyncpg
 
+FRESHNESS_TARGETS_MINUTES = {
+    "price_history": 30,
+    "company_facts": 6 * 60,
+    "recent_news": 30,
+    "analyst_estimates": 30,
+    "product_research": 30,
+}
+
 SOURCE_HEALTH_BY_REQUIREMENT = {
     "price_history": ["fmp_price"],
     "company_facts": ["edgar", "xbrl"],
@@ -67,6 +75,86 @@ def _task_json(task: dict) -> dict:
         "due_at": _iso(due_at) if hasattr(due_at, "isoformat") else due_at,
         "next_retry_at": task["next_retry_at"],
     }
+
+
+def _parse_dt(value) -> dt.datetime | None:
+    if value is None or isinstance(value, dt.datetime):
+        return value
+    if isinstance(value, str):
+        normalized = value.replace("Z", "+00:00")
+        try:
+            return dt.datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+    return None
+
+
+def _latest_dt(values) -> dt.datetime | None:
+    parsed = [v for v in (_parse_dt(value) for value in values) if v is not None]
+    return max(parsed) if parsed else None
+
+
+def _source_health_last_check(
+    requirement_key: str,
+    source_health: dict[str, dict] | None,
+) -> dt.datetime | None:
+    sources = SOURCE_HEALTH_BY_REQUIREMENT.get(requirement_key, [])
+    rows = [source_health[s] for s in sources if source_health and s in source_health]
+    return _latest_dt(
+        row.get("last_success_at") or row.get("last_started_at") or row.get("updated_at")
+        for row in rows
+    )
+
+
+def source_task_due_at(
+    requirement_key: str,
+    *,
+    last_check_at: dt.datetime | None,
+    now: dt.datetime | None = None,
+) -> dt.datetime:
+    now = now or dt.datetime.now(dt.UTC)
+    if last_check_at is None:
+        return now
+    minutes = FRESHNESS_TARGETS_MINUTES.get(requirement_key, 30)
+    return last_check_at + dt.timedelta(minutes=minutes)
+
+
+def satisfied_source_task_state(
+    requirement_key: str,
+    *,
+    evidence_counts: dict,
+    source_health: dict[str, dict] | None,
+    now: dt.datetime | None = None,
+) -> tuple[str, dt.datetime, str]:
+    """Return recurring source-task state for a requirement with evidence.
+
+    A satisfied evidence requirement means cognition can reason with the data it
+    has. The source task remains the freshness contract: once the last relevant
+    check ages past the SLA, it becomes queued without turning the symbol blank.
+    """
+    now = now or dt.datetime.now(dt.UTC)
+    source_check_at = (
+        None
+        if requirement_key == "product_research"
+        else _source_health_last_check(requirement_key, source_health)
+    )
+    symbol_check_at = {
+        "price_history": _parse_dt(evidence_counts.get("price_last_bar_at")),
+        "company_facts": _parse_dt(evidence_counts.get("company_fact_last_ingested_at")),
+        "recent_news": _parse_dt(evidence_counts.get("news_last_ingested_at")),
+        "analyst_estimates": _parse_dt(evidence_counts.get("estimate_snapshot_last_at")),
+        "product_research": _latest_dt([
+            evidence_counts.get("research_run_last_at"),
+            evidence_counts.get("research_evidence_last_retrieved_at"),
+        ]),
+    }.get(requirement_key)
+    last_check_at = _latest_dt([source_check_at, symbol_check_at])
+    due_at = source_task_due_at(requirement_key, last_check_at=last_check_at, now=now)
+    if last_check_at is None:
+        return "queued", due_at, "freshness_not_checked"
+    if due_at <= now:
+        return "queued", now, "freshness_due"
+    return "satisfied", due_at, "fresh"
 
 
 def provider_for_fetch_action(action: str, source_type: str) -> str:
@@ -145,24 +233,86 @@ def build_source_tasks(symbol: str, requirement: dict) -> list[dict]:
     return tasks
 
 
-async def load_evidence_counts(pool: asyncpg.Pool, symbol: str) -> dict[str, int]:
+def build_satisfied_source_tasks(
+    symbol: str,
+    requirement_key: str,
+    spec: dict,
+    evidence_counts: dict,
+    source_health: dict[str, dict] | None,
+) -> list[dict]:
+    state, due_at, state_reason = satisfied_source_task_state(
+        requirement_key,
+        evidence_counts=evidence_counts,
+        source_health=source_health,
+    )
+    tasks = []
+    for action in spec.get("fetch_actions", []):
+        provider = provider_for_fetch_action(action, spec["source_type"])
+        tasks.append(
+            {
+                "source_type": spec["source_type"],
+                "requirement_key": requirement_key,
+                "action": action,
+                "scope": "symbol",
+                "target_id": symbol,
+                "provider": provider,
+                "limiter_key": provider,
+                "state": state,
+                "priority": spec["priority"],
+                "due_at": due_at,
+                "attempts": 0,
+                "next_retry_at": None,
+                "last_error": None,
+                "source_ref": {
+                    "acquisition_state": state_reason,
+                    "evidence_counts": evidence_counts,
+                    "source_health": [
+                        source_health[s]
+                        for s in SOURCE_HEALTH_BY_REQUIREMENT.get(requirement_key, [])
+                        if source_health and s in source_health
+                    ],
+                },
+            }
+        )
+    return tasks
+
+
+async def load_evidence_counts(pool: asyncpg.Pool, symbol: str) -> dict[str, object]:
     row = await pool.fetchrow(
         """SELECT
               (SELECT count(*) FROM price_bar WHERE symbol = $1) AS price_bars,
+              (SELECT max(ts) FROM price_bar WHERE symbol = $1) AS price_last_bar_at,
               (SELECT count(*) FROM company_fact WHERE symbol = $1) AS company_facts,
+              (SELECT max(ingested_at)
+                 FROM company_fact WHERE symbol = $1) AS company_fact_last_ingested_at,
               (SELECT count(*) FROM news_article
                 WHERE symbol = $1
                   AND published_at > now() - interval '30 days') AS recent_news,
+              (SELECT max(ingested_at)
+                 FROM news_article WHERE symbol = $1) AS news_last_ingested_at,
               (SELECT count(*) FROM estimate_snapshot WHERE symbol = $1) AS estimate_snapshots,
+              (SELECT max(snapshot_at)
+                 FROM estimate_snapshot WHERE symbol = $1) AS estimate_snapshot_last_at,
               (SELECT count(*) FROM research_evidence
                 WHERE symbol = $1
-                  AND retrieved_at > now() - interval '30 days') AS research_evidence
+                  AND retrieved_at > now() - interval '30 days') AS research_evidence,
+              (SELECT max(retrieved_at)
+                 FROM research_evidence WHERE symbol = $1) AS research_evidence_last_retrieved_at,
+              (SELECT max(finished_at)
+                 FROM research_retrieval_run WHERE symbol = $1) AS research_run_last_at
         """,
         symbol,
     )
     if row is None:
         return {}
-    return {k: int(row[k] or 0) for k in row.keys()}
+    out = {}
+    for key in row.keys():
+        value = row[key]
+        if key.endswith("_at"):
+            out[key] = _iso(value)
+        else:
+            out[key] = int(value or 0)
+    return out
 
 
 async def load_source_health(pool: asyncpg.Pool) -> dict[str, dict]:
@@ -247,7 +397,7 @@ def _acquisition_state(requirement_key: str, source_health: dict[str, dict] | No
 
 
 def assess_evidence_requirements(
-    evidence_counts: dict[str, int],
+    evidence_counts: dict[str, object],
     source_health: dict[str, dict] | None = None,
 ) -> list[dict]:
     missing = []
@@ -288,12 +438,11 @@ def assess_evidence_requirements(
 async def sync_evidence_requirements(
     pool: asyncpg.Pool,
     symbol: str,
-    evidence_counts: dict[str, int],
+    evidence_counts: dict[str, object],
     source_health: dict[str, dict] | None = None,
 ) -> list[dict]:
     missing = assess_evidence_requirements(evidence_counts, source_health)
     missing_by_key = {r["requirement_key"]: r for r in missing}
-    now_ref = json.dumps({"counts": evidence_counts})
 
     for key, spec in EVIDENCE_REQUIREMENTS.items():
         if key in missing_by_key:
@@ -346,6 +495,9 @@ async def sync_evidence_requirements(
             )
             await sync_source_tasks(pool, source_tasks)
         else:
+            source_tasks = build_satisfied_source_tasks(
+                symbol, key, spec, evidence_counts, source_health,
+            )
             await pool.execute(
                 """INSERT INTO evidence_requirement
                      (symbol, requirement_key, source_type, reason, priority,
@@ -363,9 +515,12 @@ async def sync_evidence_requirements(
                 spec["source_type"],
                 spec["reason"],
                 spec["priority"],
-                now_ref,
+                json.dumps({
+                    "counts": evidence_counts,
+                    "source_tasks": [_task_json(task) for task in source_tasks],
+                }),
             )
-            await mark_source_tasks_satisfied(pool, symbol, key)
+            await sync_source_tasks(pool, source_tasks)
     return missing
 
 
@@ -410,40 +565,57 @@ async def sync_source_tasks(pool: asyncpg.Pool, tasks: list[dict]) -> None:
         )
 
 
-async def mark_source_tasks_satisfied(
-    pool: asyncpg.Pool,
-    symbol: str,
-    requirement_key: str,
-) -> None:
-    await pool.execute(
-        """UPDATE source_task
-              SET state = 'satisfied',
-                  next_retry_at = NULL,
-                  due_at = now(),
-                  last_error = NULL,
-                  updated_at = now()
-            WHERE scope = 'symbol'
-              AND target_id = $1
-              AND requirement_key = $2
-              AND state <> 'satisfied'""",
-        symbol,
-        requirement_key,
-    )
-
-
 async def refresh_open_evidence_requirements(
     pool: asyncpg.Pool,
     *,
     limit: int = 200,
 ) -> int:
-    """Refresh evidence rows from current counts/source_health without invoking LLMs."""
+    """Refresh active ticker evidence rows without invoking LLMs.
+
+    This bootstraps newly introduced requirement keys, keeps open requirements
+    current, and requeues satisfied source tasks when their freshness window is
+    due.
+    """
     rows = await pool.fetch(
-        """SELECT DISTINCT symbol
-             FROM evidence_requirement
-            WHERE blocking_state <> 'satisfied'
-         ORDER BY symbol
+        """WITH active_symbols AS (
+               SELECT symbol
+                 FROM ticker
+                WHERE status = 'active'
+           ),
+           evidence_state AS (
+               SELECT a.symbol,
+                      count(DISTINCT er.requirement_key) AS requirement_count,
+                      COALESCE(
+                          bool_or(er.blocking_state <> 'satisfied'),
+                          false
+                      ) AS has_open_requirement,
+                      COALESCE(bool_or(
+                          st.due_at <= now()
+                          AND st.state IN (
+                              'queued', 'no_rows', 'failed',
+                              'rate_limited', 'satisfied'
+                          )
+                      ), false) AS has_due_task
+                 FROM active_symbols a
+            LEFT JOIN evidence_requirement er ON er.symbol = a.symbol
+            LEFT JOIN source_task st
+                   ON st.scope = 'symbol'
+                  AND st.target_id = a.symbol
+             GROUP BY a.symbol
+           )
+           SELECT symbol
+             FROM evidence_state
+            WHERE requirement_count < $2
+               OR has_open_requirement
+               OR has_due_task
+         ORDER BY
+              (requirement_count < $2) DESC,
+              has_open_requirement DESC,
+              has_due_task DESC,
+              symbol
             LIMIT $1""",
         limit,
+        len(EVIDENCE_REQUIREMENTS),
     )
     if not rows:
         return 0

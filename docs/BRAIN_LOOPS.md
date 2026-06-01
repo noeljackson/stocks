@@ -137,10 +137,28 @@ source due
 `source_task` is the active work queue behind evidence requirements. A missing
 requirement says what is needed; source tasks say which provider/action should
 run, when it is due, whether it is rate-limited, and what retry state applies.
+Satisfied tasks are fresh-until `due_at`, not terminal; when a task becomes due
+the owning worker may claim it and re-check the source without making the ticker
+look blank.
 
-Open gap: #128 should make source tasks the canonical freshness orchestrator.
-It should decide what is stale, what source is safe to call next, and when to
-slow down because a vendor is rate limiting.
+Current ownership:
+
+```text
+source_task action                owner
+fmp_price_backfill                Rust ingest fmp_price loop
+fmp_news                          Rust ingest news loop
+massive_news                      Rust ingest news loop
+llm_sentiment_scoring             Rust ingest news loop scorer
+fmp_analyst_estimates             Rust ingest fmp_estimates loop
+sec_company_tickers_cik_lookup    Rust EDGAR/XBRL loops
+sec_companyfacts_xbrl             Rust XBRL loop
+gdelt_doc_search                  Python source_task worker
+bing_news_rss_search              Python source_task worker
+```
+
+Remaining gap: #128 should finish central limiter ownership so provider
+backoff is coordinated in one scheduler instead of split between the Rust
+market-data loops and the Python research worker.
 
 ## Discovery Loop
 
@@ -540,10 +558,13 @@ implemented first slice
   open-thesis last_evaluated_at freshness loop without no-change version churn
   evidence requirements carry source-health acquisition state
   source_task rows track acquisition action/state/due time
+  satisfied source_task rows requeue when freshness is due
+  active ticker evidence sync bootstraps newly added requirement keys
+  Python source_task worker claims and runs due web research tasks
   cognition sweep refreshes open evidence rows before choosing targets
 
 missing
-  source_task workers that actively drive every provider fetch
+  central source_task limiter that directly owns every provider fetch
   full producer adoption for attention retry/blocked transitions
   macro/sector thesis generation and scheduled re-evaluation
   paid semantic research provider if GDELT recall is insufficient

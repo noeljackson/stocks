@@ -282,7 +282,8 @@
       .map((task) => {
         const action = task.action.replace(/_/g, " ");
         const state = task.state.replace(/_/g, " ");
-        return `${action}: ${state}`;
+        const due = task.due_at ? ` ${relativeTime(task.due_at)}` : "";
+        return `${action}: ${state}${due}`;
       })
       .join(" · ");
   }
@@ -1751,7 +1752,7 @@
                       {:else if evidenceActions(req).length}
                         <p class="muted">next fetch: {evidenceActions(req).map((a) => a.replace(/_/g, " ")).join(", ")}</p>
                       {/if}
-                      {#if req.blocking_state !== "satisfied" && evidenceSourceTasks(req)}
+                      {#if evidenceSourceTasks(req)}
                         <p class="muted">source tasks: {evidenceSourceTasks(req)}</p>
                       {/if}
                       {#if req.blocking_state !== "satisfied" && evidenceCounts(req)}

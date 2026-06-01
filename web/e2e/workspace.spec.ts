@@ -406,6 +406,40 @@ async function mockApi(page: Page): Promise<Calls> {
             at: "2026-06-01T00:00:00Z",
           },
         ],
+        evidence_items: [
+          {
+            id: 501,
+            symbol: "OKTA",
+            kind: "news",
+            observed_at: "2026-06-01T00:00:00Z",
+            source: "fmp",
+            source_id: "news_article:501",
+            source_ref: { table: "news_article", id: 501 },
+            summary: "OKTA customer deployment article supports consolidation demand",
+            strength: 0.8,
+            polarity: 0.6,
+            url: "https://example.com/evidence",
+            created_at: "2026-06-01T00:01:00Z",
+            weight: 0.9,
+            added_by: "system",
+          },
+          {
+            id: 502,
+            symbol: "OKTA",
+            kind: "estimate_revision",
+            observed_at: "2026-05-31T00:00:00Z",
+            source: "fmp_estimates",
+            source_id: "estimate_revision:502",
+            source_ref: { table: "estimate_revision", id: 502 },
+            summary: "OKTA annual estimate revision up EPS 3.2%",
+            strength: 0.5,
+            polarity: 0.7,
+            url: null,
+            created_at: "2026-05-31T00:01:00Z",
+            weight: 0.5,
+            added_by: "system",
+          },
+        ],
         substance: null,
       }] : []);
       return;
@@ -865,6 +899,10 @@ test("theses tab renders current thesis despite duplicate history rows", async (
   await page.getByRole("button", { name: "theses" }).click();
 
   await expect(page.getByText("Identity platform consolidation can improve growth durability.")).toBeVisible();
+  await expect(page.getByText("Linked evidence")).toBeVisible();
+  await expect(page.getByText("OKTA customer deployment article supports consolidation demand")).toBeVisible();
+  await expect(page.getByText(/weight 90/)).toBeVisible();
+  await expect(page.getByText(/polarity \+0\.60/)).toBeVisible();
   await expect(page.getByText("Version history")).toBeVisible();
   await expect(page.getByText("smoketest duplicate")).toHaveCount(2);
 });

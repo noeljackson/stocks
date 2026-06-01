@@ -318,6 +318,7 @@ over.
 ```text
 raw source row
   -> normalized evidence_item
+  -> thesis_evidence link when a view uses or updates from it
   -> linked to symbol/factor/theme
   -> satisfies or weakens evidence_requirement
   -> available to context/thesis prompts
@@ -327,7 +328,9 @@ Current implementation: `evidence_item` exists for discrete news facts,
 estimate revisions, and analyst price-target events. It is backfilled from
 existing rows, updated by ingest, and visible in the selected-symbol Evidence
 tab. Context and thesis prompts receive the normalized fact stream before raw
-vendor details, so claims can be tied back to source facts.
+vendor details, so claims can be tied back to source facts. Draft/reconcile
+runs attach recent facts to the current thesis through `thesis_evidence`, and
+the thesis detail panel shows those linked facts next to the rationale.
 
 Evidence requirement examples:
 

@@ -3014,6 +3014,7 @@ mod tests {
             updated_at: Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap(),
             last_evaluated_at: None,
             history: vec![],
+            evidence_items: vec![],
             substance: None,
         }
     }

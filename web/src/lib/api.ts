@@ -116,6 +116,7 @@ export interface ThesisDetail {
   updated_at: string;
   last_evaluated_at?: string | null;
   history: ThesisVersionEvent[];
+  evidence_items?: EvidenceItem[];
   substance?: ThesisSubstance | null;
 }
 
@@ -215,6 +216,8 @@ export interface EvidenceItem {
   polarity?: number | null;
   url?: string | null;
   created_at: string;
+  weight?: number | null;
+  added_by?: string | null;
 }
 
 export async function fetchEvidenceItems(symbol: string): Promise<EvidenceItem[]> {

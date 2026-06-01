@@ -95,8 +95,9 @@ This is the SPEC §4 "#1 leading signal for the edge" gap (#18).
 The normalized fact layer is `evidence_item`. News articles, estimate
 revisions, and analyst price-target events are written there as discrete facts
 with source, source row pointer, strength, polarity, timestamp, and URL where
-available. Raw vendor tables remain the audit source; `evidence_item` is the
-operator/cognition-facing fact stream.
+available. `thesis_evidence` links the current symbol thesis to the normalized
+facts seen during draft/reconciliation. Raw vendor tables remain the audit
+source; `evidence_item` is the operator/cognition-facing fact stream.
 
 ## 4. News + per-article sentiment
 

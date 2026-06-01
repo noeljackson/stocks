@@ -250,6 +250,8 @@ pub struct ThesisDetail {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_evaluated_at: Option<DateTime<Utc>>,
     pub history: Vec<ThesisVersionEvent>,
+    #[serde(default)]
+    pub evidence_items: Vec<serde_json::Value>,
     /// Computed at read-time via [`crate::thesis::substance::substance_report`].
     /// Optional so callers that don't care (or older serialized rows) can
     /// omit it.

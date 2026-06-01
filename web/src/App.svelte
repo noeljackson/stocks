@@ -118,7 +118,7 @@
 
   // Plain-English reason from a candidate's signal_name + signal_value.
   function reasonFor(signal: string, value: number | null): string {
-    if (signal === "pool_inspection") return "proactive research inspection";
+    if (signal === "research_nomination") return "research nomination";
     if (signal === "volume_anomaly" && value !== null) return `${value.toFixed(1)}× volume vs 20-day avg`;
     if (signal === "base_breakout" && value !== null) return `base breakout +${value.toFixed(2)}% above prior high`;
     if (signal === "estimate_revision_velocity" && value !== null) {
@@ -281,6 +281,10 @@
       symbol: t.symbol,
       added_at: t.added_at,
       added_by: "system",
+      latest_thesis_id: t.latest_thesis_id,
+      thesis_state: t.thesis_state,
+      thesis_direction: t.thesis_direction,
+      open_theses: t.open_theses,
     })),
   );
 
@@ -334,6 +338,22 @@
   function forecastDirectionFrom(forecast: Record<string, unknown> | null | undefined): string | null {
     const dir = forecast?.direction;
     return typeof dir === "string" && dir.length > 0 ? dir : null;
+  }
+
+  function thesisStatusLabel(state: string | null | undefined): string {
+    return state ? state.replace(/_/g, " ") : "no thesis";
+  }
+
+  function thesisDirectionLabel(direction: string | null | undefined): string {
+    if (direction === "up") return "bull";
+    if (direction === "down") return "bear";
+    if (direction === "neutral") return "neutral";
+    return "none";
+  }
+
+  function thesisDirectionClass(direction: string | null | undefined): string {
+    if (direction === "up" || direction === "down" || direction === "neutral") return `thesis-${direction}`;
+    return "thesis-none";
   }
 
   function decisionIntentLabel(d: DecisionRow): string {
@@ -1173,12 +1193,12 @@
             {@const open = expandedListIds[w.id] ?? false}
             {@const members = membersFor(w.id)}
             <li class="wl-item">
-              <div class="wl-row" onclick={() => toggleListExpanded(w.id)}>
+              <button type="button" class="wl-row" onclick={() => toggleListExpanded(w.id)}>
                 <span class="caret">{open ? "▾" : "▸"}</span>
                 <span class="wl-name" style={w.color ? `border-left: 3px solid ${w.color}; padding-left: .35rem` : ""}>{w.name}</span>
                 <span class="muted">{w.member_count}</span>
                 {#if w.is_system}<span class="badge tiny">sys</span>{/if}
-              </div>
+              </button>
               {#if open}
                 {#if w.id !== UNIVERSE_ID && w.id !== POOL_ID}
                   <form
@@ -1197,9 +1217,16 @@
                     <li
                       class="wl-mem"
                       class:active={selectedSymbol === m.symbol}
-                      onclick={() => selectSymbol(m.symbol)}
                     >
-                      <strong>{m.symbol}</strong>
+                      <button type="button" class="wl-mem-select" onclick={() => selectSymbol(m.symbol)}>
+                        <strong>{m.symbol}</strong>
+                        <span class="wl-thesis-state" class:empty={!m.thesis_state}>
+                          {thesisStatusLabel(m.thesis_state)}
+                        </span>
+                        <span class={`badge tiny ${thesisDirectionClass(m.thesis_direction)}`}>
+                          {thesisDirectionLabel(m.thesis_direction)}
+                        </span>
+                      </button>
                       {#if w.id !== UNIVERSE_ID && w.id !== POOL_ID}
                         <button
                           class="rm"
@@ -1521,20 +1548,31 @@
   }
   .wl-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .15rem; }
   .wl-row {
-    display: flex; gap: .35rem; align-items: baseline; cursor: pointer;
-    padding: .2rem .25rem; border-radius: 3px;
+    width: 100%; display: flex; gap: .35rem; align-items: baseline; cursor: pointer;
+    padding: .2rem .25rem; border-radius: 3px; border: none; background: transparent;
+    color: inherit; font: inherit; text-align: left;
   }
   .wl-row:hover { background: rgba(137, 180, 250, .06); }
   .caret { color: #6c7693; font-size: .7rem; width: .9rem; }
   .wl-name { font-size: .85rem; font-weight: 500; flex: 1; }
   .wl-members { list-style: none; padding: 0 0 0 1.5rem; margin: .1rem 0 .25rem; display: flex; flex-direction: column; gap: .1rem; }
   .wl-mem {
-    display: flex; gap: .35rem; align-items: baseline; padding: .15rem .3rem;
-    cursor: pointer; border-radius: 3px; font-size: .8rem;
+    display: flex; gap: .35rem; align-items: center; padding: .15rem .3rem;
+    border-radius: 3px; font-size: .8rem;
   }
   .wl-mem:hover { background: rgba(137, 180, 250, .08); }
   .wl-mem.active { background: rgba(137, 180, 250, .18); }
-  .wl-mem strong { flex: 1; }
+  .wl-mem-select {
+    min-width: 0; flex: 1; display: flex; gap: .35rem; align-items: baseline;
+    border: none; background: transparent; color: inherit; font: inherit;
+    text-align: left; padding: 0; cursor: pointer;
+  }
+  .wl-mem-select strong { flex: 1; }
+  .wl-thesis-state {
+    color: #9aa3b8; font-size: .68rem; text-transform: lowercase;
+    white-space: nowrap; max-width: 8.5rem; overflow: hidden; text-overflow: ellipsis;
+  }
+  .wl-thesis-state.empty { color: #5f6780; }
   .wl-mem .rm {
     background: transparent; border: none; color: #6c7693; font-size: .9rem;
     cursor: pointer; padding: 0 .3rem; line-height: 1;
@@ -1885,8 +1923,12 @@
   .badge.dec-resize  { background: rgba(249,226,175,.18); color: rgb(249,226,175); }
   .thesis-down { color: rgb(243,139,168); }
   .thesis-up { color: rgb(166,227,161); }
+  .thesis-neutral { color: rgb(249,226,175); }
+  .thesis-none { color: #6c7693; }
   .badge.thesis-down { background: rgba(243,139,168,.16); color: rgb(243,139,168); }
   .badge.thesis-up { background: rgba(166,227,161,.16); color: rgb(166,227,161); }
+  .badge.thesis-neutral { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
+  .badge.thesis-none { background: rgba(108,112,134,.16); color: #9aa3b8; }
   .link-mini {
     background: transparent; color: #89b4fa; border: none; cursor: pointer;
     font: inherit; font-size: .75rem; padding: 0;

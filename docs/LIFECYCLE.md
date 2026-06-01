@@ -19,8 +19,8 @@ discovery_pool                              active ticker/watchlist universe
           ┌───────────┴───────────┐
           │                       │
           ▼                       ▼
-  proactive pool inspection       composed interpretation
-  unreviewed relevant names       raw facts + extension + thesis/watchlist state
+  research nomination             composed interpretation
+  reasoned relevant names         raw facts + extension + thesis/watchlist state
           │                       │
           └───────────┬───────────┘
                       ▼
@@ -80,10 +80,11 @@ discovery_pool                              active ticker/watchlist universe
         lead time, Brier, prompt/signal learning
 ```
 
-`pool_inspection` candidates use the same `candidate_review` attention kind as
-signal candidates. The difference is semantic: inspection says "this name is in
-scope and unreviewed," while signal candidates say "new market/evidence behavior
-crossed a threshold." Both resolve through confirm/reject.
+`research_nomination` candidates use the same `candidate_review` attention kind
+as signal candidates. The difference is semantic: a nomination says "this name
+belongs in the monitored universe for explicit theme/business/evidence reasons,"
+while signal candidates say "new market/evidence behavior crossed a threshold."
+Both resolve through confirm/reject.
 
 ## Attention Contract
 
@@ -93,7 +94,7 @@ attention.
 
 | Kind | Source | Meaning | Resolver |
 | --- | --- | --- | --- |
-| `candidate_review` | discovery | A composed discovery interpretation or proactive pool inspection deserves confirm/reject. | confirm or reject candidate |
+| `candidate_review` | discovery | A composed discovery interpretation or reasoned research nomination deserves confirm/reject. | confirm or reject candidate |
 | `thesis_incomplete` | cognition | Context was refreshed but thesis engine declined to invent an edge, or blocking evidence is still missing. | draft thesis / dismiss |
 | `thesis_actionable` | thesis transition | A thesis reached actionable and needs a human decision. | record decision |
 | `risk_review` | risk | Proposed/recorded intent hit risk warnings or vetoes. | acknowledge / adjust |

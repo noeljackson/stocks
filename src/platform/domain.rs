@@ -102,6 +102,9 @@ pub struct TickerRow {
     pub domain_fit: Option<f64>,
     pub added_at: DateTime<Utc>,
     pub open_theses: i64,
+    pub latest_thesis_id: Option<Uuid>,
+    pub thesis_state: Option<String>,
+    pub thesis_direction: Option<String>,
 }
 
 /// User-curated multi-list ticker organization (#54).
@@ -124,6 +127,10 @@ pub struct WatchlistMember {
     pub symbol: String,
     pub added_at: DateTime<Utc>,
     pub added_by: Option<String>,
+    pub latest_thesis_id: Option<Uuid>,
+    pub thesis_state: Option<String>,
+    pub thesis_direction: Option<String>,
+    pub open_theses: i64,
 }
 
 /// A single thesis condition — the canonical shape used by the thesis engine,
@@ -174,7 +181,10 @@ impl Condition {
     pub fn is_well_formed(&self) -> bool {
         self.target.is_some()
             && self.deadline_at.is_some()
-            && self.evidence_source.as_deref().is_some_and(|s| !s.is_empty())
+            && self
+                .evidence_source
+                .as_deref()
+                .is_some_and(|s| !s.is_empty())
     }
 }
 

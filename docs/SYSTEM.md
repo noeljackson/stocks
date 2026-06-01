@@ -101,7 +101,7 @@ Tier 3 / discovery_pool
   estimate/rating snapshots
   lightweight profile/fundamental metadata
   candidate_review attention when signals fire
-  pool_inspection attention for unreviewed theme-relevant names
+  research_nomination attention for reasoned unreviewed theme-relevant names
 
 Tier 2 / watchlisted or confirmed candidate
   evidence requirement tracking
@@ -126,14 +126,17 @@ There are two ways a pool name reaches attention:
 signal path:
   price/news/estimate signal -> composed interpretation -> candidate_review
 
-inspection path:
-  unreviewed theme-relevant pool member -> pool_inspection candidate_review
+nomination path:
+  unreviewed theme-relevant pool member with enough evidence -> research_nomination candidate_review
 ```
 
-`pool_inspection` means "inspect this business for relevance"; it does not mean
-a trade signal fired. Confirming it promotes the symbol into the tracked
-universe/watchlists and lets cognition build context and attempt a thesis.
-Confirmed/watchlisted symbols get deeper context and thesis workflows.
+`research_nomination` means "this business belongs in the monitored universe
+for these explicit reasons"; it does not mean a trade signal fired. The
+stored `source_ref.nomination_reasons` records theme fit, business fit,
+suggested watchlists, and the acceptance effect. Confirming promotes the symbol
+into the tracked universe/watchlists and lets cognition build context and
+attempt a thesis. Confirmed/watchlisted symbols get deeper context and thesis
+workflows.
 
 The scan universe for cheap data should be consistent:
 

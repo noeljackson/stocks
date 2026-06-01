@@ -99,6 +99,41 @@ async def _load_parent_theses(pool: asyncpg.Pool, symbol: str) -> list[dict]:
     return out
 
 
+async def _load_evidence_items(
+    pool: asyncpg.Pool,
+    symbol: str,
+    limit: int = 60,
+) -> list[dict]:
+    rows = await pool.fetch(
+        """SELECT id, kind, observed_at, source, source_id, source_ref,
+                  summary, strength, polarity, url
+             FROM evidence_item
+            WHERE symbol = $1
+         ORDER BY observed_at DESC, id DESC
+            LIMIT $2""",
+        symbol,
+        limit,
+    )
+    out = []
+    for row in rows:
+        source_ref = row["source_ref"]
+        if isinstance(source_ref, str):
+            source_ref = json.loads(source_ref)
+        out.append({
+            "id": row["id"],
+            "kind": row["kind"],
+            "observed_at": row["observed_at"].isoformat(),
+            "source": row["source"],
+            "source_id": row["source_id"],
+            "summary": row["summary"],
+            "strength": None if row["strength"] is None else float(row["strength"]),
+            "polarity": None if row["polarity"] is None else float(row["polarity"]),
+            "url": row["url"],
+            "source_ref": source_ref,
+        })
+    return out
+
+
 def _extract_json(content: str) -> dict:
     s = content.strip()
     try:
@@ -545,6 +580,7 @@ async def draft(symbol: str) -> dict:
         prior = await _load_prior_thesis(pool, symbol)
         parent_theses = await _load_parent_theses(pool, symbol)
         missing_evidence = await load_open_evidence_requirements(pool, symbol)
+        evidence_items = await _load_evidence_items(pool, symbol)
         if prior is not None:
             log.info(
                 "found prior thesis %s v%d state=%s — drafting reconciliation",
@@ -565,6 +601,7 @@ async def draft(symbol: str) -> dict:
                 "context": context,
                 "missing_evidence": missing_evidence,
                 "parent_theses": parent_theses,
+                "evidence_items": evidence_items,
                 "cluster_thesis": parent_theses[0]["summary"] if parent_theses else None,
                 "prior_thesis": _summarize_prior(prior) if prior else None,
             },

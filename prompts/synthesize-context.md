@@ -13,6 +13,7 @@ You are given:
 6. `estimate_revisions` — analyst consensus drift events. Use these for `narrative.analyst_trajectory`.
 7. `analyst_opinion` — latest price target consensus, buy/hold/sell recommendation mix, and recent price-target events. Use this to say whether a thesis appears outside consensus, already consensus, or moving toward consensus.
 8. `research_evidence` — product/theme web research retrieved by targeted queries. Use this for product launches, benchmarks, deployment reports, customer adoption, and competitive claims that vendor symbol-news may miss.
+9. `evidence_items` — normalized source facts with source, timestamp, strength, polarity, and pointer back to the raw row. Treat these as the canonical fact stream; use raw tables above for detail, not as a substitute for traceable facts.
 
 Your output is **strictly JSON** with exactly these three top-level keys: `structural`, `narrative`, and `market`. No prose, no markdown fences, no commentary.
 
@@ -77,6 +78,7 @@ Your output is **strictly JSON** with exactly these three top-level keys: `struc
 - **Anchor to today.** If a prior thesis said "watch Q1 earnings" and Q1 has now reported, mark it resolved with the outcome.
 - **Market context is allowed, but be precise.** Never say "SMA" without the window. Write "200-day SMA", "50-day SMA", etc. Do not manufacture RSI/options facts unless they are in the input.
 - **Do not confuse evidence with edge.** A volume spike at all-time highs may be an exhaustion/attention cue, not early discovery. Say that plainly in `market.attention_reason`.
+- **Prefer normalized facts.** When `evidence_items` and raw rows overlap, cite the `evidence_items.summary` and source/timestamp. Use strength/polarity as signal weight, not as proof.
 - **Do not claim no public product data exists unless `research_evidence` is empty and `missing_evidence` shows the research pass ran.** When `research_evidence` contains product/theme sources, incorporate them into `narrative.themes`, `narrative.pending_catalysts`, `narrative.monitored_risks`, and `narrative.research_sources`.
 
 Output the JSON. Nothing else.

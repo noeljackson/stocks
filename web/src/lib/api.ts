@@ -407,6 +407,10 @@ export interface PoolMember {
   industry?: string | null;
   market_cap?: number | null;
   first_seen_at: string;
+  latest_thesis_id?: string | null;
+  thesis_state?: string | null;
+  thesis_direction?: string | null;
+  open_theses?: number;
 }
 
 export async function fetchDiscoveryPool(): Promise<PoolMember[]> {

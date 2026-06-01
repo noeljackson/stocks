@@ -443,6 +443,10 @@
       symbol: p.symbol,
       added_at: p.first_seen_at,
       added_by: "pool",
+      latest_thesis_id: p.latest_thesis_id,
+      thesis_state: p.thesis_state,
+      thesis_direction: p.thesis_direction,
+      open_theses: p.open_theses ?? 0,
     })),
   );
   let allWatchlists = $derived<Watchlist[]>([...watchlists, universeList, poolList]);

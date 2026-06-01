@@ -137,7 +137,18 @@ async function mockApi(page: Page): Promise<Calls> {
       return;
     }
     if (path === "/api/discovery-pool") {
-      await json(route, []);
+      await json(route, [{
+        symbol: "OKTA",
+        company_name: "Okta, Inc.",
+        sector: "Technology",
+        industry: "Software - Infrastructure",
+        market_cap: 23_000_000_000,
+        first_seen_at: "2026-01-01T00:00:00Z",
+        latest_thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+        thesis_state: "forming",
+        thesis_direction: "up",
+        open_theses: 1,
+      }]);
       return;
     }
     if (path === "/api/attention") {
@@ -485,6 +496,17 @@ test("watchlist rows show thesis state and direction", async ({ page }) => {
   await page.goto("/");
 
   await page.locator(".wl-row").filter({ hasText: "Core" }).click();
+  const row = page.locator(".wl-mem").filter({ hasText: "OKTA" }).first();
+
+  await expect(row).toContainText("forming");
+  await expect(row).toContainText("bull");
+});
+
+test("discovery pool rows show thesis state and direction", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+
+  await page.locator(".wl-row").filter({ hasText: "Discovery pool" }).click();
   const row = page.locator(".wl-mem").filter({ hasText: "OKTA" }).first();
 
   await expect(row).toContainText("forming");

@@ -262,6 +262,11 @@ active ticker where evidence became satisfied after a decline
   -> retry thesis immediately in the next bounded sweep
 ```
 
+For open theses, `updated_at` means the thesis content/version changed.
+`last_evaluated_at` means the brain loop re-checked the thesis against fresh
+context. A no-change re-evaluation updates `last_evaluated_at` only, so the
+30-minute loop can prove it ran without creating fake thesis versions.
+
 Runtime knobs:
 - `COGNITION_SWEEP_SECONDS` (default 900; set 0 to disable)
 - `COGNITION_CONTEXT_MAX_AGE_HOURS` (default 12)

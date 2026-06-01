@@ -88,6 +88,9 @@
     {/if}
     <span class="meta">v{thesis.version}</span>
     <span class="meta muted">updated {shortTs(thesis.updated_at)}</span>
+    {#if thesis.last_evaluated_at}
+      <span class="meta muted">evaluated {shortTs(thesis.last_evaluated_at)}</span>
+    {/if}
   </div>
 
   {#if forecastDirection || forecastMagnitude || forecastHorizon}

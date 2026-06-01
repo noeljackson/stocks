@@ -130,14 +130,14 @@ async def _persist_thesis(
               conviction_conditions, trigger_conditions,
               invalidation_conditions, fulfillment_conditions,
               conviction_tier, instrument, intended_size,
-              version, immutable_original)
+              version, immutable_original, last_evaluated_at)
            VALUES ($1, $2, $3, $4, 'forming',
                    $5, $6, $7,
                    $8::jsonb,
                    $9::jsonb, $10::jsonb,
                    $11::jsonb, $12::jsonb,
                    $13, $14, $15::jsonb,
-                   1, $16::jsonb)""",
+                   1, $16::jsonb, now())""",
         thesis_id,
         symbol,
         cluster_id,
@@ -281,6 +281,14 @@ async def _reconcile_existing_thesis(
 
     async with pool.acquire() as conn:
         async with conn.transaction():
+            if classification == "no_change":
+                await conn.execute(
+                    """UPDATE thesis
+                          SET last_evaluated_at = now()
+                        WHERE thesis_id = $1""",
+                    thesis_id,
+                )
+                return thesis_id
             await conn.execute(
                 """UPDATE thesis
                       SET cluster_thesis = $2,
@@ -296,7 +304,8 @@ async def _reconcile_existing_thesis(
                           instrument = $12,
                           intended_size = $13::jsonb,
                           version = $14,
-                          updated_at = now()
+                          updated_at = now(),
+                          last_evaluated_at = now()
                     WHERE thesis_id = $1""",
                 thesis_id,
                 draft.get("cluster_thesis"),
@@ -349,9 +358,17 @@ async def _record_decline_reconciliation(
         },
     }
     await pool.execute(
-        """INSERT INTO thesis_version_history
+        """WITH updated AS (
+               UPDATE thesis
+                  SET version = $2,
+                      updated_at = now(),
+                      last_evaluated_at = now()
+                WHERE thesis_id = $1
+              RETURNING thesis_id
+           )
+           INSERT INTO thesis_version_history
              (thesis_id, version, diff, rationale, weakens_invalidation)
-           VALUES ($1, $2, $3::jsonb, $4, true)""",
+           SELECT thesis_id, $2, $3::jsonb, $4, true FROM updated""",
         thesis_id,
         next_version,
         json.dumps(diff, default=str),

@@ -50,3 +50,20 @@ def test_classify_reconciliation_detects_strengthening() -> None:
     }
 
     assert classify_reconciliation(prior, draft) == ("strengthened_view", False)
+
+
+def test_classify_reconciliation_detects_no_change() -> None:
+    prior = {
+        "edge_rationale": "same edge",
+        "forecast": {"direction": "neutral"},
+        "invalidation_conditions": [{"name": "demand_break"}],
+        "conviction_tier": "low",
+    }
+    draft = {
+        "edge_rationale": "same edge",
+        "forecast": {"direction": "neutral"},
+        "invalidation_conditions": [{"name": "demand_break"}],
+        "conviction_tier": "low",
+    }
+
+    assert classify_reconciliation(prior, draft) == ("no_change", False)

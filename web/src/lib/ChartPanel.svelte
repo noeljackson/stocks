@@ -47,9 +47,11 @@
   const smaSeries = new Map<number, ISeriesApi<"Line">>();
   let markersApi: ISeriesMarkersPluginApi<Time> | null = null;
   let candles = $state<Candle[] | null>(null);
+  let smaCandles = $state<Candle[] | null>(null);
   let events = $state<SymbolEvent[]>([]);
   let error = $state<string | null>(null);
   let loading = $state(false);
+  let loadSeq = 0;
 
   function toUtc(time: string): UTCTimestamp {
     // lightweight-charts wants seconds since epoch for time-based charts.
@@ -63,35 +65,46 @@
 
   function chooseInterval(next: Interval) {
     interval = next;
-    if (isIntraday(next) && !["1D", "5D", "1M"].includes(range)) {
-      range = "5D";
-    } else if (!isIntraday(next) && ["1D", "5D"].includes(range)) {
-      range = "1Y";
-    }
   }
 
   function smaLabel(window: number) {
-    if (interval === "1D") return `SMA ${window}D`;
-    return `SMA ${window} bars`;
+    return `SMA ${window}D`;
   }
 
   async function load(sym: string, rng: Range, intv: Interval) {
+    const seq = ++loadSeq;
     loading = true;
     error = null;
+    candles = [];
+    smaCandles = [];
+    events = [];
+    clearSeries();
     try {
-      const [cRes, eRes] = await Promise.all([
+      const [cRes, eRes, sRes] = await Promise.all([
         fetch(`/api/candles?symbol=${encodeURIComponent(sym)}&range=${rng}&interval=${encodeURIComponent(intv)}`),
         fetch(`/api/symbol-events?symbol=${encodeURIComponent(sym)}&range=${rng}&interval=${encodeURIComponent(intv)}`),
+        intv === "1D" && rng === "ALL"
+          ? Promise.resolve(null)
+          : fetch(`/api/candles?symbol=${encodeURIComponent(sym)}&range=ALL&interval=1D`),
       ]);
       if (!cRes.ok) throw new Error(await cRes.text() || `candles ${cRes.status}`);
-      candles = (await cRes.json()) as Candle[];
+      const nextCandles = (await cRes.json()) as Candle[];
+      let nextSmaCandles = nextCandles;
+      if (sRes?.ok) nextSmaCandles = (await sRes.json()) as Candle[];
+      if (seq !== loadSeq) return;
+      candles = nextCandles;
+      smaCandles = nextSmaCandles;
       events = eRes.ok ? ((await eRes.json()) as SymbolEvent[]) : [];
       render();
     } catch (e) {
+      if (seq !== loadSeq) return;
       error = String(e);
-      candles = null;
+      candles = [];
+      smaCandles = [];
+      events = [];
+      render();
     } finally {
-      loading = false;
+      if (seq === loadSeq) loading = false;
     }
   }
 
@@ -136,21 +149,47 @@
     markersApi.setMarkers([...dedup.values()].sort((a, b) => (a.time as number) - (b.time as number)));
   }
 
+  function clearSeries() {
+    ensureChart();
+    priceSeries?.setData([]);
+    volSeries?.setData([]);
+    for (const series of smaSeries.values()) series.setData([]);
+    markersApi?.setMarkers([]);
+  }
+
   function smaData(window: number): LineData[] {
-    if (!candles || candles.length < window) return [];
-    const out: LineData[] = [];
+    if (!smaCandles || smaCandles.length < window || !candles) return [];
+    const dailyPoints: { date: string; value: number }[] = [];
     let rolling = 0;
-    for (let i = 0; i < candles.length; i += 1) {
-      rolling += candles[i].close;
-      if (i >= window) rolling -= candles[i - window].close;
-      if (i >= window - 1) {
-        out.push({
-          time: toUtc(candles[i].time),
-          value: rolling / window,
-        });
-      }
+    for (let i = 0; i < smaCandles.length; i += 1) {
+      rolling += smaCandles[i].close;
+      if (i >= window) rolling -= smaCandles[i - window].close;
+      if (i >= window - 1) dailyPoints.push({ date: smaCandles[i].time.slice(0, 10), value: rolling / window });
+    }
+
+    if (interval === "1D") {
+      const visibleTimes = new Set(candles.map((c) => c.time));
+      return dailyPoints
+        .filter((point) => visibleTimes.has(point.date))
+        .map((point) => ({ time: toUtc(point.date), value: point.value }));
+    }
+
+    const out: LineData[] = [];
+    let dailyIndex = 0;
+    for (const candle of candles) {
+      const date = candle.time.slice(0, 10);
+      while (dailyIndex + 1 < dailyPoints.length && dailyPoints[dailyIndex + 1].date <= date) dailyIndex += 1;
+      if (dailyPoints[dailyIndex]?.date <= date) out.push({ time: toUtc(candle.time), value: dailyPoints[dailyIndex].value });
     }
     return out;
+  }
+
+  function hasSma(window: number) {
+    return smaData(window).length > 0;
+  }
+
+  function hasAnySma() {
+    return SMA_WINDOWS.some((window) => hasSma(window));
   }
 
   function ensureChart() {
@@ -212,7 +251,7 @@
       smaSeries.get(window)?.setData(smaData(window));
     }
     applyMarkers();
-    chart.timeScale().fitContent();
+    if (cs.length > 0) chart.timeScale().fitContent();
   }
 
   $effect(() => {
@@ -244,13 +283,18 @@
         <span class="muted">{candles.length} bars</span>
       </span>
     {/if}
+    <span class="meta">
+      <span class="muted">interval</span>
+      <strong>{interval}</strong>
+      <span class="muted">{range}</span>
+    </span>
     {#if events.length > 0}
       <span class="meta"><span class="muted">{events.length} events</span></span>
     {/if}
-    {#if candles && candles.length >= 20}
+    {#if hasAnySma()}
       <span class="sma-legend" aria-label="SMA ribbon">
         {#each SMA_WINDOWS as window}
-          {#if candles.length >= window}
+          {#if hasSma(window)}
             <span class="sma-key" style={`--sma-color: ${SMA_COLORS[window]}`}>{smaLabel(window)}</span>
           {/if}
         {/each}

@@ -12,6 +12,8 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
 
+use super::rate_limit;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ScreenerRow {
     pub symbol: String,
@@ -79,14 +81,17 @@ impl FmpScreenerAdapter {
             if let Some(ind) = industry {
                 url.push_str(&format!("&industry={}", urlencoding::encode(ind)));
             }
+            rate_limit::fmp().wait().await;
             let resp = self
                 .client
                 .get(&url)
                 .send()
                 .await
                 .with_context(|| format!("fmp screener {sector}/{:?}", industry))?;
-            if !resp.status().is_success() {
-                let status = resp.status();
+            let status = resp.status();
+            let retry_after = rate_limit::retry_after(resp.headers());
+            rate_limit::fmp().observe_status(status, retry_after).await;
+            if !status.is_success() {
                 let body = resp.text().await.unwrap_or_default();
                 tracing::warn!(
                     sector = sector,

@@ -29,13 +29,32 @@ file an issue and link it from the relevant row's "status" column.
 | Data | Why | Vendor | Tier / cost | Endpoint | Status |
 |---|---|---|---|---|---|
 | Daily OHLCV bars | Discovery signals (volume_anomaly, base_breakout), evaluator (`SYMBOL.close`), consensus price_extension component | **FMP** (primary) | Starter $22/mo | `/stable/historical-price-eod/full?symbol=&from=&to=` returns OHLCV + change + vwap. 5+ yrs adjusted history. | wired — `src/ingest/fmp_price.rs` |
-| Intraday bars (1m/5m) | Not needed yet | FMP | Same plan | `/stable/historical-chart/{interval}` | not wired |
+| Intraday bars (1m/5m/15m/30m/1h/4h) | TradingView-style chart intervals; 3m/2h are aggregated from native bars | FMP | Same plan | `/stable/historical-chart/{interval}` | wired — `src/ingest/fmp_intraday.rs` |
 | Options chains | LEAPS thesis instrument selection (#5 epic) | Massive Options Starter $29/mo extra (or FMP has thin coverage — verify before swap) | `/v3/snapshot/options/{underlying}` (Massive) | not wired |
 | Corporate actions (splits/dividends) | Implicit — FMP serves adjusted close | FMP (built into adjusted prices) | included | implicit |
 | Realtime quotes / websocket | Not needed at v0 (forward-only validation per SPEC §9 uses end-of-day) | FMP websocket limited; Massive better | varies | not wired |
 
 **Note:** Massive was the original price source (`src/ingest/massive.rs`); kept in
 the repo for the news+sentiment endpoint but no longer the OHLCV source.
+
+### Provider pacing and 429 handling
+
+FMP and FRED calls go through process-wide provider limiters in
+`src/ingest/rate_limit.rs`. Per-loop sleeps are not enough because price,
+intraday chart, news, estimates, and screener adapters can run concurrently
+against the same vendor. The limiter serializes requests per provider and, on
+HTTP 429, respects `Retry-After` when present or applies an automatic backoff.
+
+Default dev pacing:
+
+| Provider | Min request spacing | 429 backoff | Max backoff |
+|---|---:|---:|---:|
+| FMP | 750ms | 60s | 15m |
+| FRED | 2s | 5m | 60m |
+
+Override with `FMP_MIN_REQUEST_INTERVAL_MS`, `FMP_RATE_LIMIT_BACKOFF_MS`,
+`FMP_MAX_RATE_LIMIT_BACKOFF_MS`, `FRED_MIN_REQUEST_INTERVAL_MS`,
+`FRED_RATE_LIMIT_BACKOFF_MS`, and `FRED_MAX_RATE_LIMIT_BACKOFF_MS`.
 
 ## 2. Fundamentals
 

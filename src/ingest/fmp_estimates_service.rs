@@ -35,8 +35,6 @@ pub async fn run_once(pool: &PgPool, adapter: &FmpEstimatesAdapter) -> Result<us
             Ok(n) => total_revisions += n,
             Err(e) => warn!(symbol = %symbol, error = %e, "fmp_estimates scan_one failed"),
         }
-        // Pace under FMP Starter rate limits — 300/min = 5/sec ceiling.
-        tokio::time::sleep(Duration::from_millis(200)).await;
     }
     Ok(total_revisions)
 }
@@ -191,7 +189,10 @@ async fn insert_revision(
 
 /// Long-running service loop.
 pub async fn run(pool: PgPool, adapter: FmpEstimatesAdapter, interval: Duration) -> Result<()> {
-    info!(interval_secs = interval.as_secs(), "fmp_estimates service started");
+    info!(
+        interval_secs = interval.as_secs(),
+        "fmp_estimates service started"
+    );
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {

@@ -11,6 +11,8 @@ use chrono::{NaiveDateTime, TimeZone, Utc};
 use reqwest::Client;
 use serde::Deserialize;
 
+use super::rate_limit;
+
 #[derive(Debug, Clone)]
 pub struct IntradayPriceBarRow {
     pub symbol: String,
@@ -64,14 +66,17 @@ impl FmpIntradayAdapter {
             today = today.format("%Y-%m-%d"),
             key = self.api_key,
         );
+        rate_limit::fmp().wait().await;
         let resp = self
             .client
             .get(&url)
             .send()
             .await
             .with_context(|| format!("fmp intraday fetch {symbol} {native_interval}"))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
+        let status = resp.status();
+        let retry_after = rate_limit::retry_after(resp.headers());
+        rate_limit::fmp().observe_status(status, retry_after).await;
+        if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!(
                 "fmp intraday {symbol} {native_interval} {}: {}",

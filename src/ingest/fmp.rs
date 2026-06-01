@@ -19,6 +19,7 @@ use serde::Deserialize;
 use tracing::warn;
 
 use super::massive::PriceBarRow;
+use super::rate_limit;
 use super::sec;
 
 /// Benchmarks pulled alongside the seeded universe — same set we pulled
@@ -109,16 +110,23 @@ impl FmpPriceAdapter {
             today = today.format("%Y-%m-%d"),
             key = self.api_key,
         );
+        rate_limit::fmp().wait().await;
         let resp = self
             .client
             .get(&url)
             .send()
             .await
             .with_context(|| format!("fmp price fetch {symbol}"))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
+        let status = resp.status();
+        let retry_after = rate_limit::retry_after(resp.headers());
+        rate_limit::fmp().observe_status(status, retry_after).await;
+        if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("fmp {symbol} {}: {}", status.as_u16(), &body[..body.len().min(256)]);
+            anyhow::bail!(
+                "fmp {symbol} {}: {}",
+                status.as_u16(),
+                &body[..body.len().min(256)]
+            );
         }
         let parsed: Vec<FmpBar> = resp
             .json()
@@ -137,7 +145,10 @@ impl FmpPriceAdapter {
     pub async fn poll_symbols(
         &self,
         symbols: &[String],
-        existing_min_ts_by_symbol: &std::collections::HashMap<String, Option<chrono::DateTime<Utc>>>,
+        existing_min_ts_by_symbol: &std::collections::HashMap<
+            String,
+            Option<chrono::DateTime<Utc>>,
+        >,
     ) -> Result<Vec<PriceBarRow>> {
         if self.api_key.is_empty() {
             if !self.warned_no_key.swap(true, Ordering::Relaxed) {
@@ -163,8 +174,6 @@ impl FmpPriceAdapter {
                     tracing::warn!(symbol = %sym, error = %e, "fmp fetch failed; continuing");
                 }
             }
-            // 200ms = 5 req/s. Safe under FMP Starter's 300/min cap.
-            tokio::time::sleep(Duration::from_millis(200)).await;
         }
         Ok(all)
     }
@@ -186,7 +195,6 @@ impl FmpPriceAdapter {
             if let Ok(rows) = self.fetch_one(sym, lookback_days).await {
                 all.extend(rows);
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
         }
         Ok(all)
     }

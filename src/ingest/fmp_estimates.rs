@@ -16,6 +16,8 @@ use chrono::NaiveDate;
 use reqwest::Client;
 use serde::Deserialize;
 
+use super::rate_limit;
+
 /// Decoded shape of one row in the FMP analyst-estimates response.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct EstimateRow {
@@ -137,10 +139,18 @@ pub fn diff_snapshots(
         (None, None) if analysts_changed => "coverage_change",
         (None, None) => return None, // nothing changed
         (Some(e), None) => {
-            if e > 0.0 { "up" } else { "down" }
+            if e > 0.0 {
+                "up"
+            } else {
+                "down"
+            }
         }
         (None, Some(r)) => {
-            if r > 0.0 { "up" } else { "down" }
+            if r > 0.0 {
+                "up"
+            } else {
+                "down"
+            }
         }
         (Some(e), Some(r)) => match (e > 0.0, r > 0.0) {
             (true, true) => "up",
@@ -189,16 +199,23 @@ impl FmpEstimatesAdapter {
             self.base_url,
             key = self.api_key,
         );
+        rate_limit::fmp().wait().await;
         let resp = self
             .client
             .get(&url)
             .send()
             .await
             .with_context(|| format!("fmp estimates fetch {symbol}"))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
+        let status = resp.status();
+        let retry_after = rate_limit::retry_after(resp.headers());
+        rate_limit::fmp().observe_status(status, retry_after).await;
+        if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("fmp estimates {symbol} {}: {}", status.as_u16(), &body[..body.len().min(256)]);
+            anyhow::bail!(
+                "fmp estimates {symbol} {}: {}",
+                status.as_u16(),
+                &body[..body.len().min(256)]
+            );
         }
         let json: serde_json::Value = resp
             .json()

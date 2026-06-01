@@ -116,6 +116,7 @@
 
   // Plain-English reason from a candidate's signal_name + signal_value.
   function reasonFor(signal: string, value: number | null): string {
+    if (signal === "pool_inspection") return "proactive research inspection";
     if (signal === "volume_anomaly" && value !== null) return `${value.toFixed(1)}× volume vs 20-day avg`;
     if (signal === "base_breakout" && value !== null) return `base breakout +${value.toFixed(2)}% above prior high`;
     if (signal === "estimate_revision_velocity" && value !== null) {

@@ -101,6 +101,7 @@ Tier 3 / discovery_pool
   estimate/rating snapshots
   lightweight profile/fundamental metadata
   candidate_review attention when signals fire
+  pool_inspection attention for unreviewed theme-relevant names
 
 Tier 2 / watchlisted or confirmed candidate
   regular context maintenance
@@ -118,6 +119,19 @@ Tier 1 / active thesis or position
 
 The broad pool should not receive full LLM thesis generation on every scan. It
 should receive enough coverage to detect that a symbol deserves human review.
+There are two ways a pool name reaches attention:
+
+```text
+signal path:
+  price/news/estimate signal -> composed interpretation -> candidate_review
+
+inspection path:
+  unreviewed theme-relevant pool member -> pool_inspection candidate_review
+```
+
+`pool_inspection` means "inspect this business for relevance"; it does not mean
+a trade signal fired. Confirming it promotes the symbol into the tracked
+universe/watchlists and lets cognition build context and attempt a thesis.
 Confirmed/watchlisted symbols get deeper context and thesis workflows.
 
 The scan universe for cheap data should be consistent:

@@ -277,42 +277,54 @@ async fn main() -> Result<()> {
             let interval = Duration::from_secs(6 * 3600);
             // First-run fires immediately so a fresh deploy populates company_fact.
             loop {
-                if let Err(e) = store.mark_source_started("xbrl", 0).await {
+                let symbols = store.scan_pool_symbols().await.unwrap_or_default();
+                let attempted = symbols.len() as i32;
+                if let Err(e) = store.mark_source_started("xbrl", attempted).await {
                     error!(error = %e, "xbrl source health start record failed");
                 }
-                match adapter.poll_all().await {
-                    Ok(rows) => match store.upsert_company_facts(&rows).await {
-                        Ok(inserted) => {
-                            if let Err(e) = store
-                                .record_source_success(
-                                    "xbrl",
-                                    rows.len() as i64,
-                                    inserted as i64,
-                                    0,
-                                    0,
+                match adapter.poll_symbols(&symbols).await {
+                    Ok((rows, missing_cik_count, failed_fetch_count)) => {
+                        match store.upsert_company_facts(&rows).await {
+                            Ok(inserted) => {
+                                let failed = (missing_cik_count + failed_fetch_count) as i32;
+                                if let Err(e) = store
+                                    .record_source_success(
+                                        "xbrl",
+                                        rows.len() as i64,
+                                        inserted as i64,
+                                        attempted,
+                                        failed,
+                                    )
+                                    .await
+                                {
+                                    error!(error = %e, "xbrl source health success record failed");
+                                }
+                                info!(
+                                    symbols = symbols.len(),
+                                    rows = rows.len(),
+                                    inserted,
+                                    missing_cik_count,
+                                    failed_fetch_count,
+                                    "xbrl pass complete"
                                 )
-                                .await
-                            {
-                                error!(error = %e, "xbrl source health success record failed");
                             }
-                            info!(rows = rows.len(), inserted, "xbrl pass complete")
-                        }
-                        Err(e) => {
-                            let message = e.to_string();
-                            if let Err(record_err) = store
-                                .record_source_failure(
-                                    "xbrl",
-                                    source_health::failure_kind(&message),
-                                    &message,
-                                    None,
-                                )
-                                .await
-                            {
-                                error!(error = %record_err, "xbrl source health failure record failed");
+                            Err(e) => {
+                                let message = e.to_string();
+                                if let Err(record_err) = store
+                                    .record_source_failure(
+                                        "xbrl",
+                                        source_health::failure_kind(&message),
+                                        &message,
+                                        None,
+                                    )
+                                    .await
+                                {
+                                    error!(error = %record_err, "xbrl source health failure record failed");
+                                }
+                                error!(error = %e, "xbrl persist failed")
                             }
-                            error!(error = %e, "xbrl persist failed")
                         }
-                    },
+                    }
                     Err(e) => {
                         let message = e.to_string();
                         if let Err(record_err) = store

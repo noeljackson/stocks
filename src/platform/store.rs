@@ -451,6 +451,62 @@ impl Store {
             .collect()
     }
 
+    pub async fn evidence_requirements_for_symbol(
+        &self,
+        symbol: &str,
+    ) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query(
+            r#"SELECT id, symbol, requirement_key, source_type, reason, priority,
+                      blocking_state, attempts, next_retry_at, last_error,
+                      source_ref, created_at, updated_at, satisfied_at
+                 FROM evidence_requirement
+                WHERE symbol = $1
+             ORDER BY
+                  CASE priority
+                       WHEN 'blocking' THEN 0
+                       WHEN 'high' THEN 1
+                       WHEN 'medium' THEN 2
+                       ELSE 3
+                  END,
+                  CASE blocking_state
+                       WHEN 'missing' THEN 0
+                       WHEN 'partial' THEN 1
+                       WHEN 'blocked' THEN 2
+                       WHEN 'fetching' THEN 3
+                       ELSE 4
+                  END,
+                  updated_at DESC"#,
+        )
+        .bind(symbol)
+        .fetch_all(&self.pool)
+        .await
+        .context("evidence_requirements_for_symbol")?;
+        rows.into_iter()
+            .map(|r| {
+                let created_at: DateTime<Utc> = r.try_get("created_at")?;
+                let updated_at: DateTime<Utc> = r.try_get("updated_at")?;
+                let next_retry_at: Option<DateTime<Utc>> = r.try_get("next_retry_at")?;
+                let satisfied_at: Option<DateTime<Utc>> = r.try_get("satisfied_at")?;
+                Ok(serde_json::json!({
+                    "id": r.try_get::<i64, _>("id")?,
+                    "symbol": r.try_get::<String, _>("symbol")?,
+                    "requirement_key": r.try_get::<String, _>("requirement_key")?,
+                    "source_type": r.try_get::<String, _>("source_type")?,
+                    "reason": r.try_get::<String, _>("reason")?,
+                    "priority": r.try_get::<String, _>("priority")?,
+                    "blocking_state": r.try_get::<String, _>("blocking_state")?,
+                    "attempts": r.try_get::<i32, _>("attempts")?,
+                    "next_retry_at": next_retry_at,
+                    "last_error": r.try_get::<Option<String>, _>("last_error")?,
+                    "source_ref": r.try_get::<serde_json::Value, _>("source_ref")?,
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                    "satisfied_at": satisfied_at,
+                }))
+            })
+            .collect()
+    }
+
     /// Recent decisions for a given symbol — joins through thesis to filter.
     pub async fn decisions_for_symbol(&self, symbol: &str) -> Result<Vec<serde_json::Value>> {
         let rows = sqlx::query(

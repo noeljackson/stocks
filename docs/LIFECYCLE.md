@@ -42,6 +42,10 @@ discovery_pool                              active ticker/watchlist universe
                                   │
                                   ▼
                         cognition pipeline
+                        evidence requirements
+                        price / facts / news / estimates
+                                  │
+                                  ▼
                         context_maintainer
                         thesis_engine
                         sharpen
@@ -50,8 +54,9 @@ discovery_pool                              active ticker/watchlist universe
               ┌───────────────────┴───────────────────┐
               │                                       │
               ▼                                       ▼
-     ticker_context version                 honest no-edge decline
+     ticker_context version                 honest no-edge / waiting decline
      structural/narrative/market            thesis_incomplete attention
+     evidence state updated                 missing evidence visible
               │
               ▼
           thesis state machine
@@ -89,7 +94,7 @@ attention.
 | Kind | Source | Meaning | Resolver |
 | --- | --- | --- | --- |
 | `candidate_review` | discovery | A composed discovery interpretation or proactive pool inspection deserves confirm/reject. | confirm or reject candidate |
-| `thesis_incomplete` | cognition | Context was refreshed but thesis engine declined to invent an edge. | dismiss |
+| `thesis_incomplete` | cognition | Context was refreshed but thesis engine declined to invent an edge, or blocking evidence is still missing. | draft thesis / dismiss |
 | `thesis_actionable` | thesis transition | A thesis reached actionable and needs a human decision. | record decision |
 | `risk_review` | risk | Proposed/recorded intent hit risk warnings or vetoes. | acknowledge / adjust |
 | `context_stale` | staler | A thesis depends on stale context. | refresh context |
@@ -142,15 +147,29 @@ consumer handles that message:
 
 ```text
 discovery.confirmed
+  -> create/update evidence_requirement state
   -> refresh ticker_context
-  -> draft thesis
+  -> draft thesis when blocking evidence is present and no active thesis exists
   -> sharpen thesis
   -> challenge thesis
 ```
 
-The thesis engine may decline. A decline is not failure when there is no
-measurable edge. Example: a mega-cap can have fresh context and still get no
-thesis if the facts are already consensus and there is no undiffused edge.
+Missing evidence is first-class state, not an answer. Context refresh records
+whether the required price, fundamentals, news, and estimate inputs exist for a
+symbol. Missing rows are stored in `evidence_requirement` with a source type,
+reason, priority, blocking state, attempt count, next retry time, and source
+reference. Blocking missing evidence stops the context/thesis LLM path and
+leaves a visible `thesis_incomplete` item that says the system is waiting for
+acquisition.
+
+The thesis engine may still decline after evidence is present. A decline is not
+failure when there is no measurable edge. Example: a mega-cap can have fresh
+context and still get no actionable thesis if the facts are already consensus
+and there is no undiffused edge. If the context is substantial but no entry edge
+exists, the intended behavior is a monitoring thesis: one current standing view,
+not a blank symbol. If an active thesis already exists, context refresh should
+feed that thesis's timeline/reconciliation path instead of creating a second
+active thesis.
 
 The cognition service also runs a bounded maintenance sweep over active tickers.
 This is what makes the system continuously work instead of depending on manual
@@ -163,6 +182,13 @@ active ticker with no/stale context
 
 active ticker with no thesis and an old decline
   -> retry after COGNITION_DECLINE_RETRY_HOURS
+
+active ticker with due missing evidence
+  -> refresh context/evidence
+  -> retry thesis if evidence is now sufficient
+
+active ticker where evidence became satisfied after a decline
+  -> retry thesis immediately in the next bounded sweep
 ```
 
 Runtime knobs:

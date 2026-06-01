@@ -61,8 +61,8 @@ Override with `FMP_MIN_REQUEST_INTERVAL_MS`, `FMP_RATE_LIMIT_BACKOFF_MS`,
 
 | Data | Why | Vendor | Tier / cost | Endpoint | Status |
 |---|---|---|---|---|---|
-| Company facts (XBRL) | Evaluator metrics (`SYMBOL.gross_margin_pct`, etc.), context maintainer fundamentals block | **SEC EDGAR** | free, public | `/api/xbrl/companyfacts/CIK<N>.json` | wired — `src/ingest/xbrl.rs` (1.9k facts/ticker) |
-| CIK lookup | Resolving ticker → CIK before XBRL pull | SEC EDGAR | free | `/files/company_tickers.json` | wired — `src/ingest/sec.rs` |
+| Company facts (XBRL) | Evaluator metrics (`SYMBOL.gross_margin_pct`, etc.), context maintainer fundamentals block | **SEC EDGAR** | free, public | `/api/xbrl/companyfacts/CIK<N>.json` | wired — `src/ingest/xbrl.rs`; follows `scan_pool_symbols()` so active tickers and discovery-pool names can acquire facts |
+| CIK lookup | Resolving ticker → CIK before XBRL pull | SEC EDGAR | free | `/files/company_tickers.json` | wired — `src/ingest/sec.rs`; fetched dynamically with seeded fallback for known ADRs |
 | Earnings calendar (upcoming + history) | Goalpost dates, horizon_at validation, beat/miss pattern | **FMP** | Starter | `/stable/earnings?symbol=` returns `epsActual/epsEstimated/revenueActual/revenueEstimated/lastUpdated`. `/stable/earnings-calendar?from=&to=` for global upcoming | not wired |
 | Company profile | Cluster classification context, market cap | FMP | Starter | `/stable/profile?symbol=` | not wired |
 | Insider transactions (Form 4/144) | Cross-check LLM context narrative claims | SEC EDGAR | free | `/cgi-bin/browse-edgar?action=getcompany&CIK=...&type=4` | not wired |

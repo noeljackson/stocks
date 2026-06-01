@@ -38,7 +38,9 @@ from nats.js.errors import NotFoundError
 
 from . import config
 from .challenge import challenge as challenge_thesis
+from .context_maintainer import BlockingEvidenceMissing
 from .context_maintainer import refresh as refresh_context
+from .evidence import load_open_evidence_requirements
 from .sharpen import sharpen as sharpen_thesis
 from .thesis_engine import draft as draft_thesis
 
@@ -78,18 +80,31 @@ async def _record_decline(
     reason: str | None,
     source_ref: dict,
 ) -> None:
+    evidence = await load_open_evidence_requirements(pool, symbol)
+    full_ref = dict(source_ref)
+    full_ref["missing_evidence"] = evidence
     await pool.execute(
-        """INSERT INTO attention_item
+        """WITH updated AS (
+               UPDATE attention_item
+                  SET reason = $4,
+                      source_ref = $5::jsonb
+                WHERE status = 'open'
+                  AND kind = 'thesis_incomplete'
+                  AND symbol = $1
+              RETURNING id
+           )
+           INSERT INTO attention_item
              (kind, symbol, candidate_id, severity, title, reason,
               source, source_ref)
-           VALUES ('thesis_incomplete', $1, $2, 'info', $3, $4,
-                   'thesis', $5::jsonb)
+           SELECT 'thesis_incomplete', $1, $2, 'info', $3, $4,
+                  'thesis', $5::jsonb
+            WHERE NOT EXISTS (SELECT 1 FROM updated)
            ON CONFLICT DO NOTHING""",
         symbol,
         candidate_id,
         f"{symbol}: system declined to draft a thesis",
         reason,
-        json.dumps(source_ref),
+        json.dumps(full_ref),
     )
 
 
@@ -106,11 +121,32 @@ async def _run_pipeline(
     try:
         ctx_version = await refresh_context(symbol)
         log.info("cognition: %s context refreshed to v%s", symbol, ctx_version)
+    except BlockingEvidenceMissing as e:
+        log.info(
+            "cognition: %s waiting for blocking evidence before context: %s",
+            symbol,
+            [r["requirement_key"] for r in e.missing],
+        )
     except Exception:  # noqa: BLE001
         log.exception("cognition: context refresh failed for %s", symbol)
 
     if not draft_when_thesis_exists and await _open_thesis_count(pool, symbol) > 0:
         log.info("cognition: %s already has an open thesis; refresh only", symbol)
+        return
+
+    open_evidence = await load_open_evidence_requirements(pool, symbol)
+    blocking_evidence = [r for r in open_evidence if r["priority"] == "blocking"]
+    if blocking_evidence:
+        log.info("cognition: %s waiting for blocking evidence before thesis draft", symbol)
+        decline_ref = dict(source_ref or {"reason": "missing_evidence"})
+        decline_ref["blocking_evidence"] = blocking_evidence
+        await _record_decline(
+            pool,
+            symbol,
+            candidate_id,
+            "Waiting for blocking evidence before drafting a thesis.",
+            decline_ref,
+        )
         return
 
     thesis_id = None
@@ -121,12 +157,15 @@ async def _run_pipeline(
             log.info("cognition: %s thesis drafted %s", symbol, thesis_id)
         else:
             log.info("cognition: %s thesis declined (no edge)", symbol)
+            decline_ref = dict(source_ref or {"reason": "no_edge"})
+            if result and result.get("missing_evidence"):
+                decline_ref["llm_missing_evidence"] = result["missing_evidence"]
             await _record_decline(
                 pool,
                 symbol,
                 candidate_id,
                 (result or {}).get("no_edge_reason"),
-                source_ref or {"reason": "no_edge"},
+                decline_ref,
             )
     except Exception:  # noqa: BLE001
         log.exception("cognition: thesis_engine failed for %s", symbol)
@@ -184,7 +223,7 @@ async def _on_confirmed(pool: asyncpg.Pool, msg) -> None:
                 pool,
                 symbol,
                 candidate_id=candidate_id,
-                draft_when_thesis_exists=True,
+                draft_when_thesis_exists=False,
                 source_ref={"reason": "no_edge", "trigger": "discovery.confirmed"},
             ),
         ),
@@ -232,22 +271,46 @@ async def _sweep_targets(
                  FROM attention_item
                 WHERE kind = 'thesis_incomplete'
              GROUP BY symbol
+           ), due_evidence AS (
+               SELECT symbol, max(updated_at) AS at
+                 FROM evidence_requirement
+                WHERE blocking_state <> 'satisfied'
+                  AND (next_retry_at IS NULL OR next_retry_at <= now())
+             GROUP BY symbol
+           ), newly_satisfied_evidence AS (
+               SELECT symbol, max(satisfied_at) AS at
+                 FROM evidence_requirement
+                WHERE satisfied_at IS NOT NULL
+             GROUP BY symbol
            )
            SELECT t.symbol,
                   lc.version AS context_version,
                   lc.created_at AS context_at,
                   (lc.market IS NOT NULL AND lc.market <> '{}'::jsonb) AS context_has_market,
                   COALESCE(ot.n, 0) AS open_theses,
-                  ld.at AS decline_at
+                  ld.at AS decline_at,
+                  de.at AS due_evidence_at,
+                  se.at AS evidence_satisfied_at
              FROM ticker t
              LEFT JOIN latest_context lc ON lc.symbol = t.symbol
              LEFT JOIN open_thesis ot ON ot.symbol = t.symbol
              LEFT JOIN latest_decline ld ON ld.symbol = t.symbol
+             LEFT JOIN due_evidence de ON de.symbol = t.symbol
+             LEFT JOIN newly_satisfied_evidence se ON se.symbol = t.symbol
             WHERE t.status = 'active'
               AND (
                     lc.created_at IS NULL
                  OR lc.market = '{}'::jsonb
                  OR lc.created_at < now() - ($1::text || ' hours')::interval
+                 OR (
+                      COALESCE(ot.n, 0) = 0
+                      AND de.at IS NOT NULL
+                    )
+                 OR (
+                      COALESCE(ot.n, 0) = 0
+                      AND se.at IS NOT NULL
+                      AND (ld.at IS NULL OR se.at > ld.at)
+                    )
                  OR (
                       COALESCE(ot.n, 0) = 0
                       AND (

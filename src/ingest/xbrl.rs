@@ -24,18 +24,40 @@ use super::{Adapter, Event};
 /// fallback aliases (older filings use different names for the same idea —
 /// e.g. `SalesRevenueNet` predates `Revenues`).
 const CONCEPTS: &[(&str, &[&str])] = &[
-    ("Revenues",                    &["Revenues", "SalesRevenueNet", "RevenueFromContractWithCustomerExcludingAssessedTax"]),
-    ("GrossProfit",                 &["GrossProfit"]),
-    ("OperatingIncomeLoss",         &["OperatingIncomeLoss"]),
-    ("NetIncomeLoss",               &["NetIncomeLoss"]),
-    ("NetCashProvidedByUsedInOperatingActivities", &["NetCashProvidedByUsedInOperatingActivities"]),
-    ("ResearchAndDevelopmentExpense", &["ResearchAndDevelopmentExpense"]),
-    ("CashAndCashEquivalentsAtCarryingValue", &["CashAndCashEquivalentsAtCarryingValue"]),
-    ("StockholdersEquity",          &["StockholdersEquity"]),
-    ("CommonStockSharesOutstanding", &["CommonStockSharesOutstanding"]),
-    ("CostOfRevenue",               &["CostOfRevenue", "CostOfGoodsAndServicesSold"]),
-    ("Assets",                      &["Assets"]),
-    ("Liabilities",                 &["Liabilities"]),
+    (
+        "Revenues",
+        &[
+            "Revenues",
+            "SalesRevenueNet",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+        ],
+    ),
+    ("GrossProfit", &["GrossProfit"]),
+    ("OperatingIncomeLoss", &["OperatingIncomeLoss"]),
+    ("NetIncomeLoss", &["NetIncomeLoss"]),
+    (
+        "NetCashProvidedByUsedInOperatingActivities",
+        &["NetCashProvidedByUsedInOperatingActivities"],
+    ),
+    (
+        "ResearchAndDevelopmentExpense",
+        &["ResearchAndDevelopmentExpense"],
+    ),
+    (
+        "CashAndCashEquivalentsAtCarryingValue",
+        &["CashAndCashEquivalentsAtCarryingValue"],
+    ),
+    ("StockholdersEquity", &["StockholdersEquity"]),
+    (
+        "CommonStockSharesOutstanding",
+        &["CommonStockSharesOutstanding"],
+    ),
+    (
+        "CostOfRevenue",
+        &["CostOfRevenue", "CostOfGoodsAndServicesSold"],
+    ),
+    ("Assets", &["Assets"]),
+    ("Liabilities", &["Liabilities"]),
 ];
 
 pub struct XbrlAdapter {
@@ -126,13 +148,21 @@ pub struct FactRow {
 #[must_use]
 pub fn extract(symbol: &str, cik: &str, facts: &CompanyFacts) -> Vec<FactRow> {
     let mut out = Vec::new();
-    let Some(us_gaap) = facts.facts.get("us-gaap") else { return out };
+    let Some(us_gaap) = facts.facts.get("us-gaap") else {
+        return out;
+    };
     for (canonical, aliases) in CONCEPTS {
         for alias in *aliases {
-            let Some(block) = us_gaap.get(*alias) else { continue };
+            let Some(block) = us_gaap.get(*alias) else {
+                continue;
+            };
             for (unit, observations) in &block.units {
                 for obs in observations {
-                    let Some(value) = obs.val.as_f64().or_else(|| obs.val.as_i64().map(|i| i as f64)) else {
+                    let Some(value) = obs
+                        .val
+                        .as_f64()
+                        .or_else(|| obs.val.as_i64().map(|i| i as f64))
+                    else {
                         continue;
                     };
                     let Ok(period_end) = NaiveDate::parse_from_str(&obs.end, "%Y-%m-%d") else {
@@ -237,6 +267,43 @@ impl XbrlAdapter {
         }
         Ok(all)
     }
+
+    /// Poll a runtime symbol set using SEC's public ticker -> CIK directory.
+    ///
+    /// Returns `(rows, missing_cik_count, failed_fetch_count)`. Missing CIKs
+    /// and per-symbol fetch failures are degraded inputs, not fatal pass
+    /// failures, because one unsupported ticker should not block all other
+    /// fundamentals acquisition.
+    pub async fn poll_symbols(&self, symbols: &[String]) -> Result<(Vec<FactRow>, usize, usize)> {
+        if symbols.is_empty() {
+            return Ok((Vec::new(), 0, 0));
+        }
+        let ciks = sec::ciks_for_symbols(&self.client, &self.ua, symbols).await?;
+        let requested: std::collections::BTreeSet<String> =
+            symbols.iter().map(|s| s.to_ascii_uppercase()).collect();
+        let matched: std::collections::BTreeSet<String> =
+            ciks.iter().map(|(symbol, _)| symbol.clone()).collect();
+        let missing_cik_count = requested.difference(&matched).count();
+        let mut failed_fetch_count = 0;
+        let mut all = Vec::new();
+
+        for (symbol, cik) in ciks {
+            match self.fetch_one(&symbol, &cik).await {
+                Ok(rows) => {
+                    tracing::info!(symbol = symbol, rows = rows.len(), "xbrl facts fetched");
+                    all.extend(rows);
+                }
+                Err(e) => {
+                    failed_fetch_count += 1;
+                    tracing::warn!(symbol = symbol, error = %e, "xbrl fetch failed; continuing");
+                }
+            }
+            // SEC limits to 10 req/s; 200ms between symbols keeps us below it.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
+        Ok((all, missing_cik_count, failed_fetch_count))
+    }
 }
 
 #[cfg(test)]
@@ -309,9 +376,18 @@ mod tests {
         // If a company only has SalesRevenueNet (no Revenues), we should
         // still see it stored as concept="Revenues" (the canonical name).
         let mut facts = nvda_sample();
-        let revenues = facts.facts.get_mut("us-gaap").unwrap().remove("Revenues").unwrap();
+        let revenues = facts
+            .facts
+            .get_mut("us-gaap")
+            .unwrap()
+            .remove("Revenues")
+            .unwrap();
         // Move Revenues data under SalesRevenueNet so the only revenue source is the alias.
-        facts.facts.get_mut("us-gaap").unwrap().insert("SalesRevenueNet".into(), revenues);
+        facts
+            .facts
+            .get_mut("us-gaap")
+            .unwrap()
+            .insert("SalesRevenueNet".into(), revenues);
         let rows = extract("NVDA", "0001045810", &facts);
         let rev_rows: Vec<_> = rows.iter().filter(|r| r.concept == "Revenues").collect();
         assert_eq!(rev_rows.len(), 2, "alias resolves to canonical");
@@ -327,7 +403,10 @@ mod tests {
             .unwrap();
         assert_eq!(q1.value, 81_615_000_000.0);
         assert_eq!(q1.period_end, NaiveDate::from_ymd_opt(2026, 4, 26).unwrap());
-        assert_eq!(q1.period_start, Some(NaiveDate::from_ymd_opt(2026, 1, 26).unwrap()));
+        assert_eq!(
+            q1.period_start,
+            Some(NaiveDate::from_ymd_opt(2026, 1, 26).unwrap())
+        );
         assert_eq!(q1.form.as_deref(), Some("10-Q"));
         assert_eq!(q1.fiscal_year, Some(2027));
         assert_eq!(q1.accession.as_deref(), Some("acc-q1"));
@@ -340,10 +419,17 @@ mod tests {
         // Inject one with a bad date — should be silently skipped, not panic.
         let bad = serde_json::from_value::<Observation>(serde_json::json!({
             "end": "not-a-date", "val": 999_i64
-        })).unwrap();
-        facts.facts.get_mut("us-gaap").unwrap()
-            .get_mut("Revenues").unwrap()
-            .units.get_mut("USD").unwrap()
+        }))
+        .unwrap();
+        facts
+            .facts
+            .get_mut("us-gaap")
+            .unwrap()
+            .get_mut("Revenues")
+            .unwrap()
+            .units
+            .get_mut("USD")
+            .unwrap()
             .push(bad);
         let rows = extract("NVDA", "0001045810", &facts);
         // Still just 3 valid rows (2 Revenues + 1 GrossProfit).

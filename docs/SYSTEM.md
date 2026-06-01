@@ -104,10 +104,11 @@ Tier 3 / discovery_pool
   pool_inspection attention for unreviewed theme-relevant names
 
 Tier 2 / watchlisted or confirmed candidate
+  evidence requirement tracking
   regular context maintenance
   richer evidence history
   XBRL/company facts where available
-  thesis drafting when context supports a real edge
+  thesis drafting when blocking evidence is present and context supports a view
 
 Tier 1 / active thesis or position
   deep context maintenance
@@ -144,7 +145,16 @@ active ticker/watchlist universe
 
 If discovery scans the broad pool but news, estimates, ratings, or fundamentals
 only scan the old seed list, the system degenerates into a price/volume scanner.
-That is not the desired product.
+That is not the desired product. Data acquisition should follow:
+
+```text
+active discovery_pool
+UNION
+active ticker/watchlist universe
+```
+
+When an expected input is absent, the system records an `evidence_requirement`
+instead of treating the absence as an investment conclusion.
 
 ## Core objects
 
@@ -189,6 +199,30 @@ ticker_context
 
 Each band has its own freshness timestamp. That matters because a fresh price
 tick must not make stale narrative or lagged 13F data look current.
+
+### Evidence requirement
+
+The retryable acquisition state for missing inputs. Missing data is not a
+thesis and not a final answer.
+
+```text
+evidence_requirement
+  symbol
+  requirement_key     price_history | company_facts | recent_news | analyst_estimates
+  source_type         price | fundamentals | news | estimates
+  reason
+  priority            blocking | high | medium | low
+  blocking_state      missing | fetching | partial | blocked | satisfied
+  attempts
+  next_retry_at
+  last_error
+  source_ref
+```
+
+Context maintenance updates this table before expensive LLM work. Blocking
+requirements stop context/thesis draft attempts. Non-blocking requirements
+travel into the thesis prompt and UI so the operator can see why the view is
+weak.
 
 ### Thesis
 
@@ -382,6 +416,18 @@ active ticker with no open thesis
   + no decline OR decline older than COGNITION_DECLINE_RETRY_HOURS
   -> draft thesis
   -> persist monitoring/actionable thesis OR record thesis_incomplete reason
+
+active ticker with an open thesis
+  -> refresh context
+  -> append/reconcile against the existing thesis timeline
+  -> do not create a second active thesis
+
+active ticker with due missing evidence
+  -> refresh evidence/context
+  -> retry thesis when blocking requirements are satisfied
+
+active ticker where evidence became satisfied after a decline
+  -> retry thesis on the next bounded sweep
 ```
 
 This means "no data" and transient provider failures are retryable operating

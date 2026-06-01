@@ -1503,6 +1503,14 @@
                   {#if c.rank_reasons?.length}
                     <p class="muted disc-rank">{c.rank_reasons.join(" · ")}</p>
                   {/if}
+                  {#if c.parent_themes?.length}
+                    <p class="muted disc-rank">
+                      parent themes: {c.parent_themes
+                        .slice(0, 3)
+                        .map((t) => `${t.name} (${t.role})`)
+                        .join(" · ")}
+                    </p>
+                  {/if}
                   {#if c.proposed_lists.length > 0}
                     <div class="disc-lists">
                       {#each c.proposed_lists as p}

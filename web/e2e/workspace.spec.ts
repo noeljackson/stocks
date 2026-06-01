@@ -242,7 +242,21 @@ async function mockApi(page: Page): Promise<Calls> {
         suggested_new_list: null,
         rank_score: 82,
         rank_bucket: "highest",
-        rank_reasons: ["volume anomaly", "strong signal value", "high-confidence watchlist fit"],
+        rank_reasons: [
+          "volume anomaly",
+          "strong signal value",
+          "active parent theme fit 70",
+          "high-confidence watchlist fit",
+        ],
+        parent_theme_fit: 70,
+        parent_themes: [{
+          key: "ai_compute_infrastructure",
+          name: "AI Compute Infrastructure",
+          scope: "theme",
+          role: "leader",
+          conviction: 70,
+          rationale: "Accelerator platform leader.",
+        }],
       }] : []);
       return;
     }
@@ -702,6 +716,8 @@ test("discovery tab shows candidate ranking reasons", async ({ page }) => {
   const card = page.locator(".disc-card").filter({ hasText: "NVDA" });
   await expect(card).toContainText("highest 82");
   await expect(card).toContainText("volume anomaly");
+  await expect(card).toContainText("active parent theme fit 70");
+  await expect(card).toContainText("AI Compute Infrastructure (leader)");
   await expect(card).toContainText("high-confidence watchlist fit");
 });
 

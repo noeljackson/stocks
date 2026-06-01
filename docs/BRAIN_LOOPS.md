@@ -340,16 +340,17 @@ What works now:
 - Proactive names are queued as reasoned `research_nomination` items, not
   generic inspections.
 - Pending candidates are ranked before review using deterministic signal
-  quality, domain fit, proposed tier, and watchlist-classifier confidence.
+  quality, domain fit, active parent-theme fit, proposed tier, and
+  watchlist-classifier confidence. The API includes the linked parent themes so
+  the discovery tab can explain why a candidate is more than a raw alert.
 
 Current gaps:
 
 - #129: macro and sector theses exist as records, and the cognition sweep now
   maintains their coverage/freshness state. They still need an LLM/factor
   cognition pass that can rewrite parent claims from normalized evidence.
-- Discovery ranking reads watchlist/domain/signal quality today; it still needs
-  a theme-fit score from `brain_thesis_ticker` and active parent-thesis
-  direction.
+- Discovery ranking reads `brain_thesis_ticker` fit today; it still needs
+  active parent-thesis direction and contradiction penalties.
 
 ## Attention Loop
 

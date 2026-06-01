@@ -444,6 +444,15 @@ export interface PendingCandidate {
   signal_name: string;
   signal_value: number | null;
   domain_fit?: number | null;
+  parent_theme_fit?: number | null;
+  parent_themes?: {
+    key: string;
+    name: string;
+    scope: string;
+    role: string;
+    conviction: number | null;
+    rationale: string | null;
+  }[];
   proposed_tier?: number;
   reasoning: string | null;
   proposed_at: string;

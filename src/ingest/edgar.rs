@@ -10,6 +10,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::json;
 
+use super::sec;
 use super::{Adapter, Event};
 use crate::platform::subjects;
 
@@ -66,13 +67,15 @@ impl Adapter for EdgarAdapter {
         "edgar"
     }
     fn interval(&self) -> Duration {
-        Duration::from_secs(30 * 60)
+        super::interval_secs_from_env("EDGAR_INTERVAL_SECS", 30 * 60)
     }
 
     async fn poll(&self) -> Result<Vec<Event>> {
         let mut out = Vec::new();
         for (ticker, cik) in &self.ciks {
-            let evs = self.poll_one(ticker, cik).await
+            let evs = self
+                .poll_one(ticker, cik)
+                .await
                 .with_context(|| format!("edgar {ticker}"))?;
             out.extend(evs);
         }
@@ -81,6 +84,40 @@ impl Adapter for EdgarAdapter {
 }
 
 impl EdgarAdapter {
+    /// Poll a runtime symbol set using SEC's public ticker -> CIK directory.
+    ///
+    /// Returns `(events, missing_cik_count, failed_fetch_count)`. Missing CIKs
+    /// and per-symbol fetch failures are degraded inputs, not fatal pass
+    /// failures, because one unsupported ticker should not block filings for
+    /// the rest of the research universe.
+    pub async fn poll_symbols(&self, symbols: &[String]) -> Result<(Vec<Event>, usize, usize)> {
+        if symbols.is_empty() {
+            return Ok((Vec::new(), 0, 0));
+        }
+        let ciks = sec::ciks_for_symbols(&self.client, &self.ua, symbols).await?;
+        let requested: std::collections::BTreeSet<String> =
+            symbols.iter().map(|s| s.to_ascii_uppercase()).collect();
+        let matched: std::collections::BTreeSet<String> =
+            ciks.iter().map(|(symbol, _)| symbol.clone()).collect();
+        let missing_cik_count = requested.difference(&matched).count();
+        let mut failed_fetch_count = 0;
+        let mut out = Vec::new();
+
+        for (symbol, cik) in ciks {
+            match self.poll_one(&symbol, &cik).await {
+                Ok(events) => out.extend(events),
+                Err(e) => {
+                    failed_fetch_count += 1;
+                    tracing::warn!(symbol = %symbol, error = %e, "edgar filings fetch failed; continuing");
+                }
+            }
+            // SEC limits to 10 req/s; 200ms between companies keeps us below it.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
+        Ok((out, missing_cik_count, failed_fetch_count))
+    }
+
     async fn poll_one(&self, ticker: &str, cik: &str) -> Result<Vec<Event>> {
         let url = format!("https://data.sec.gov/submissions/CIK{cik}.json");
         let resp = self

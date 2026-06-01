@@ -16,11 +16,11 @@ Reads:
     NATS_URL                — default nats://localhost:4222
     STREAM_MARKET           — discovery.* subjects are under MARKET stream
     DURABLE                 — "cognition-consumer"
-    COGNITION_SWEEP_SECONDS — default 900; set 0 to disable maintenance sweep
+    COGNITION_SWEEP_SECONDS — default 300; set 0 to disable maintenance sweep
     COGNITION_CONTEXT_MAX_AGE_HOURS — default 12
     COGNITION_OPEN_THESIS_MAX_AGE_MINUTES — default 30
     COGNITION_DECLINE_RETRY_HOURS — default 6
-    COGNITION_MAX_SYMBOLS_PER_SWEEP — default 5
+    COGNITION_MAX_SYMBOLS_PER_SWEEP — default 20
     COGNITION_ACK_PROGRESS_SECONDS — default 10
 """
 
@@ -378,7 +378,7 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
     context_max_age_hours = _env_int("COGNITION_CONTEXT_MAX_AGE_HOURS", 12)
     open_thesis_max_age_minutes = _env_int("COGNITION_OPEN_THESIS_MAX_AGE_MINUTES", 30)
     decline_retry_hours = _env_int("COGNITION_DECLINE_RETRY_HOURS", 6)
-    limit = max(1, _env_int("COGNITION_MAX_SYMBOLS_PER_SWEEP", 5))
+    limit = max(1, _env_int("COGNITION_MAX_SYMBOLS_PER_SWEEP", 20))
     targets = await _sweep_targets(
         pool,
         context_max_age_hours=context_max_age_hours,
@@ -416,14 +416,14 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
 
 
 async def _sweep_loop(pool: asyncpg.Pool) -> None:
-    interval = _env_int("COGNITION_SWEEP_SECONDS", 900)
+    interval = _env_int("COGNITION_SWEEP_SECONDS", 300)
     if interval <= 0:
         log.info("cognition maintenance sweep disabled")
         return
     log.info(
         "cognition maintenance sweep enabled: every %ss, max %s symbols",
         interval,
-        _env_int("COGNITION_MAX_SYMBOLS_PER_SWEEP", 5),
+        _env_int("COGNITION_MAX_SYMBOLS_PER_SWEEP", 20),
     )
     await asyncio.sleep(5)
     while True:

@@ -79,18 +79,20 @@ benchmarks needed for regime/relative context
 Current local dev cadence:
 
 ```text
-FMP price bars          every 6h     discovery_pool + benchmarks
+FMP price bars          every 30m    discovery_pool + benchmarks
 FMP screener/pool       every 24h    broad investible pool
-FMP estimates           every 6h     scan universe
-CBOE crowd sentiment    every 6h     market-wide sentiment
-FMP + Massive news      every 2h     scan universe
+FMP estimates           every 30m    scan universe
+CBOE crowd sentiment    every 30m    market-wide sentiment
+FMP + Massive news      every 30m    scan universe
 XBRL company facts      every 6h     scan universe
-EDGAR filings           every 30m    currently seeded SEC map
-FRED macro              every 6h     macro series
+EDGAR filings           every 30m    scan universe via dynamic SEC CIK map
+FRED macro              every 30m    macro series
 ```
 
-The current cadence is not yet the desired 30-minute freshness SLA. The target
-brain loop is:
+The current cadence now aims source checks at the desired 30-minute freshness
+SLA for sources that can move intraday. XBRL remains slower because company
+facts are large and update through filings, while EDGAR is the intraday filing
+watch. The target brain loop is:
 
 ```text
 source due
@@ -270,6 +272,8 @@ What works now:
 - Evidence checklists are bootstrapped for old tickers.
 - Open theses are explicitly due for re-evaluation after 30 minutes.
 - Fresh drafts reconcile into one canonical open thesis per symbol.
+- Dev cognition sweep runs every 5 minutes over up to 20 active symbols by
+  default, so a larger universe is not starved behind a five-symbol batch.
 
 Current gaps:
 

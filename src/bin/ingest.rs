@@ -6,8 +6,6 @@
 //! its own interval and persists directly to `company_fact`, bypassing the
 //! per-event store-and-publish path.
 
-use std::time::Duration;
-
 use anyhow::Result;
 use std::sync::Arc;
 use stocks::ingest::cboe::CboeAdapter;
@@ -47,7 +45,7 @@ async fn main() -> Result<()> {
         let base = cfg.fmp_base_url.clone();
         tokio::spawn(async move {
             let adapter = FmpPriceAdapter::new(&key, &base);
-            let interval = Duration::from_secs(6 * 3600);
+            let interval = ingest::interval_secs_from_env("FMP_PRICE_INTERVAL_SECS", 30 * 60);
             loop {
                 // Pool ∪ active tickers ∪ benchmarks
                 let mut symbols: std::collections::BTreeSet<String> = Default::default();
@@ -151,7 +149,7 @@ async fn main() -> Result<()> {
         let base = cfg.fmp_base_url.clone();
         tokio::spawn(async move {
             let adapter = stocks::ingest::fmp_screener::FmpScreenerAdapter::new(&key, &base);
-            let interval = Duration::from_secs(24 * 3600);
+            let interval = ingest::interval_secs_from_env("FMP_SCREENER_INTERVAL_SECS", 24 * 3600);
             if let Err(e) =
                 stocks::ingest::discovery_pool_service::run(pool, adapter, interval).await
             {
@@ -169,7 +167,7 @@ async fn main() -> Result<()> {
         let base = cfg.fmp_base_url.clone();
         tokio::spawn(async move {
             let adapter = FmpEstimatesAdapter::new(&key, &base);
-            let interval = Duration::from_secs(6 * 3600);
+            let interval = ingest::interval_secs_from_env("FMP_ESTIMATES_INTERVAL_SECS", 30 * 60);
             if let Err(e) = fmp_estimates_service::run(pool, adapter, interval).await {
                 error!(error = %e, "fmp_estimates service exited");
             }
@@ -182,7 +180,7 @@ async fn main() -> Result<()> {
         let pool = store.pool.clone();
         tokio::spawn(async move {
             let adapter = CboeAdapter::new();
-            let interval = Duration::from_secs(6 * 3600);
+            let interval = ingest::interval_secs_from_env("CBOE_INTERVAL_SECS", 30 * 60);
             if let Err(e) = crowd_sentiment_service::run(pool, adapter, interval).await {
                 error!(error = %e, "crowd_sentiment service exited");
             }
@@ -261,7 +259,7 @@ async fn main() -> Result<()> {
                 prompt_hash: prompt.hash.clone(),
                 per_ticker_limit: 20,
             };
-            let interval = Duration::from_secs(2 * 3600);
+            let interval = ingest::interval_secs_from_env("NEWS_INTERVAL_SECS", 30 * 60);
             if let Err(e) = news_service::run(svc, interval).await {
                 error!(error = %e, "news_service exited");
             }
@@ -274,7 +272,7 @@ async fn main() -> Result<()> {
         let ua = cfg.sec_user_agent.clone();
         tokio::spawn(async move {
             let adapter = XbrlAdapter::new(&ua);
-            let interval = Duration::from_secs(6 * 3600);
+            let interval = ingest::interval_secs_from_env("XBRL_INTERVAL_SECS", 6 * 3600);
             // First-run fires immediately so a fresh deploy populates company_fact.
             loop {
                 let symbols = store.scan_pool_symbols().await.unwrap_or_default();
@@ -346,10 +344,91 @@ async fn main() -> Result<()> {
         });
     }
 
-    let adapters: Vec<Box<dyn ingest::Adapter>> = vec![
-        Box::new(EdgarAdapter::new(&cfg.sec_user_agent)),
-        Box::new(FredAdapter::new(&cfg.fred_api_key)),
-    ];
+    // EDGAR filings must follow the dynamic scan pool, not a hardcoded seed
+    // list. This loop mirrors XBRL's pool-aware behavior and emits ordinary
+    // ingest.filing events for downstream consumers.
+    {
+        let store = store.clone();
+        let bus = bus.clone();
+        let ua = cfg.sec_user_agent.clone();
+        tokio::spawn(async move {
+            let adapter = EdgarAdapter::new(&ua);
+            let interval = ingest::interval_secs_from_env("EDGAR_INTERVAL_SECS", 30 * 60);
+            loop {
+                let symbols = store.scan_pool_symbols().await.unwrap_or_default();
+                let attempted = symbols.len() as i32;
+                if let Err(e) = store.mark_source_started("edgar", attempted).await {
+                    error!(error = %e, "edgar source health start record failed");
+                }
+                match adapter.poll_symbols(&symbols).await {
+                    Ok((events, missing_cik_count, failed_fetch_count)) => {
+                        let rows_seen = events.len() as i64;
+                        match persist_events(&store, &bus, "edgar", events).await {
+                            Ok((stored, published)) => {
+                                let failed = (missing_cik_count + failed_fetch_count) as i32;
+                                if let Err(e) = store
+                                    .record_source_success(
+                                        "edgar",
+                                        rows_seen,
+                                        stored as i64,
+                                        attempted,
+                                        failed,
+                                    )
+                                    .await
+                                {
+                                    error!(error = %e, "edgar source health success record failed");
+                                }
+                                if stored > 0 {
+                                    info!(
+                                        symbols = symbols.len(),
+                                        new = stored,
+                                        published,
+                                        missing_cik_count,
+                                        failed_fetch_count,
+                                        "edgar filings pass complete"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                let message = e.to_string();
+                                if let Err(record_err) = store
+                                    .record_source_failure(
+                                        "edgar",
+                                        source_health::failure_kind(&message),
+                                        &message,
+                                        None,
+                                    )
+                                    .await
+                                {
+                                    error!(error = %record_err, "edgar source health failure record failed");
+                                }
+                                error!(error = %e, "edgar filings persist failed");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let message = e.to_string();
+                        if let Err(record_err) = store
+                            .record_source_failure(
+                                "edgar",
+                                source_health::failure_kind(&message),
+                                &message,
+                                None,
+                            )
+                            .await
+                        {
+                            error!(error = %record_err, "edgar source health failure record failed");
+                        }
+                        error!(error = %e, "edgar filings poll failed");
+                    }
+                }
+                tokio::time::sleep(interval).await;
+            }
+        });
+    }
+
+    let adapters: Vec<Box<dyn ingest::Adapter>> =
+        vec![Box::new(FredAdapter::new(&cfg.fred_api_key))];
 
     info!("ingestion started");
     ingest::run(store, bus, adapters, async {
@@ -357,4 +436,43 @@ async fn main() -> Result<()> {
         info!("shutdown signal received");
     })
     .await
+}
+
+async fn persist_events(
+    store: &Store,
+    bus: &Bus,
+    adapter_name: &str,
+    events: Vec<ingest::Event>,
+) -> Result<(u32, u32)> {
+    let mut stored = 0u32;
+    let mut published = 0u32;
+    for ev in events {
+        let symbol_opt = if ev.symbol.is_empty() {
+            None
+        } else {
+            Some(ev.symbol.as_str())
+        };
+        let inserted = store
+            .append_ingest_event(
+                &ev.source,
+                &ev.kind,
+                symbol_opt,
+                &ev.payload,
+                &ev.content_hash(),
+                ev.source_ts,
+            )
+            .await?;
+        if !inserted {
+            continue;
+        }
+        stored += 1;
+        if !ev.subject.is_empty() {
+            bus.publish(&ev.subject, &ev.payload).await?;
+            published += 1;
+        }
+    }
+    if stored > 0 {
+        info!(adapter = adapter_name, new = stored, published, "ingested");
+    }
+    Ok((stored, published))
 }

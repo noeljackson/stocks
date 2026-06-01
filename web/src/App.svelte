@@ -201,9 +201,40 @@
   }
 
   function sourceTime(source: BrainSourceStatus): string {
-    if (source.last_checked_at) return `checked ${relativeTime(source.last_checked_at)}`;
-    if (source.last_changed_at) return `changed ${relativeTime(source.last_changed_at)}`;
-    return "not seen";
+    const parts: string[] = [];
+    if (source.last_checked_at) {
+      parts.push(`${source.source === "thesis" ? "evaluated" : "checked"} ${relativeTime(source.last_checked_at)}`);
+    }
+    if (source.last_changed_at) {
+      parts.push(`changed ${relativeTime(source.last_changed_at)}`);
+    }
+    if (source.retry_after_at) {
+      parts.push(`retry ${relativeTime(source.retry_after_at)}`);
+    }
+    return parts.length ? parts.join(" · ") : "not seen";
+  }
+
+  function sourceDetail(source: BrainSourceStatus): string {
+    const parts: string[] = [];
+    const detail = source.detail ?? {};
+    const sourceHealth = source.source_health ?? {};
+    const latestSession = detail.latest_session ?? detail.latest_price_session ?? detail.actual_latest_session;
+    const expectedSession = detail.expected_session ?? detail.expected_price_session ?? detail.expected_latest_session;
+    const publishedAt = detail.latest_published_at ?? detail.latest_news_published_at;
+    const contextAge = detail.context_age_minutes;
+    const rowsSeen = sourceHealth.rows_seen;
+    const rowsInserted = sourceHealth.rows_inserted;
+
+    if (source.version !== null && source.version !== undefined) parts.push(`v${source.version}`);
+    if (source.state) parts.push(source.direction ? `${source.state} ${source.direction}` : source.state);
+    if (expectedSession || latestSession) parts.push(`session ${String(latestSession ?? "none")}/${String(expectedSession ?? "expected")}`);
+    if (publishedAt) parts.push(`published ${relativeTime(String(publishedAt))}`);
+    if (typeof contextAge === "number") parts.push(`context ${Math.round(contextAge)}m old`);
+    if (typeof rowsSeen === "number" || typeof rowsInserted === "number") {
+      parts.push(`${Number(rowsInserted ?? 0)} new / ${Number(rowsSeen ?? 0)} seen`);
+    }
+    if (source.max_age_minutes) parts.push(`SLA ${source.max_age_minutes}m`);
+    return parts.join(" · ");
   }
 
   function brainDirectionLabel(direction: string): string {
@@ -1942,11 +1973,16 @@
                   <ul class="brain-sources">
                     {#each symbolBrain.sources as s (s.source)}
                       <li title={s.last_error ?? ""}>
-                        <strong>{sourceLabel(s.source)}</strong>
-                        <span class="badge tiny brain-source-{s.status}">
-                          {healthLabel(s.status, s.failure_kind)}
-                        </span>
-                        <span class="muted">{sourceTime(s)}</span>
+                        <div class="brain-source-main">
+                          <strong>{sourceLabel(s.source)}</strong>
+                          <span class="badge tiny brain-source-{s.status}">
+                            {healthLabel(s.status, s.failure_kind)}
+                          </span>
+                          <span class="muted">{sourceTime(s)}</span>
+                        </div>
+                        {#if sourceDetail(s)}
+                          <div class="brain-source-detail">{sourceDetail(s)}</div>
+                        {/if}
                       </li>
                     {/each}
                   </ul>
@@ -2704,9 +2740,22 @@
   }
   .brain-sources li {
     display: flex;
+    flex-direction: column;
+    gap: .12rem;
+    min-width: 0;
+  }
+  .brain-source-main {
+    display: flex;
     align-items: baseline;
     gap: .35rem;
     flex-wrap: wrap;
+    min-width: 0;
+  }
+  .brain-source-detail {
+    color: #7f8aa3;
+    font-size: .72rem;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
   }
   .text-action {
     background: transparent;

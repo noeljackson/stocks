@@ -339,6 +339,8 @@ async function mockApi(page: Page): Promise<Calls> {
             last_changed_at: "2026-06-01T00:00:00Z",
             last_checked_at: "2026-06-01T00:00:00Z",
             max_age_minutes: 30,
+            detail: { latest_session: "2026-05-29", expected_session: "2026-05-29" },
+            source_health: { rows_seen: 260, rows_inserted: 2 },
           },
           {
             source: "news",
@@ -346,6 +348,8 @@ async function mockApi(page: Page): Promise<Calls> {
             last_changed_at: "2026-06-01T00:00:00Z",
             last_checked_at: "2026-06-01T00:00:00Z",
             max_age_minutes: 30,
+            detail: { latest_published_at: "2026-06-01T00:00:00Z" },
+            source_health: { rows_seen: 12, rows_inserted: 1 },
           },
           {
             source: "thesis",
@@ -353,6 +357,9 @@ async function mockApi(page: Page): Promise<Calls> {
             last_changed_at: "2026-05-31T23:00:00Z",
             last_checked_at: "2026-05-31T23:00:00Z",
             max_age_minutes: 30,
+            version: 2,
+            state: "forming",
+            direction: "up",
           },
         ],
         evidence: { rows: 4, open: 0, blocking: 0, due: 0 },
@@ -609,6 +616,12 @@ test("overview explains selected symbol brain status and stale source", async ({
   await expect(brain).toContainText("price");
   await expect(brain).toContainText("thesis");
   await expect(brain).toContainText("stale");
+  await expect(brain).toContainText("checked");
+  await expect(brain).toContainText("changed");
+  await expect(brain).toContainText("evaluated");
+  await expect(brain).toContainText("session 2026-05-29/2026-05-29");
+  await expect(brain).toContainText("SLA 30m");
+  await expect(brain).toContainText("v2");
 });
 
 test("brain tab shows macro and theme theses with linked tickers", async ({ page }) => {

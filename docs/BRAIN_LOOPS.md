@@ -519,6 +519,10 @@ Selected-symbol status now exposes the first slice of #128:
 symbol overview
   -> /api/brain-status?symbol=MU
   -> source freshness
+     - last checked or evaluated
+     - last changed
+     - retry_after when rate-limited/failed
+     - source-specific detail: session coverage, latest publication, version/state
   -> evidence rows/open/blocking/due
   -> context age
   -> thesis age

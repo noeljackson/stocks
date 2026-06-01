@@ -22,6 +22,7 @@ use tracing::{info, warn};
 
 use super::fmp_news::{FmpNewsAdapter, NewsArticle};
 use super::massive_news::MassiveNewsAdapter;
+use super::{rate_limit, source_health};
 use crate::sentiment::SentimentScore;
 
 /// Identifies a Sentiment-scorer callback. Returns the scored result OR
@@ -55,11 +56,22 @@ pub struct NewsIngestService {
 impl NewsIngestService {
     /// One pass over scan_pool ∪ universe (#104). Returns (inserted, scored).
     pub async fn run_once(&self) -> Result<(usize, usize)> {
-        let store = crate::platform::store::Store { pool: self.pool.clone() };
+        let store = crate::platform::store::Store {
+            pool: self.pool.clone(),
+        };
         let universe_owned: Vec<String> = store.scan_pool_symbols().await.unwrap_or_default();
         let universe: Vec<&str> = universe_owned.iter().map(String::as_str).collect();
+        source_health::mark_started(&self.pool, "fmp_news", universe.len() as i32).await?;
+        source_health::mark_started(&self.pool, "massive_news", universe.len() as i32).await?;
 
         let mut inserted_total = 0;
+        let mut inserted_fmp = 0;
+        let mut inserted_massive = 0;
+        let mut fmp_rows_seen = 0;
+        let mut massive_rows_seen = 0;
+        let mut fmp_failed = 0;
+        let mut massive_failed = 0;
+        let mut saw_fmp_rate_limit = false;
         let mut scored_total = 0;
 
         for symbol in &universe {
@@ -67,10 +79,15 @@ impl NewsIngestService {
             let fmp_rows = match self.fmp.fetch_one(symbol, self.per_ticker_limit).await {
                 Ok(r) => r,
                 Err(e) => {
+                    fmp_failed += 1;
+                    if source_health::failure_kind(&e.to_string()) == "rate_limited" {
+                        saw_fmp_rate_limit = true;
+                    }
                     warn!(symbol = symbol, error = %e, "fmp news fetch failed");
                     Vec::new()
                 }
             };
+            fmp_rows_seen += fmp_rows.len();
             let massive_rows = match self
                 .massive
                 .fetch_one(symbol, self.per_ticker_limit, &universe)
@@ -78,23 +95,37 @@ impl NewsIngestService {
             {
                 Ok(r) => r,
                 Err(e) => {
+                    massive_failed += 1;
                     warn!(symbol = symbol, error = %e, "massive news fetch failed");
                     Vec::new()
                 }
             };
+            massive_rows_seen += massive_rows.len();
 
             // --- 3 upsert ---
             for a in &fmp_rows {
                 match upsert_article(&self.pool, a, None, None).await {
-                    Ok(true) => inserted_total += 1,
+                    Ok(true) => {
+                        inserted_total += 1;
+                        inserted_fmp += 1;
+                    }
                     Ok(false) => {}
                     Err(e) => warn!(symbol = symbol, error = ?e, "upsert fmp article failed"),
                 }
             }
             for s in &massive_rows {
-                match upsert_article(&self.pool, &s.article, s.upstream_sentiment.as_deref(),
-                                      s.upstream_rationale.as_deref()).await {
-                    Ok(true) => inserted_total += 1,
+                match upsert_article(
+                    &self.pool,
+                    &s.article,
+                    s.upstream_sentiment.as_deref(),
+                    s.upstream_rationale.as_deref(),
+                )
+                .await
+                {
+                    Ok(true) => {
+                        inserted_total += 1;
+                        inserted_massive += 1;
+                    }
                     Ok(false) => {}
                     Err(e) => warn!(symbol = symbol, error = ?e, "upsert massive article failed"),
                 }
@@ -108,6 +139,34 @@ impl NewsIngestService {
             scored_total = self.score_pending(scorer).await?;
         }
 
+        source_health::record_success(
+            &self.pool,
+            "fmp_news",
+            fmp_rows_seen as i64,
+            inserted_fmp as i64,
+            universe.len() as i32,
+            fmp_failed,
+        )
+        .await?;
+        source_health::record_success(
+            &self.pool,
+            "massive_news",
+            massive_rows_seen as i64,
+            inserted_massive as i64,
+            universe.len() as i32,
+            massive_failed,
+        )
+        .await?;
+        if saw_fmp_rate_limit {
+            source_health::record_failure(
+                &self.pool,
+                "fmp_news",
+                "rate_limited",
+                "one or more FMP news requests were rate limited",
+                rate_limit::fmp().retry_after_at().await,
+            )
+            .await?;
+        }
         Ok((inserted_total, scored_total))
     }
 
@@ -212,7 +271,10 @@ async fn upsert_article(
 
 /// Long-running service loop.
 pub async fn run(service: NewsIngestService, interval: Duration) -> Result<()> {
-    info!(interval_secs = interval.as_secs(), "news ingest service started");
+    info!(
+        interval_secs = interval.as_secs(),
+        "news ingest service started"
+    );
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -222,7 +284,26 @@ pub async fn run(service: NewsIngestService, interval: Duration) -> Result<()> {
                 info!(inserted = ins, scored, "news pass complete");
             }
             Ok(_) => {}
-            Err(e) => warn!(error = %e, "news pass failed"),
+            Err(e) => {
+                let message = e.to_string();
+                let retry_after_at = if source_health::failure_kind(&message) == "rate_limited" {
+                    rate_limit::fmp().retry_after_at().await
+                } else {
+                    None
+                };
+                if let Err(record_err) = source_health::record_failure(
+                    &service.pool,
+                    "fmp_news",
+                    source_health::failure_kind(&message),
+                    &message,
+                    retry_after_at,
+                )
+                .await
+                {
+                    warn!(error = %record_err, "news source health failure record failed");
+                }
+                warn!(error = %e, "news pass failed");
+            }
         }
     }
 }

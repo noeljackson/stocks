@@ -23,23 +23,60 @@ use tracing::{info, warn};
 use super::fmp_estimates::{
     FmpEstimatesAdapter, NormalizedEstimate, decode_response, diff_snapshots, normalize,
 };
+use super::{rate_limit, source_health};
 use crate::platform::store::Store;
 
 /// One pass over scan_pool ∪ universe (#104). Returns revision events emitted.
 pub async fn run_once(pool: &PgPool, adapter: &FmpEstimatesAdapter) -> Result<usize> {
     let store = Store { pool: pool.clone() };
     let symbols = store.scan_pool_symbols().await.unwrap_or_default();
+    source_health::mark_started(pool, "fmp_estimates", symbols.len() as i32).await?;
     let mut total_revisions = 0;
+    let mut rows_seen = 0;
+    let mut symbols_failed = 0;
+    let mut saw_rate_limit = false;
     for symbol in &symbols {
         match scan_one(pool, adapter, symbol).await {
-            Ok(n) => total_revisions += n,
-            Err(e) => warn!(symbol = %symbol, error = %e, "fmp_estimates scan_one failed"),
+            Ok((seen, revisions)) => {
+                rows_seen += seen;
+                total_revisions += revisions;
+            }
+            Err(e) => {
+                symbols_failed += 1;
+                if source_health::failure_kind(&e.to_string()) == "rate_limited" {
+                    saw_rate_limit = true;
+                }
+                warn!(symbol = %symbol, error = %e, "fmp_estimates scan_one failed");
+            }
         }
+    }
+    source_health::record_success(
+        pool,
+        "fmp_estimates",
+        rows_seen as i64,
+        rows_seen as i64,
+        symbols.len() as i32,
+        symbols_failed,
+    )
+    .await?;
+    if saw_rate_limit {
+        source_health::record_failure(
+            pool,
+            "fmp_estimates",
+            "rate_limited",
+            "one or more FMP estimates requests were rate limited",
+            rate_limit::fmp().retry_after_at().await,
+        )
+        .await?;
     }
     Ok(total_revisions)
 }
 
-async fn scan_one(pool: &PgPool, adapter: &FmpEstimatesAdapter, symbol: &str) -> Result<usize> {
+async fn scan_one(
+    pool: &PgPool,
+    adapter: &FmpEstimatesAdapter,
+    symbol: &str,
+) -> Result<(usize, usize)> {
     let raw = adapter.fetch_one(symbol).await?;
     let rows = decode_response(&raw)?;
     let normalized = normalize(&rows);
@@ -68,7 +105,7 @@ async fn scan_one(pool: &PgPool, adapter: &FmpEstimatesAdapter, symbol: &str) ->
             );
         }
     }
-    Ok(emitted)
+    Ok((normalized.len(), emitted))
 }
 
 async fn load_latest_snapshot(
@@ -200,7 +237,26 @@ pub async fn run(pool: PgPool, adapter: FmpEstimatesAdapter, interval: Duration)
         match run_once(&pool, &adapter).await {
             Ok(n) if n > 0 => info!(revisions = n, "fmp_estimates pass complete"),
             Ok(_) => {}
-            Err(e) => warn!(error = %e, "fmp_estimates pass failed"),
+            Err(e) => {
+                let message = e.to_string();
+                let retry_after_at = if source_health::failure_kind(&message) == "rate_limited" {
+                    rate_limit::fmp().retry_after_at().await
+                } else {
+                    None
+                };
+                if let Err(record_err) = source_health::record_failure(
+                    &pool,
+                    "fmp_estimates",
+                    source_health::failure_kind(&message),
+                    &message,
+                    retry_after_at,
+                )
+                .await
+                {
+                    warn!(error = %record_err, "fmp_estimates source health failure record failed");
+                }
+                warn!(error = %e, "fmp_estimates pass failed");
+            }
         }
     }
 }

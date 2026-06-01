@@ -72,6 +72,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         )
         .route("/api/discovery-pool", get(list_discovery_pool))
         .route("/api/system-status", get(get_system_status))
+        .route("/api/brain", get(get_brain_overview))
         .route("/api/brain-status", get(get_brain_status))
         .route("/api/attention", get(list_attention_items))
         .route("/api/attention/{id}/dismiss", post(dismiss_attention_item))
@@ -1099,6 +1100,241 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
         "evidence": evidence,
         "attention": attention,
         "llm": llm,
+    });
+    (StatusCode::OK, Json(body)).into_response()
+}
+
+async fn get_brain_overview(State(gw): State<Arc<Gateway>>) -> impl IntoResponse {
+    use sqlx::Row;
+
+    let pool = &gw.store.pool;
+    let rows = match sqlx::query(
+        r#"SELECT bt.id, bt.scope, bt.key, bt.name, bt.state, bt.direction,
+                  bt.summary, bt.core_claim, bt.why_now,
+                  bt.evidence, bt.invalidation_conditions, bt.beneficiaries,
+                  bt.losers, bt.open_questions, bt.missing_evidence,
+                  bt.source_ref, bt.freshness_target_minutes,
+                  bt.last_evaluated_at, bt.version, bt.created_at, bt.updated_at,
+                  CASE
+                    WHEN bt.last_evaluated_at IS NULL THEN 'missing'
+                    WHEN bt.last_evaluated_at < now() - (bt.freshness_target_minutes::text || ' minutes')::interval THEN 'stale'
+                    ELSE 'fresh'
+                  END AS freshness,
+                  COALESCE(ticker_map.tickers, '[]'::jsonb) AS tickers,
+                  COALESCE(watchlist_map.watchlists, '[]'::jsonb) AS watchlists,
+                  COALESCE(nomination_map.nominations, '[]'::jsonb) AS nominations,
+                  COALESCE(change_map.latest_changes, '[]'::jsonb) AS latest_changes
+             FROM brain_thesis bt
+        LEFT JOIN LATERAL (
+             SELECT jsonb_agg(jsonb_build_object(
+                        'symbol', btt.symbol,
+                        'role', btt.role,
+                        'rationale', btt.rationale,
+                        'conviction', btt.conviction,
+                        'thesis_state', latest.state,
+                        'thesis_direction', latest.direction,
+                        'open_theses', COALESCE(open_count.n, 0)
+                    ) ORDER BY COALESCE(btt.conviction, 0) DESC, btt.symbol) AS tickers
+               FROM brain_thesis_ticker btt
+          LEFT JOIN LATERAL (
+                    SELECT th.state, th.forecast->>'direction' AS direction
+                      FROM thesis th
+                     WHERE th.symbol = btt.symbol
+                       AND th.state NOT IN ('closed', 'disqualified')
+                  ORDER BY th.updated_at DESC
+                     LIMIT 1
+                ) latest ON TRUE
+          LEFT JOIN LATERAL (
+                    SELECT count(*) AS n
+                      FROM thesis th
+                     WHERE th.symbol = btt.symbol
+                       AND th.state NOT IN ('closed', 'disqualified')
+                ) open_count ON TRUE
+              WHERE btt.brain_thesis_id = bt.id
+        ) ticker_map ON TRUE
+        LEFT JOIN LATERAL (
+             SELECT jsonb_agg(jsonb_build_object(
+                        'id', wl.id,
+                        'name', wl.name,
+                        'color', wl.color,
+                        'is_system', wl.is_system
+                    ) ORDER BY wl.name) AS watchlists
+               FROM (
+                    SELECT DISTINCT w.id, w.name, w.color, w.is_system
+                      FROM brain_thesis_watchlist btw
+                      JOIN watchlist w ON w.id = btw.watchlist_id
+                     WHERE btw.brain_thesis_id = bt.id
+                    UNION
+                    SELECT DISTINCT w.id, w.name, w.color, w.is_system
+                      FROM brain_thesis_ticker btt
+                      JOIN watchlist_member wm ON wm.symbol = btt.symbol
+                      JOIN watchlist w ON w.id = wm.watchlist_id
+                     WHERE btt.brain_thesis_id = bt.id
+               ) wl
+        ) watchlist_map ON TRUE
+        LEFT JOIN LATERAL (
+             SELECT jsonb_agg(jsonb_build_object(
+                        'candidate_id', dc.id,
+                        'symbol', dc.symbol,
+                        'signal_name', dc.signal_name,
+                        'signal_value', dc.signal_value,
+                        'reasoning', dc.reasoning,
+                        'proposed_at', dc.proposed_at
+                    ) ORDER BY dc.proposed_at DESC) AS nominations
+               FROM (
+                    SELECT dc.id, dc.symbol, dc.signal_name, dc.signal_value,
+                           dc.reasoning, dc.proposed_at
+                      FROM discovery_candidate dc
+                     WHERE dc.status = 'proposed'
+                       AND EXISTS (
+                           SELECT 1
+                             FROM brain_thesis_ticker btt
+                            WHERE btt.brain_thesis_id = bt.id
+                              AND btt.symbol = dc.symbol
+                       )
+                  ORDER BY dc.proposed_at DESC
+                     LIMIT 8
+               ) dc
+        ) nomination_map ON TRUE
+        LEFT JOIN LATERAL (
+             SELECT jsonb_agg(jsonb_build_object(
+                        'version', vh.version,
+                        'rationale', vh.rationale,
+                        'at', vh.at
+                    ) ORDER BY vh.at DESC) AS latest_changes
+               FROM (
+                    SELECT version, rationale, at
+                      FROM brain_thesis_version_history
+                     WHERE brain_thesis_id = bt.id
+                  ORDER BY at DESC
+                     LIMIT 5
+               ) vh
+        ) change_map ON TRUE
+            WHERE bt.active = true
+         ORDER BY CASE bt.scope WHEN 'macro' THEN 0 WHEN 'sector' THEN 1 ELSE 2 END,
+                  bt.name"#,
+    )
+    .fetch_all(pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!(error = %e, "get_brain_overview failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    };
+
+    let market_state = sqlx::query(
+        r#"SELECT as_of, regime, capitulation, indicators, subsector_rs
+             FROM market_state
+         ORDER BY as_of DESC
+            LIMIT 1"#,
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .map(|r| {
+        let as_of: Option<chrono::DateTime<chrono::Utc>> = r.try_get("as_of").ok();
+        json!({
+            "as_of": as_of,
+            "regime": r.try_get::<String, _>("regime").unwrap_or_else(|_| "unknown".to_string()),
+            "capitulation": r.try_get::<bool, _>("capitulation").unwrap_or(false),
+            "indicators": r.try_get::<serde_json::Value, _>("indicators").unwrap_or_else(|_| json!({})),
+            "subsector_rs": r.try_get::<serde_json::Value, _>("subsector_rs").unwrap_or_else(|_| json!({})),
+        })
+    });
+
+    let mut macro_thesis = None;
+    let mut sectors = Vec::new();
+    for r in rows {
+        let id: Option<uuid::Uuid> = r.try_get("id").ok();
+        let last_evaluated_at: Option<chrono::DateTime<chrono::Utc>> =
+            r.try_get("last_evaluated_at").ok();
+        let created_at: Option<chrono::DateTime<chrono::Utc>> = r.try_get("created_at").ok();
+        let updated_at: Option<chrono::DateTime<chrono::Utc>> = r.try_get("updated_at").ok();
+        let item = json!({
+            "id": id,
+            "scope": r.try_get::<String, _>("scope").unwrap_or_default(),
+            "key": r.try_get::<String, _>("key").unwrap_or_default(),
+            "name": r.try_get::<String, _>("name").unwrap_or_default(),
+            "state": r.try_get::<String, _>("state").unwrap_or_default(),
+            "direction": r.try_get::<String, _>("direction").unwrap_or_default(),
+            "summary": r.try_get::<String, _>("summary").unwrap_or_default(),
+            "core_claim": r.try_get::<String, _>("core_claim").unwrap_or_default(),
+            "why_now": r.try_get::<Option<String>, _>("why_now").ok().flatten(),
+            "evidence": r.try_get::<serde_json::Value, _>("evidence").unwrap_or_else(|_| json!([])),
+            "invalidation_conditions": r.try_get::<serde_json::Value, _>("invalidation_conditions").unwrap_or_else(|_| json!([])),
+            "beneficiaries": r.try_get::<serde_json::Value, _>("beneficiaries").unwrap_or_else(|_| json!([])),
+            "losers": r.try_get::<serde_json::Value, _>("losers").unwrap_or_else(|_| json!([])),
+            "open_questions": r.try_get::<serde_json::Value, _>("open_questions").unwrap_or_else(|_| json!([])),
+            "missing_evidence": r.try_get::<serde_json::Value, _>("missing_evidence").unwrap_or_else(|_| json!([])),
+            "source_ref": r.try_get::<serde_json::Value, _>("source_ref").unwrap_or_else(|_| json!({})),
+            "freshness_target_minutes": r.try_get::<i32, _>("freshness_target_minutes").unwrap_or(720),
+            "last_evaluated_at": last_evaluated_at,
+            "version": r.try_get::<i32, _>("version").unwrap_or(1),
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "freshness": r.try_get::<String, _>("freshness").unwrap_or_else(|_| "missing".to_string()),
+            "tickers": r.try_get::<serde_json::Value, _>("tickers").unwrap_or_else(|_| json!([])),
+            "watchlists": r.try_get::<serde_json::Value, _>("watchlists").unwrap_or_else(|_| json!([])),
+            "nominations": r.try_get::<serde_json::Value, _>("nominations").unwrap_or_else(|_| json!([])),
+            "latest_changes": r.try_get::<serde_json::Value, _>("latest_changes").unwrap_or_else(|_| json!([])),
+        });
+
+        if item.get("scope").and_then(serde_json::Value::as_str) == Some("macro") {
+            macro_thesis = Some(item);
+        } else {
+            sectors.push(item);
+        }
+    }
+
+    let macro_direction = macro_thesis
+        .as_ref()
+        .and_then(|m| m.get("direction"))
+        .and_then(serde_json::Value::as_str);
+    let contradictions = sectors
+        .iter()
+        .filter_map(|s| {
+            let direction = s.get("direction").and_then(serde_json::Value::as_str)?;
+            let name = s.get("name").and_then(serde_json::Value::as_str)?;
+            let mismatch = matches!((macro_direction, direction), (Some("risk_off"), "bullish") | (Some("risk_on"), "bearish"));
+            mismatch.then(|| {
+                json!({
+                    "kind": "macro_sector_direction_conflict",
+                    "summary": format!("Macro is {} while {name} is {direction}", macro_direction.unwrap_or("unknown")),
+                    "brain_thesis_key": s.get("key").cloned().unwrap_or(json!(null)),
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let stale_count = macro_thesis
+        .iter()
+        .chain(sectors.iter())
+        .filter(|s| s.get("freshness").and_then(serde_json::Value::as_str) != Some("fresh"))
+        .count();
+    let nominations_count = sectors
+        .iter()
+        .map(|s| {
+            s.get("nominations")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, Vec::len)
+        })
+        .sum::<usize>();
+    let active_theses = macro_thesis.iter().count() + sectors.len();
+
+    let body = json!({
+        "as_of": chrono::Utc::now(),
+        "market_state": market_state,
+        "macro": macro_thesis,
+        "sectors": sectors,
+        "contradictions": contradictions,
+        "summary": {
+            "active_theses": active_theses,
+            "stale_or_missing": stale_count,
+            "open_nominations": nominations_count,
+        },
     });
     (StatusCode::OK, Json(body)).into_response()
 }

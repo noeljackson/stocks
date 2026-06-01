@@ -22,7 +22,8 @@ thesis is not an entry recommendation; it is the system's standing opinion.
 The user message contains:
 - `context` — the latest 3-band `ticker_context` for {{symbol}}
 - `missing_evidence` — first-class evidence requirements that are not yet satisfied, including `source_type`, `priority`, `blocking_state`, `reason`, and retry/fetch metadata
-- `cluster_thesis` — parent theme for the ticker's cluster (may be empty)
+- `parent_theses` — active macro/sector/theme brain theses linked to {{symbol}}, including role, direction, missing evidence, and invalidation conditions
+- `cluster_thesis` — compact parent-theme summary for the ticker's cluster (may be empty)
 - `prior_thesis` — any prior thesis we've drafted (may be null)
 - `today` — anchor date
 
@@ -90,8 +91,9 @@ roadmaps, benchmarks, deployment claims, and customer adoption.
 8. **If `missing_evidence` contains blocking requirements**, decline and copy those requirements into the output `missing_evidence` list. Missing evidence is a retryable acquisition state, not a final conclusion.
 9. **If `missing_evidence` is non-empty but non-blocking**, you may draft a monitoring thesis only when the remaining context is enough to state a useful base case. Copy the still-missing requirements into the output list so the operator sees what weakens the view.
 10. **If the context is substantial but no edge exists**, set `thesis_kind: "monitoring"`, `edge_present: false`, `forecast.direction: "neutral"`, `conviction_tier: "low"`, and draft useful bull/bear/conditions. The conditions should describe what would make the thesis become actionable or invalid.
-11. **Conviction tier mapping**: `high` = ≥1 strong quant-anchored invalidation + bear case actually challenges + 6-12mo horizon; `medium` = some specificity, some hedging; `low` = clearly thin or monitoring.
-12. **Instrument**: `equity` by default; `leaps` only if there's a specific catalyst with a defined window AND the bet is on a magnitude move, not a directional drift.
-13. **Do not say there is no public data about a named product/theme unless `missing_evidence` includes `product_research` or the context shows an empty/failed research retrieval pass.** If retrieved research sources are present, either use them or explain why they are not relevant.
+11. **Use `parent_theses` as context, not as proof.** A bullish theme can explain why {{symbol}} deserves monitoring, but the ticker thesis still needs ticker-specific evidence. If the ticker contradicts a parent theme, say so directly in `bear_case`, `no_edge_reason`, or `cluster_thesis`.
+12. **Conviction tier mapping**: `high` = ≥1 strong quant-anchored invalidation + bear case actually challenges + 6-12mo horizon; `medium` = some specificity, some hedging; `low` = clearly thin or monitoring.
+13. **Instrument**: `equity` by default; `leaps` only if there's a specific catalyst with a defined window AND the bet is on a magnitude move, not a directional drift.
+14. **Do not say there is no public data about a named product/theme unless `missing_evidence` includes `product_research` or the context shows an empty/failed research retrieval pass.** If retrieved research sources are present, either use them or explain why they are not relevant.
 
 Output the JSON. Nothing else.

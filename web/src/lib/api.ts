@@ -235,6 +235,86 @@ export async function fetchBrainStatus(symbol: string): Promise<BrainStatus | nu
   return (await r.json()) as BrainStatus;
 }
 
+export interface BrainLinkedTicker {
+  symbol: string;
+  role: string;
+  rationale?: string | null;
+  conviction?: number | null;
+  thesis_state?: string | null;
+  thesis_direction?: string | null;
+  open_theses?: number;
+}
+
+export interface BrainLinkedWatchlist {
+  id: string;
+  name: string;
+  color?: string | null;
+  is_system?: boolean;
+}
+
+export interface BrainNomination {
+  candidate_id: number;
+  symbol: string;
+  signal_name: string;
+  signal_value?: number | null;
+  reasoning?: string | null;
+  proposed_at: string;
+}
+
+export interface BrainThesisChange {
+  version: number;
+  rationale?: string | null;
+  at: string;
+}
+
+export interface BrainThesis {
+  id: string;
+  scope: "macro" | "sector" | "theme";
+  key: string;
+  name: string;
+  state: "forming" | "active" | "weakening" | "invalidated" | "archived";
+  direction: "risk_on" | "risk_off" | "neutral" | "bullish" | "bearish" | "mixed";
+  summary: string;
+  core_claim: string;
+  why_now?: string | null;
+  evidence: unknown[];
+  invalidation_conditions: unknown[];
+  beneficiaries: unknown[];
+  losers: unknown[];
+  open_questions: unknown[];
+  missing_evidence: unknown[];
+  source_ref: Record<string, unknown>;
+  freshness_target_minutes: number;
+  last_evaluated_at?: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  freshness: "fresh" | "stale" | "missing";
+  tickers: BrainLinkedTicker[];
+  watchlists: BrainLinkedWatchlist[];
+  nominations: BrainNomination[];
+  latest_changes: BrainThesisChange[];
+}
+
+export interface BrainOverview {
+  as_of: string;
+  market_state?: MarketState | null;
+  macro?: BrainThesis | null;
+  sectors: BrainThesis[];
+  contradictions: { kind: string; summary: string; brain_thesis_key?: string | null }[];
+  summary: {
+    active_theses: number;
+    stale_or_missing: number;
+    open_nominations: number;
+  };
+}
+
+export async function fetchBrainOverview(): Promise<BrainOverview> {
+  const r = await fetch("/api/brain");
+  if (!r.ok) throw new Error(`brain ${r.status}`);
+  return (await r.json()) as BrainOverview;
+}
+
 export interface TickerContext {
   symbol: string;
   version: number;

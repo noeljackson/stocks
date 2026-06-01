@@ -10,6 +10,7 @@
     confirmCandidate,
     createWatchlist,
     fetchAlerts,
+    fetchBrainOverview,
     fetchBrainStatus,
     fetchCalibration,
     fetchAttention,
@@ -33,6 +34,7 @@
     transitionAttention,
     type Alert,
     type AttentionItem,
+    type BrainOverview,
     type BrainSourceStatus,
     type BrainStatus,
     type Calibration,
@@ -57,7 +59,7 @@
 
   // ---------- workspace state ----------
   type RightTab = "overview" | "context" | "evidence" | "theses" | "alerts" | "decisions";
-  type BottomMode = "attention" | "events" | "discovery" | "decisions" | "calibration" | "diagnostics";
+  type BottomMode = "brain" | "attention" | "events" | "discovery" | "decisions" | "calibration" | "diagnostics";
 
   let selectedSymbol = $state<string | null>(null);
   let rightTab = $state<RightTab>("overview");
@@ -66,6 +68,7 @@
 
   // ---------- global data ----------
   let regime = $state<MarketState | null>(null);
+  let brainOverview = $state<BrainOverview | null>(null);
   let calibration = $state<Calibration | null>(null);
   // System status (#92) — populated on demand when diagnostics tab is open.
   let sysStatus = $state<Record<string, unknown> | null>(null);
@@ -198,6 +201,22 @@
     if (source.last_checked_at) return `checked ${relativeTime(source.last_checked_at)}`;
     if (source.last_changed_at) return `changed ${relativeTime(source.last_changed_at)}`;
     return "not seen";
+  }
+
+  function brainDirectionLabel(direction: string): string {
+    if (direction === "risk_on") return "risk on";
+    if (direction === "risk_off") return "risk off";
+    return direction.replace(/_/g, " ");
+  }
+
+  function brainThingText(value: unknown): string {
+    if (typeof value === "string") return value;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return String(value ?? "");
+    const obj = value as Record<string, unknown>;
+    for (const key of ["name", "assertion", "claim", "source", "reason"]) {
+      if (typeof obj[key] === "string") return obj[key] as string;
+    }
+    return JSON.stringify(obj);
   }
 
   function evidenceActions(req: EvidenceRequirement): string[] {
@@ -737,6 +756,7 @@
     fetchAlerts({ unacked: !showAcked }).then((a) => (alerts = a)).catch((e) => (error = String(e)));
     fetchRegime().then((r) => (regime = r)).catch((e) => (error = String(e)));
     fetchTickers().then((t) => (tickers = t)).catch((e) => (error = String(e)));
+    fetchBrainOverview().then((b) => (brainOverview = b)).catch(() => {});
     fetchCalibration().then((c) => (calibration = c)).catch(() => {});
     refreshWatchlists();
     refreshPending();
@@ -807,6 +827,7 @@
         }
         if (e.kind === "state_transition" || e.kind === "risk") {
           fetchAlerts({ unacked: !showAcked }).then((a) => (alerts = a)).catch(() => {});
+          fetchBrainOverview().then((b) => (brainOverview = b)).catch(() => {});
           refreshAttention();
         }
         // Discovery hits also produce attention items; refresh on any
@@ -911,7 +932,7 @@
         >
           <footer class="bottom">
     <nav class="bottom-tabs">
-      {#each ["attention", "events", "discovery", "decisions", "calibration", "diagnostics"] as BottomMode[] as m}
+      {#each ["brain", "attention", "events", "discovery", "decisions", "calibration", "diagnostics"] as BottomMode[] as m}
         <button
           class:active={bottomMode === m}
           onclick={() => { bottomMode = m; if (!bottomOpen) bottomPane?.expand(); }}
@@ -932,7 +953,129 @@
 
     {#if bottomOpen}
       <div class="bottom-body">
-        {#if bottomMode === "attention"}
+        {#if bottomMode === "brain"}
+          {#if brainOverview}
+            <div class="brain-board">
+              <section class="brain-topline">
+                <div>
+                  <strong>Brain</strong>
+                  <span class="muted">
+                    {brainOverview.summary.active_theses} active ·
+                    {brainOverview.summary.stale_or_missing} stale/missing ·
+                    {brainOverview.summary.open_nominations} nominations
+                  </span>
+                </div>
+                {#if brainOverview.market_state}
+                  <span class="badge tiny">market {brainOverview.market_state.regime}</span>
+                {/if}
+              </section>
+
+              {#if brainOverview.macro}
+                {@const macro = brainOverview.macro}
+                <section class="brain-theme macro-theme freshness-{macro.freshness}">
+                  <div class="brain-theme-hdr">
+                    <div>
+                      <strong>{macro.name}</strong>
+                      <span class="muted">v{macro.version}</span>
+                    </div>
+                    <div class="brain-badges">
+                      <span class="badge tiny brain-dir-{macro.direction}">{brainDirectionLabel(macro.direction)}</span>
+                      <span class="badge tiny brain-fresh-{macro.freshness}">{macro.freshness}</span>
+                      {#if macro.last_evaluated_at}<span class="muted">evaluated {relativeTime(macro.last_evaluated_at)}</span>{/if}
+                    </div>
+                  </div>
+                  <p>{macro.summary}</p>
+                  <p class="muted">{macro.core_claim}</p>
+                  {#if macro.missing_evidence.length}
+                    <div class="brain-line">
+                      <span class="muted">missing</span>
+                      {#each macro.missing_evidence.slice(0, 5) as item}
+                        <span class="brain-token">{brainThingText(item)}</span>
+                      {/each}
+                    </div>
+                  {/if}
+                </section>
+              {:else}
+                <p class="muted">No macro thesis recorded.</p>
+              {/if}
+
+              {#if brainOverview.contradictions.length}
+                <section class="brain-contradictions">
+                  <strong>Contradictions</strong>
+                  {#each brainOverview.contradictions as c}
+                    <span class="badge tiny danger">{c.summary}</span>
+                  {/each}
+                </section>
+              {/if}
+
+              <div class="brain-theme-grid">
+                {#each brainOverview.sectors as thesis (thesis.id)}
+                  <section class="brain-theme freshness-{thesis.freshness}">
+                    <div class="brain-theme-hdr">
+                      <div>
+                        <strong>{thesis.name}</strong>
+                        <span class="muted">{thesis.scope} · {thesis.state}</span>
+                      </div>
+                      <div class="brain-badges">
+                        <span class="badge tiny brain-dir-{thesis.direction}">{brainDirectionLabel(thesis.direction)}</span>
+                        <span class="badge tiny brain-fresh-{thesis.freshness}">{thesis.freshness}</span>
+                      </div>
+                    </div>
+                    <p>{thesis.summary}</p>
+                    <p class="muted">{thesis.core_claim}</p>
+
+                    {#if thesis.watchlists.length}
+                      <div class="brain-line">
+                        <span class="muted">lists</span>
+                        {#each thesis.watchlists.slice(0, 4) as w (w.id)}
+                          <span class="brain-token" style={w.color ? `border-color: ${w.color}` : ""}>{w.name}</span>
+                        {/each}
+                      </div>
+                    {/if}
+
+                    {#if thesis.tickers.length}
+                      <div class="brain-tickers">
+                        {#each thesis.tickers.slice(0, 12) as t (`${thesis.id}-${t.symbol}`)}
+                          <button type="button" class="brain-ticker" onclick={() => selectSymbol(t.symbol)}>
+                            <strong>{t.symbol}</strong>
+                            <span>{t.role}</span>
+                            {#if t.thesis_state}
+                              <span class="wl-thesis-state">{thesisStatusLabel(t.thesis_state)}</span>
+                            {/if}
+                            <span class={`badge tiny ${thesisDirectionClass(t.thesis_direction)}`}>
+                              {thesisDirectionLabel(t.thesis_direction)}
+                            </span>
+                          </button>
+                        {/each}
+                      </div>
+                    {/if}
+
+                    {#if thesis.nominations.length}
+                      <div class="brain-line">
+                        <span class="muted">queued</span>
+                        {#each thesis.nominations.slice(0, 4) as n (n.candidate_id)}
+                          <button type="button" class="brain-token action" onclick={() => selectSymbol(n.symbol)}>
+                            {n.symbol} · {n.signal_name.replace(/_/g, " ")}
+                          </button>
+                        {/each}
+                      </div>
+                    {/if}
+
+                    {#if thesis.missing_evidence.length || thesis.open_questions.length}
+                      <ul class="brain-gaps">
+                        {#each [...thesis.missing_evidence, ...thesis.open_questions].slice(0, 4) as item}
+                          <li>{brainThingText(item)}</li>
+                        {/each}
+                      </ul>
+                    {/if}
+                  </section>
+                {/each}
+              </div>
+            </div>
+          {:else}
+            <p class="muted">Loading brain…</p>
+          {/if}
+        {:else if bottomMode === "attention"}
           <div class="att-toolbar">
             <span class="muted">{groupedAttention.length} pending</span>
             <span class="att-filters">
@@ -1959,6 +2102,105 @@
     flex: 1; overflow: auto; padding: .5rem .75rem;
   }
 
+  .brain-board {
+    display: flex;
+    flex-direction: column;
+    gap: .55rem;
+  }
+  .brain-topline,
+  .brain-contradictions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .65rem;
+    flex-wrap: wrap;
+    border: 1px solid #1f2733;
+    background: #0a0d14;
+    border-radius: 4px;
+    padding: .5rem .65rem;
+  }
+  .brain-theme-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: .55rem;
+  }
+  .brain-theme {
+    border: 1px solid #1f2733;
+    border-left: 3px solid #6c7693;
+    background: #0c1019;
+    border-radius: 4px;
+    padding: .55rem .65rem;
+    display: flex;
+    flex-direction: column;
+    gap: .4rem;
+    min-width: 0;
+  }
+  .brain-theme.macro-theme {
+    background: #0a0d14;
+  }
+  .brain-theme.freshness-fresh { border-left-color: rgb(166,227,161); }
+  .brain-theme.freshness-stale,
+  .brain-theme.freshness-missing { border-left-color: rgb(249,226,175); }
+  .brain-theme-hdr,
+  .brain-badges,
+  .brain-line {
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    flex-wrap: wrap;
+  }
+  .brain-theme-hdr {
+    justify-content: space-between;
+  }
+  .brain-theme p {
+    margin: 0;
+  }
+  .brain-token {
+    border: 1px solid #2a3548;
+    background: #111827;
+    color: #bac2de;
+    border-radius: 4px;
+    padding: .12rem .35rem;
+    font-size: .74rem;
+  }
+  .brain-token.action {
+    cursor: pointer;
+    font: inherit;
+  }
+  .brain-tickers {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: .35rem;
+  }
+  .brain-ticker {
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    align-items: center;
+    gap: .35rem;
+    min-width: 0;
+    border: 1px solid #1f2733;
+    background: #111827;
+    color: #cdd6f4;
+    border-radius: 4px;
+    padding: .3rem .4rem;
+    cursor: pointer;
+    font: inherit;
+    font-size: .76rem;
+    text-align: left;
+  }
+  .brain-ticker span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .brain-gaps {
+    margin: 0;
+    padding-left: 1rem;
+    color: #8b95ad;
+    font-size: .76rem;
+  }
+
   /* Event feed in drawer */
   .event-feed { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .15rem; }
   .event-feed li {
@@ -2182,15 +2424,24 @@
   .badge.health-rate_limited { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
   .badge.brain-fresh,
   .badge.brain-source-fresh { background: rgba(166,227,161,.18); color: rgb(166,227,161); }
+  .badge.brain-fresh-fresh,
+  .badge.brain-dir-risk_on,
+  .badge.brain-dir-bullish { background: rgba(166,227,161,.18); color: rgb(166,227,161); }
   .badge.brain-due,
   .badge.brain-stale,
   .badge.brain-waiting_on_evidence,
   .badge.brain-source-stale,
   .badge.brain-source-missing,
   .badge.brain-source-running { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
+  .badge.brain-fresh-stale,
+  .badge.brain-fresh-missing,
+  .badge.brain-dir-neutral,
+  .badge.brain-dir-mixed { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
   .badge.brain-blocked,
   .badge.brain-source-failed,
   .badge.brain-source-rate_limited { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
+  .badge.brain-dir-risk_off,
+  .badge.brain-dir-bearish { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
 
   /* Attention queue (#86) — grouped card design */
   .att-toolbar { display: flex; gap: .5rem; align-items: baseline; margin-bottom: .5rem; flex-wrap: wrap; }

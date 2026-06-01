@@ -9,6 +9,11 @@ The scheduler and feedback-loop view lives in
 ## Main Flow
 
 ```text
+brain_thesis                                symbol thesis
+  macro + sector/theme parent views          child view / ticker expression
+       │                                                   ▲
+       ├────────────── theme-fit + parent context ─────────┘
+       ▼
 discovery_pool                              active ticker/watchlist universe
   broad radar                                  focused radar
   price/news/estimates                         richer context + thesis loop
@@ -93,6 +98,14 @@ The thesis object is a state machine, not a draft archive. A symbol may have at
 most one open thesis (`forming` through `exiting`) at a time; new evidence
 refreshes reconcile into that thesis and append version history. Duplicate
 open theses are a data integrity bug, and the database rejects them.
+
+Macro/sector/theme views are separate `brain_thesis` records. They do not
+replace ticker theses and they do not make a ticker investable by themselves.
+Their job is to explain why a group of tickers is worth monitoring, what parent
+evidence is stale or missing, which tickers are candidate expressions, and
+which parent conditions would invalidate the theme. Ticker thesis drafting
+receives linked parent theses and must either use them as context, reject them
+for the specific symbol, or call out contradictions.
 
 ## Attention Contract
 
@@ -322,6 +335,7 @@ interpretation      -> src/discovery/composer.rs
 candidate storage   -> discovery_candidate
 attention storage   -> attention_item
 context memory      -> ticker_context
+parent brain        -> brain_thesis + brain_thesis_ticker/watchlist
 thesis lifecycle    -> thesis + thesis_state_history
 decision log        -> decision
 position state      -> position

@@ -1,6 +1,6 @@
 //! Condition evaluator (#14) — pure-function metric resolution + comparison.
 //!
-//! Walks every pending condition, resolves its `target.metric` against
+//! Walks every pending or inconclusive condition, resolves its `target.metric` against
 //! `company_fact` / `price_bar`, compares observed value vs target.value
 //! per target.op, and updates condition status.
 //!
@@ -56,6 +56,21 @@ impl ConditionStatus {
             Self::Inconclusive => "inconclusive",
             Self::Stale => "stale",
         }
+    }
+
+    fn from_db(value: &str) -> Option<Self> {
+        match value {
+            "pending" => Some(Self::Pending),
+            "satisfied" => Some(Self::Satisfied),
+            "refuted" => Some(Self::Refuted),
+            "inconclusive" => Some(Self::Inconclusive),
+            "stale" => Some(Self::Stale),
+            _ => None,
+        }
+    }
+
+    fn should_evaluate(self) -> bool {
+        matches!(self, Self::Pending | Self::Inconclusive)
     }
 }
 
@@ -377,15 +392,15 @@ async fn latest_close(pool: &PgPool, symbol: &str) -> Result<Option<f64>> {
 
 // ---------- service loop ----------
 
-/// One pass: evaluate every pending condition with a parseable target,
-/// update statuses in the DB. Returns counts per outcome.
+/// One pass: evaluate every pending or inconclusive condition with a parseable
+/// target, update statuses in the DB. Returns counts per outcome.
 pub async fn run_once(pool: &PgPool) -> Result<EvalCounts> {
     let now = Utc::now();
     let rows = sqlx::query(
         r#"SELECT thesis_id, role, position, COALESCE(name, '') AS name,
-                  target, deadline_at
+                  status, target, deadline_at
              FROM v_condition
-            WHERE status = 'pending' AND target IS NOT NULL"#,
+            WHERE target IS NOT NULL"#,
     )
     .fetch_all(pool)
     .await
@@ -397,8 +412,17 @@ pub async fn run_once(pool: &PgPool) -> Result<EvalCounts> {
         let role: String = row.try_get("role")?;
         let position: i64 = row.try_get("position")?;
         let name: String = row.try_get("name")?;
+        let status: String = row.try_get("status")?;
         let target_json: serde_json::Value = row.try_get("target")?;
         let deadline_at: Option<DateTime<Utc>> = row.try_get("deadline_at")?;
+
+        let Some(current_status) = ConditionStatus::from_db(&status) else {
+            counts.skipped += 1;
+            continue;
+        };
+        if !current_status.should_evaluate() {
+            continue;
+        }
 
         let Ok(target) = serde_json::from_value::<Target>(target_json) else {
             counts.skipped += 1;
@@ -583,6 +607,22 @@ mod tests {
     fn missing_observation_is_inconclusive() {
         let e = evaluate(&t("NVDA.Revenues", ">=", 100e9), None, None, Utc::now());
         assert_eq!(e.status, ConditionStatus::Inconclusive);
+    }
+
+    #[test]
+    fn pending_and_inconclusive_conditions_are_retried() {
+        assert!(ConditionStatus::Pending.should_evaluate());
+        assert!(ConditionStatus::Inconclusive.should_evaluate());
+        assert!(!ConditionStatus::Satisfied.should_evaluate());
+        assert!(!ConditionStatus::Refuted.should_evaluate());
+        assert!(!ConditionStatus::Stale.should_evaluate());
+    }
+
+    #[test]
+    fn condition_status_decodes_db_values() {
+        assert_eq!(ConditionStatus::from_db("pending"), Some(ConditionStatus::Pending));
+        assert_eq!(ConditionStatus::from_db("inconclusive"), Some(ConditionStatus::Inconclusive));
+        assert_eq!(ConditionStatus::from_db("bogus"), None);
     }
 
     #[test]

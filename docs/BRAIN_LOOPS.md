@@ -569,7 +569,8 @@ These loops run after a thesis exists.
 condition evaluator
   every EVAL_INTERVAL_SECS
   reads v_condition
-  marks condition status
+  evaluates pending and inconclusive conditions
+  marks satisfied/refuted/inconclusive status
 
 staler
   every STALER_INTERVAL_SECS
@@ -616,8 +617,6 @@ Current gaps:
 - #94: decision replay is missing, so we cannot yet reconstruct exactly what
   the operator saw when deciding.
 - #4: validation harness is still incomplete until enough outcomes close.
-- #63: inconclusive conditions need retry semantics when new data arrives.
-- #64: actionable payload should carry forecast context.
 
 ## UI Loop
 

@@ -56,6 +56,7 @@ def test_assess_evidence_requirements_reports_missing_inputs() -> None:
         "company_facts": 0,
         "recent_news": 0,
         "estimate_snapshots": 4,
+        "research_evidence": 1,
     })
 
     keys = {r["requirement_key"] for r in missing}
@@ -69,6 +70,7 @@ def test_assess_evidence_requirements_attaches_source_health_state() -> None:
             "company_facts": 0,
             "recent_news": 1,
             "estimate_snapshots": 4,
+            "research_evidence": 1,
         },
         {
             "xbrl": {
@@ -98,6 +100,7 @@ def test_assess_evidence_requirements_marks_running_sources_as_fetching() -> Non
             "company_facts": 0,
             "recent_news": 1,
             "estimate_snapshots": 4,
+            "research_evidence": 1,
         },
         {
             "xbrl": {
@@ -124,6 +127,7 @@ def test_assess_evidence_requirements_marks_checked_sources_as_missing() -> None
             "company_facts": 0,
             "recent_news": 1,
             "estimate_snapshots": 4,
+            "research_evidence": 1,
         },
         {
             "xbrl": {
@@ -143,10 +147,39 @@ def test_assess_evidence_requirements_marks_checked_sources_as_missing() -> None
     assert facts["state_reason"] == "source_checked_no_new_rows"
 
 
+def test_assess_evidence_requirements_tracks_product_research() -> None:
+    missing = assess_evidence_requirements(
+        {
+            "price_bars": 12,
+            "company_facts": 2,
+            "recent_news": 1,
+            "estimate_snapshots": 4,
+            "research_evidence": 0,
+        },
+        {
+            "web_research": {
+                "source": "web_research",
+                "last_status": "no_new_rows",
+                "last_failure_kind": None,
+                "last_error": None,
+                "retry_after_at": None,
+                "rows_seen": 0,
+                "rows_inserted": 0,
+            },
+        },
+    )
+
+    [research] = missing
+    assert research["requirement_key"] == "product_research"
+    assert research["source_type"] == "web_research"
+    assert research["state_reason"] == "source_checked_no_new_rows"
+
+
 def test_assess_evidence_requirements_empty_when_core_inputs_present() -> None:
     assert assess_evidence_requirements({
         "price_bars": 260,
         "company_facts": 20,
         "recent_news": 5,
         "estimate_snapshots": 10,
+        "research_evidence": 3,
     }) == []

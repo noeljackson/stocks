@@ -19,6 +19,7 @@
     fetchEvidenceRequirements,
     fetchPendingCandidates,
     fetchRegime,
+    fetchResearchEvidence,
     fetchThesisDeclines,
     fetchTheses,
     fetchTickerContext,
@@ -39,6 +40,7 @@
     type MarketState,
     type PendingCandidate,
     type PoolMember,
+    type ResearchEvidence,
     type StreamEvent,
     type ThesisDetail,
     type ThesisDecline,
@@ -268,6 +270,7 @@
   // ---------- selected-symbol-scoped data ----------
   let symbolContext = $state<TickerContext | null | undefined>(undefined);
   let symbolEvidence = $state<EvidenceRequirement[] | undefined>(undefined);
+  let symbolResearch = $state<ResearchEvidence[] | undefined>(undefined);
   let symbolBrain = $state<BrainStatus | null | undefined>(undefined);
   let symbolTheses = $state<ThesisDetail[] | null | undefined>(undefined);
   let symbolDeclines = $state<ThesisDecline[] | null | undefined>(undefined);
@@ -434,20 +437,46 @@
     return watchlistMembers[listId] ?? [];
   }
 
+  function normalizeSymbol(value: string | null | undefined): string | null {
+    const symbol = (value ?? "").trim().toUpperCase();
+    if (!/^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol)) return null;
+    return symbol;
+  }
+
+  function symbolFromRoute(): string | null {
+    const match = window.location.pathname.match(/^\/symbol\/([^/]+)\/?$/);
+    return match ? normalizeSymbol(decodeURIComponent(match[1])) : null;
+  }
+
+  function syncSymbolRoute(symbol: string, replace = false) {
+    const path = `/symbol/${encodeURIComponent(symbol)}`;
+    if (window.location.pathname === path) return;
+    const method = replace ? "replaceState" : "pushState";
+    window.history[method](null, "", path);
+  }
+
   // ---------- selection logic ----------
-  async function selectSymbol(symbol: string) {
+  async function selectSymbol(
+    value: string,
+    opts: { updateRoute?: boolean; replaceRoute?: boolean } = {},
+  ) {
+    const symbol = normalizeSymbol(value);
+    if (!symbol) return;
+    if (opts.updateRoute ?? true) syncSymbolRoute(symbol, opts.replaceRoute ?? false);
     if (selectedSymbol === symbol) return;
     selectedSymbol = symbol;
     symbolContext = undefined;
     symbolEvidence = undefined;
+    symbolResearch = undefined;
     symbolBrain = undefined;
     symbolTheses = undefined;
     symbolDeclines = undefined;
     symbolDecisions = undefined;
     // Fetch detail in parallel.
-    const [ctx, evidence, brain, theses, declines, decisions] = await Promise.all([
+    const [ctx, evidence, research, brain, theses, declines, decisions] = await Promise.all([
       fetchTickerContext(symbol).catch(() => null),
       fetchEvidenceRequirements(symbol).catch(() => []),
+      fetchResearchEvidence(symbol).catch(() => []),
       fetchBrainStatus(symbol).catch(() => null),
       fetchTheses(symbol).catch(() => []),
       fetchThesisDeclines(symbol).catch(() => []),
@@ -455,6 +484,7 @@
     ]);
     symbolContext = ctx;
     symbolEvidence = evidence;
+    symbolResearch = research;
     symbolBrain = brain;
     symbolTheses = theses;
     symbolDeclines = declines;
@@ -549,7 +579,7 @@
     }
   }
   async function addMember(id: string) {
-    const sym = (addSymbolFor[id] ?? "").trim().toUpperCase();
+    const sym = normalizeSymbol(addSymbolFor[id]) ?? "";
     if (!sym) return;
     try {
       await addToWatchlist(id, sym);
@@ -673,7 +703,14 @@
   });
 
   onMount(() => {
+    const routedSymbol = symbolFromRoute();
+    if (routedSymbol) void selectSymbol(routedSymbol, { replaceRoute: true });
     refreshAll();
+    const onPopState = () => {
+      const routed = symbolFromRoute();
+      if (routed) void selectSymbol(routed, { updateRoute: false });
+    };
+    window.addEventListener("popstate", onPopState);
     const stop = subscribe(
       (e) => {
         live = [e, ...live].slice(0, 200);
@@ -693,7 +730,10 @@
       },
       (open) => (connected = open),
     );
-    return stop;
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+      stop();
+    };
   });
 
   let selectedTicker = $derived(tickerFor(selectedSymbol));
@@ -724,6 +764,11 @@
         oninput={(e) => {
           const v = (e.target as HTMLInputElement).value.toUpperCase();
           if (v && tickers.some((t) => t.symbol === v)) selectSymbol(v);
+        }}
+        onkeydown={(e) => {
+          if (e.key !== "Enter") return;
+          const v = (e.target as HTMLInputElement).value;
+          if (normalizeSymbol(v)) selectSymbol(v);
         }}
       />
       {#if selectedTicker}
@@ -1422,6 +1467,28 @@
                     </li>
                   {/each}
                 </ul>
+              {/if}
+              {#if symbolResearch === undefined}
+                <p class="muted">Loading research sources…</p>
+              {:else if symbolResearch.length > 0}
+                <section class="research-sources">
+                  <h4>Research sources</h4>
+                  <ul class="evidence-list">
+                    {#each symbolResearch as src (src.id)}
+                      <li class="evidence-card">
+                        <div class="evidence-row">
+                          <a href={src.url} target="_blank" rel="noreferrer">{src.title}</a>
+                          <span class="badge tiny">{src.credibility}</span>
+                        </div>
+                        <p class="muted">
+                          {(src.publisher ?? src.provider)} ·
+                          {src.published_at ? relativeTime(src.published_at) : `retrieved ${relativeTime(src.retrieved_at)}`}
+                        </p>
+                        <p class="muted">{src.query}</p>
+                      </li>
+                    {/each}
+                  </ul>
+                </section>
               {/if}
             {:else if rightTab === "theses"}
               {#if symbolTheses === undefined || symbolDeclines === undefined}

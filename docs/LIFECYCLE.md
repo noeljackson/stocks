@@ -235,6 +235,12 @@ requirements satisfied when rows have arrived. It does not call an LLM. If a
 previous no-thesis decline is older than the newly satisfied evidence, the same
 sweep can retry the ticker.
 
+Product/theme web research is a high-priority evidence requirement. Context
+refresh runs targeted retrieval before the LLM pass, persists rows in
+`research_evidence`, and passes those sources into the narrative band. A thesis
+decline should not say "no public data" for a named product/theme unless the
+`product_research` requirement shows the retrieval state.
+
 The thesis engine may still decline after evidence is present. A decline is not
 failure when there is no measurable edge. Example: a mega-cap can have fresh
 context and still get no actionable thesis if the facts are already consensus

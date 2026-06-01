@@ -11,6 +11,7 @@ You are given:
 4. `price_snapshot` — latest daily close plus SMA 20D/50D/100D/200D, distance from available-window high, and volume versus 20-day average. Use this to describe current market setup; do not treat it as a thesis by itself.
 5. `recent_news` — recent scored articles for this ticker. Use these for narrative shifts and pending catalysts.
 6. `estimate_revisions` — analyst consensus drift events. Use these for `narrative.analyst_trajectory`.
+7. `research_evidence` — product/theme web research retrieved by targeted queries. Use this for product launches, benchmarks, deployment reports, customer adoption, and competitive claims that vendor symbol-news may miss.
 
 Your output is **strictly JSON** with exactly these three top-level keys: `structural`, `narrative`, and `market`. No prose, no markdown fences, no commentary.
 
@@ -60,6 +61,9 @@ Your output is **strictly JSON** with exactly these three top-level keys: `struc
     ],
     "recent_signals": [
       "Specific events from the new ingest data that move the narrative. Cite the source: 'Form 4 insider sale 2026-05-15: CFO sold 50k shares'."
+    ],
+    "research_sources": [
+      { "title": "retrieved article title", "url": "https://...", "why_it_matters": "specific product/theme claim it supports or refutes" }
     ]
   }
 }
@@ -72,5 +76,6 @@ Your output is **strictly JSON** with exactly these three top-level keys: `struc
 - **Anchor to today.** If a prior thesis said "watch Q1 earnings" and Q1 has now reported, mark it resolved with the outcome.
 - **Market context is allowed, but be precise.** Never say "SMA" without the window. Write "200-day SMA", "50-day SMA", etc. Do not manufacture RSI/options facts unless they are in the input.
 - **Do not confuse evidence with edge.** A volume spike at all-time highs may be an exhaustion/attention cue, not early discovery. Say that plainly in `market.attention_reason`.
+- **Do not claim no public product data exists unless `research_evidence` is empty and `missing_evidence` shows the research pass ran.** When `research_evidence` contains product/theme sources, incorporate them into `narrative.themes`, `narrative.pending_catalysts`, `narrative.monitored_risks`, and `narrative.research_sources`.
 
 Output the JSON. Nothing else.

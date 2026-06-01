@@ -280,6 +280,43 @@ async function mockApi(page: Page): Promise<Calls> {
       }] : []);
       return;
     }
+    if (path === "/api/evidence-requirements") {
+      await json(route, [{
+        id: 8101,
+        symbol: url.searchParams.get("symbol") ?? "MSFT",
+        requirement_key: "product_research",
+        source_type: "web_research",
+        reason: "Need product/theme web research before claiming public evidence does or does not exist.",
+        priority: "high",
+        blocking_state: "satisfied",
+        attempts: 1,
+        next_retry_at: null,
+        last_error: null,
+        source_ref: { counts: { research_evidence: 2 }, fetch_actions: ["gdelt_doc_search", "bing_news_rss_search"] },
+        created_at: "2026-06-01T00:00:00Z",
+        updated_at: "2026-06-01T00:00:00Z",
+        satisfied_at: "2026-06-01T00:00:00Z",
+      }]);
+      return;
+    }
+    if (path === "/api/research-evidence") {
+      await json(route, [{
+        id: 8201,
+        symbol: url.searchParams.get("symbol") ?? "MSFT",
+        query: "AMD MI355X deployment benchmark adoption",
+        url: "https://example.com/amd-mi355x",
+        title: "AMD MI355X production deployment expands",
+        publisher: "Example Research",
+        published_at: "2026-05-15T00:00:00Z",
+        retrieved_at: "2026-06-01T00:00:00Z",
+        provider: "bing_news_rss",
+        source_type: "news_search",
+        credibility: "industry",
+        summary: "Deployment detail",
+        tags: ["AMD", "MI355X"],
+      }]);
+      return;
+    }
     if (path === "/api/decisions") {
       await json(route, []);
       return;
@@ -365,6 +402,38 @@ test("overview explains selected symbol brain status and stale source", async ({
   await expect(brain).toContainText("price");
   await expect(brain).toContainText("thesis");
   await expect(brain).toContainText("stale");
+});
+
+test("symbol routes deep-link selected ticker and keep navigation state", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/symbol/NVDA");
+
+  await expect(page.locator(".symbol-box input")).toHaveValue("NVDA");
+  await expect(page).toHaveURL(/\/symbol\/NVDA$/);
+
+  await page.locator(".wl-row").filter({ hasText: "Core" }).click();
+  await page.locator(".wl-mem").filter({ hasText: "OKTA" }).getByRole("button", { name: "OKTA" }).click();
+
+  await expect(page.locator(".symbol-box input")).toHaveValue("OKTA");
+  await expect(page).toHaveURL(/\/symbol\/OKTA$/);
+
+  await page.goBack();
+
+  await expect(page.locator(".symbol-box input")).toHaveValue("NVDA");
+  await expect(page).toHaveURL(/\/symbol\/NVDA$/);
+});
+
+test("evidence tab shows retrieved research sources", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "evidence" }).click();
+
+  const requirement = page.locator(".evidence-card").filter({ hasText: "product/theme web research" }).first();
+  await expect(requirement.locator("strong")).toHaveText("web research");
+  await expect(page.getByText("Research sources")).toBeVisible();
+  await expect(page.getByText("AMD MI355X production deployment expands")).toBeVisible();
+  await expect(page.getByText("AMD MI355X deployment benchmark adoption")).toBeVisible();
 });
 
 test("discovery tab shows candidate ranking reasons", async ({ page }) => {

@@ -84,6 +84,7 @@ FMP screener/pool       every 24h    broad investible pool
 FMP estimates           every 30m    scan universe
 CBOE crowd sentiment    every 30m    market-wide sentiment
 FMP + Massive news      every 30m    scan universe
+GDELT/Bing research     on context   selected ticker product/theme queries
 XBRL company facts      every 6h     scan universe
 EDGAR filings           every 30m    scan universe via dynamic SEC CIK map
 FRED macro              every 30m    macro series
@@ -290,8 +291,8 @@ Current gaps:
 - #128: the sweep is bounded and passive; it is not yet a full freshness SLA.
 - #136: evidence requirements are synchronized from source health, but fetch
   actions are not yet a dedicated per-source task queue.
-- #130: product/theme web retrieval is missing, so the LLM cannot fetch external
-  articles when local evidence is thin.
+- #130: product/theme web retrieval has a first GDELT/Bing-backed slice; paid
+  semantic search may still be needed if recall is too weak.
 - #93: normalized evidence items are still missing; context/thesis use raw table
   slices rather than a first-class fact layer.
 
@@ -470,6 +471,7 @@ implemented or mostly working
   research nominations
   evidence requirement rows
   context refresh
+  product/theme web research retrieval
   thesis draft/reconcile
   one open thesis per symbol
   chart intervals + SMA/RSI display
@@ -496,7 +498,7 @@ implemented first slice
 missing
   attention retry/blocked transition helper
   macro/sector brain
-  external research retrieval
+  paid semantic research provider if GDELT recall is insufficient
   analyst price targets/recommendations
   real broker/position execution state
   review packets
@@ -508,5 +510,5 @@ missing
 1. #128: make freshness orchestration real.
 2. #147: finish producer adoption for waiting/retry/blocked attention states.
 3. #143/#129: add macro and sector theses.
-4. #130 and #116: improve evidence depth for real forward views.
+4. #116 and the remaining #130 uplift: improve evidence depth for real forward views.
 5. #131/#25/#5: link decisions to real positions/fills.

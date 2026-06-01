@@ -18,6 +18,9 @@ file an issue and link it from the relevant row's "status" column.
 - **Massive Stocks Starter** ($29/mo) — kept for: news with per-article sentiment (where FMP has no equivalent)
 - **SEC EDGAR** (free) — XBRL company facts, insider transactions, 13F holdings
 - **FRED** (free) — macro economic series, credit spreads, VIX history
+- **GDELT Doc 2.0** (free, no key) + **Bing News RSS** (free, no key) —
+  fallback web/news search for product and theme evidence that vendor
+  symbol-news misses
 - **z.ai** (~cents/call) — LLM provider for cognition layer, plus the universal
   sentiment classifier (so any news source we add later — RSS, Twitter, future
   paid feeds — gets sentiment-scored without depending on a vendor's own scorer)
@@ -93,6 +96,17 @@ sources (RSS, Twitter, future paid feeds) plug into the same pipeline.
 | Additional articles (no upstream sentiment) | Wider coverage; FMP often surfaces articles Massive doesn't (Motley Fool, niche IR sites) | **FMP** | Starter | `/stable/news/stock?symbols=&limit=` returns title/text/publisher/url/publishedDate | wired — `src/ingest/fmp_news.rs` |
 | **Universal sentiment classifier** | Scores any article without an upstream sentiment score; lets future news sources plug in without re-engineering | **z.ai** (Anthropic-compat) via `src/sentiment/` module + `prompts/score-sentiment.md` | per-token (~$0.001/article) | n/a — our own module | wired — `src/sentiment/` |
 | Ticker-level intraday news sentiment aggregation (paid uplift) | When Massive's hourly news isn't fast enough | Marketaux Pro | $25–99/mo | `/v1/news/all?entities=&sentiment_gte=&sentiment_lte=` | not wired — evaluate only if free+FMP+Massive set isn't enough |
+
+## 4.5 Product / Theme Web Research
+
+This fills the gap between symbol-tagged vendor news and the operator's actual
+questions, e.g. "what public material exists on AMD MI325X/MI355X/MI400
+deployments, benchmarks, and adoption?"
+
+| Data | Why | Vendor | Tier / cost | Endpoint | Status |
+|---|---|---|---|---|---|
+| Product/theme web articles | Public evidence for roadmaps, benchmarks, deployment reports, customer adoption, and competitive claims that may not be tagged to a ticker by FMP/Massive | **GDELT Doc 2.0** + Bing News RSS fallback | free, no key | GDELT `/api/v2/doc/doc?query=&mode=ArtList&format=json`; Bing `/news/search?q=&format=rss` | wired — `py/src/stocks/research.py`, persisted to `research_evidence`, source health `web_research` |
+| Paid semantic search uplift | Better recall for niche engineering blogs, benchmark posts, and product docs | Exa / Tavily / Brave / SerpAPI | not chosen | provider abstraction planned | not wired (#130 follow-up if GDELT recall is insufficient) |
 
 ## 5. Crowd sentiment
 

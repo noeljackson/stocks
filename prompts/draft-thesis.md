@@ -26,6 +26,10 @@ The user message contains:
 - `prior_thesis` — any prior thesis we've drafted (may be null)
 - `today` — anchor date
 
+The context narrative may include `research_sources` from targeted product/theme
+web retrieval. Treat these as first-class evidence when evaluating product
+roadmaps, benchmarks, deployment claims, and customer adoption.
+
 ## Output
 
 **Strictly JSON, no prose, no markdown fences.** Match this schema exactly:
@@ -88,5 +92,6 @@ The user message contains:
 10. **If the context is substantial but no edge exists**, set `thesis_kind: "monitoring"`, `edge_present: false`, `forecast.direction: "neutral"`, `conviction_tier: "low"`, and draft useful bull/bear/conditions. The conditions should describe what would make the thesis become actionable or invalid.
 11. **Conviction tier mapping**: `high` = ≥1 strong quant-anchored invalidation + bear case actually challenges + 6-12mo horizon; `medium` = some specificity, some hedging; `low` = clearly thin or monitoring.
 12. **Instrument**: `equity` by default; `leaps` only if there's a specific catalyst with a defined window AND the bet is on a magnitude move, not a directional drift.
+13. **Do not say there is no public data about a named product/theme unless `missing_evidence` includes `product_research` or the context shows an empty/failed research retrieval pass.** If retrieved research sources are present, either use them or explain why they are not relevant.
 
 Output the JSON. Nothing else.

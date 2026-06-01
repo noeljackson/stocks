@@ -638,6 +638,56 @@ impl Store {
             .collect()
     }
 
+    pub async fn research_evidence_for_symbol(
+        &self,
+        symbol: &str,
+    ) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query(
+            r#"WITH ranked AS (
+                  SELECT DISTINCT ON (lower(title), COALESCE(published_at, retrieved_at))
+                         id, symbol, query, url, title, publisher, published_at,
+                         retrieved_at, provider, source_type, credibility, summary, tags
+                    FROM research_evidence
+                   WHERE symbol = $1
+                ORDER BY lower(title),
+                         COALESCE(published_at, retrieved_at),
+                         (url LIKE 'http://www.bing.com/%') ASC,
+                         retrieved_at DESC
+              )
+              SELECT *
+                FROM ranked
+            ORDER BY credibility = 'primary' DESC,
+                     published_at DESC NULLS LAST,
+                     retrieved_at DESC
+               LIMIT 50"#,
+        )
+        .bind(symbol)
+        .fetch_all(&self.pool)
+        .await
+        .context("research_evidence_for_symbol")?;
+        rows.into_iter()
+            .map(|r| {
+                let published_at: Option<DateTime<Utc>> = r.try_get("published_at")?;
+                let retrieved_at: DateTime<Utc> = r.try_get("retrieved_at")?;
+                Ok(serde_json::json!({
+                    "id": r.try_get::<i64, _>("id")?,
+                    "symbol": r.try_get::<String, _>("symbol")?,
+                    "query": r.try_get::<String, _>("query")?,
+                    "url": r.try_get::<String, _>("url")?,
+                    "title": r.try_get::<String, _>("title")?,
+                    "publisher": r.try_get::<Option<String>, _>("publisher")?,
+                    "published_at": published_at,
+                    "retrieved_at": retrieved_at,
+                    "provider": r.try_get::<String, _>("provider")?,
+                    "source_type": r.try_get::<String, _>("source_type")?,
+                    "credibility": r.try_get::<String, _>("credibility")?,
+                    "summary": r.try_get::<Option<String>, _>("summary")?,
+                    "tags": r.try_get::<Vec<String>, _>("tags")?,
+                }))
+            })
+            .collect()
+    }
+
     /// Recent decisions for a given symbol — joins through thesis to filter.
     pub async fn decisions_for_symbol(&self, symbol: &str) -> Result<Vec<serde_json::Value>> {
         let rows = sqlx::query(

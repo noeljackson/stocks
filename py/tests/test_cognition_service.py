@@ -60,12 +60,16 @@ async def test_run_symbol_once_releases_symbol_after_pipeline() -> None:
     assert in_flight == set()
 
 
-def test_sweep_trigger_bootstraps_missing_evidence_state_first() -> None:
-    assert _sweep_trigger(0, "thesis-id") == "evidence_state_bootstrap"
-
-
 def test_sweep_trigger_marks_open_thesis_update_when_evidence_exists() -> None:
     assert _sweep_trigger(4, "thesis-id") == "open_thesis_update_loop"
+
+
+def test_sweep_trigger_keeps_open_thesis_update_auditable_when_evidence_bootstraps() -> None:
+    assert _sweep_trigger(0, "thesis-id") == "open_thesis_update_loop"
+
+
+def test_sweep_trigger_bootstraps_missing_evidence_without_open_thesis() -> None:
+    assert _sweep_trigger(0, None) == "evidence_state_bootstrap"
 
 
 def test_sweep_trigger_falls_back_to_maintenance_without_open_thesis() -> None:

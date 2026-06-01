@@ -493,6 +493,7 @@ Open theses are on a maintenance loop:
 
 ```text
 open thesis older than freshness target
+  -> outrank no-context and broad evidence-bootstrap work in the scheduler
   -> re-evaluate against latest context
   -> no_change: update last_evaluated_at only
   -> changed: append thesis_version_history

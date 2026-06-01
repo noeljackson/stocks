@@ -320,7 +320,35 @@ async def _sweep_targets(
                   ld.at AS decline_at,
                   de.at AS due_evidence_at,
                   se.at AS evidence_satisfied_at,
-                  COALESCE(es.evidence_rows, 0) AS evidence_rows
+                  COALESCE(es.evidence_rows, 0) AS evidence_rows,
+                  CASE
+                    WHEN lot.thesis_id IS NOT NULL
+                     AND COALESCE(lot.last_evaluated_at, lot.updated_at)
+                         < now() - ($2::text || ' minutes')::interval
+                      THEN 'open_thesis_due'
+                    WHEN lc.created_at IS NULL THEN 'context_missing'
+                    WHEN lc.market = '{}'::jsonb THEN 'context_missing_market'
+                    WHEN COALESCE(es.evidence_rows, 0) = 0 THEN 'evidence_state_missing'
+                    WHEN COALESCE(ot.n, 0) = 0 AND de.at IS NOT NULL THEN 'evidence_retry_due'
+                    WHEN COALESCE(ot.n, 0) = 0
+                     AND se.at IS NOT NULL
+                     AND (ld.at IS NULL OR se.at > ld.at)
+                      THEN 'evidence_satisfied_retry'
+                    WHEN lc.created_at < now() - ($1::text || ' hours')::interval
+                      THEN 'context_stale'
+                    WHEN COALESCE(ot.n, 0) = 0
+                     AND (
+                          ld.at IS NULL
+                       OR ld.at < now() - ($3::text || ' hours')::interval
+                       OR (
+                            lc.created_at IS NOT NULL
+                        AND ld.at IS NOT NULL
+                        AND lc.created_at > ld.at
+                       )
+                     )
+                      THEN 'thesis_retry_due'
+                    ELSE 'maintenance_sweep'
+                  END AS sweep_reason
              FROM ticker t
              LEFT JOIN latest_context lc ON lc.symbol = t.symbol
              LEFT JOIN open_thesis ot ON ot.symbol = t.symbol
@@ -364,16 +392,17 @@ async def _sweep_targets(
               )
          ORDER BY
               CASE
-                WHEN lc.created_at IS NULL THEN 0
-                WHEN COALESCE(es.evidence_rows, 0) = 0 THEN 1
                 WHEN lot.thesis_id IS NOT NULL
                  AND COALESCE(lot.last_evaluated_at, lot.updated_at)
-                     < now() - ($2::text || ' minutes')::interval THEN 2
-                WHEN lc.market = '{}'::jsonb THEN 3
-                WHEN lc.created_at < now() - ($1::text || ' hours')::interval THEN 4
-                ELSE 4
+                     < now() - ($2::text || ' minutes')::interval THEN 0
+                WHEN lc.created_at IS NULL THEN 1
+                WHEN lc.market = '{}'::jsonb THEN 2
+                WHEN COALESCE(es.evidence_rows, 0) = 0 THEN 3
+                WHEN COALESCE(ot.n, 0) = 0 AND de.at IS NOT NULL THEN 4
+                WHEN lc.created_at < now() - ($1::text || ' hours')::interval THEN 5
+                ELSE 6
               END,
-              COALESCE(lot.updated_at, lc.created_at) ASC NULLS FIRST,
+              COALESCE(lot.last_evaluated_at, lot.updated_at, lc.created_at) ASC NULLS FIRST,
               t.tier ASC,
               t.added_at ASC
             LIMIT $4""",
@@ -385,10 +414,10 @@ async def _sweep_targets(
 
 
 def _sweep_trigger(evidence_rows: int, thesis_id: object | None) -> str:
-    if evidence_rows == 0:
-        return "evidence_state_bootstrap"
     if thesis_id:
         return "open_thesis_update_loop"
+    if evidence_rows == 0:
+        return "evidence_state_bootstrap"
     return "maintenance_sweep"
 
 
@@ -447,6 +476,7 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
                     "thesis_id": str(row["thesis_id"]) if row["thesis_id"] else None,
                     "thesis_at": thesis_at,
                     "thesis_evaluated_at": thesis_evaluated_at,
+                    "sweep_reason": row["sweep_reason"],
                 },
             )
 
@@ -455,7 +485,7 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
             run_symbol,
         )
         if open_theses > 0:
-            log.info("cognition sweep: %s refreshed existing thesis context", symbol)
+            log.info("cognition sweep: %s reconciled existing thesis", symbol)
 
 
 async def _sweep_loop(pool: asyncpg.Pool) -> None:

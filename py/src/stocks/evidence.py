@@ -458,7 +458,29 @@ async def load_source_health(pool: asyncpg.Pool) -> dict[str, dict]:
     return out
 
 
-def _acquisition_state(requirement_key: str, source_health: dict[str, dict] | None) -> dict:
+def _acquisition_state(
+    requirement_key: str,
+    source_health: dict[str, dict] | None,
+    evidence_counts: dict[str, object] | None = None,
+) -> dict:
+    if requirement_key == "product_research":
+        last_run_at = _parse_dt((evidence_counts or {}).get("research_run_last_at"))
+        if last_run_at is None:
+            return {
+                "blocking_state": "missing",
+                "state_reason": "source_not_seen_for_symbol",
+                "last_error": None,
+                "retry_after_at": None,
+                "source_health": [],
+            }
+        return {
+            "blocking_state": "missing",
+            "state_reason": "source_checked_no_relevant_rows",
+            "last_error": None,
+            "retry_after_at": None,
+            "source_health": [],
+        }
+
     sources = SOURCE_HEALTH_BY_REQUIREMENT.get(requirement_key, [])
     rows = [source_health[s] for s in sources if source_health and s in source_health]
     if not rows:
@@ -533,7 +555,7 @@ def assess_evidence_requirements(
         if satisfied:
             continue
         spec = EVIDENCE_REQUIREMENTS[key]
-        acquisition = _acquisition_state(key, source_health)
+        acquisition = _acquisition_state(key, source_health, evidence_counts)
         missing.append(
             {
                 "requirement_key": key,

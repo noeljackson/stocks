@@ -1784,9 +1784,31 @@ impl Store {
                          dc.id, dc.symbol, dc.signal_name, dc.signal_value, dc.domain_fit,
                          dc.proposed_tier, dc.reasoning, dc.proposed_at,
                          COALESCE(dcl.proposed_lists, '[]'::jsonb) AS proposed_lists,
-                         dcl.suggested_new_list
+                         dcl.suggested_new_list,
+                         COALESCE(parent.parent_themes, '[]'::jsonb) AS parent_themes,
+                         parent.parent_theme_fit
                     FROM discovery_candidate dc
                     LEFT JOIN discovery_classification dcl ON dcl.candidate_id = dc.id
+                    LEFT JOIN LATERAL (
+                        SELECT max(COALESCE(btt.conviction, 50))::double precision
+                                  AS parent_theme_fit,
+                               jsonb_agg(
+                                   jsonb_build_object(
+                                       'key', bt.key,
+                                       'name', bt.name,
+                                       'scope', bt.scope,
+                                       'role', btt.role,
+                                       'conviction', btt.conviction,
+                                       'rationale', btt.rationale
+                                   )
+                                   ORDER BY COALESCE(btt.conviction, 0) DESC, bt.name
+                               ) AS parent_themes
+                          FROM brain_thesis_ticker btt
+                          JOIN brain_thesis bt ON bt.id = btt.brain_thesis_id
+                         WHERE btt.symbol = dc.symbol
+                           AND bt.active = true
+                           AND bt.scope IN ('sector', 'theme')
+                    ) parent ON true
                    WHERE dc.status = 'proposed'
                 ORDER BY dc.symbol, dc.signal_name, dc.proposed_at DESC
                ) latest
@@ -1801,6 +1823,8 @@ impl Store {
             .map(|r| {
                 let signal_value: Option<f64> = r.try_get("signal_value").ok();
                 let proposed_lists: serde_json::Value = r.try_get("proposed_lists")?;
+                let parent_themes: serde_json::Value = r.try_get("parent_themes")?;
+                let parent_theme_fit: Option<f64> = r.try_get("parent_theme_fit").ok().flatten();
                 let suggested_new_list = r
                     .try_get::<Option<serde_json::Value>, _>("suggested_new_list")
                     .unwrap_or(None);
@@ -1809,6 +1833,7 @@ impl Store {
                     &r.try_get::<String, _>("signal_name")?,
                     signal_value,
                     r.try_get::<Option<f64>, _>("domain_fit").ok().flatten(),
+                    parent_theme_fit,
                     r.try_get::<i32, _>("proposed_tier").unwrap_or(2),
                     &proposed_lists,
                     suggested_new_list.is_some(),
@@ -1822,6 +1847,8 @@ impl Store {
                         "signal_name": r.try_get::<String, _>("signal_name")?,
                         "signal_value": signal_value,
                         "domain_fit": r.try_get::<Option<f64>, _>("domain_fit").ok().flatten(),
+                        "parent_theme_fit": parent_theme_fit,
+                        "parent_themes": parent_themes,
                         "proposed_tier": r.try_get::<i32, _>("proposed_tier").unwrap_or(2),
                         "reasoning": r.try_get::<Option<String>, _>("reasoning").ok(),
                         "proposed_at": proposed_at,

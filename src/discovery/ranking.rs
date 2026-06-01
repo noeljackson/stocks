@@ -12,6 +12,7 @@ pub fn rank_candidate(
     signal_name: &str,
     signal_value: Option<f64>,
     domain_fit: Option<f64>,
+    parent_theme_fit: Option<f64>,
     proposed_tier: i32,
     proposed_lists: &Value,
     has_suggested_new_list: bool,
@@ -38,6 +39,22 @@ pub fn rank_candidate(
             reasons.push(format!("strong theme fit {}", domain_fit.round() as i64));
         } else if signal_name == "research_nomination" && domain_fit >= 60.0 {
             reasons.push(format!("theme fit {}", domain_fit.round() as i64));
+        }
+    }
+
+    if let Some(parent_theme_fit) = parent_theme_fit {
+        let theme_points = (parent_theme_fit.clamp(0.0, 100.0) / 100.0) * 12.0;
+        score += theme_points;
+        if parent_theme_fit >= 70.0 {
+            reasons.push(format!(
+                "active parent theme fit {}",
+                parent_theme_fit.round() as i64
+            ));
+        } else if parent_theme_fit >= 50.0 {
+            reasons.push(format!(
+                "parent theme fit {}",
+                parent_theme_fit.round() as i64
+            ));
         }
     }
 
@@ -147,6 +164,7 @@ mod tests {
             "estimate_revision_velocity",
             Some(4.0),
             Some(92.0),
+            None,
             1,
             &serde_json::json!([{"confidence": "high"}]),
             false,
@@ -167,6 +185,7 @@ mod tests {
             "volume_anomaly",
             Some(1.5),
             Some(40.0),
+            None,
             3,
             &serde_json::json!([]),
             false,
@@ -182,6 +201,7 @@ mod tests {
             "research_nomination",
             None,
             Some(85.0),
+            None,
             2,
             &serde_json::json!([{"confidence": "medium"}]),
             true,
@@ -198,6 +218,7 @@ mod tests {
             "research_nomination",
             Some(4.0),
             Some(88.0),
+            None,
             1,
             &serde_json::json!([]),
             false,
@@ -206,6 +227,7 @@ mod tests {
             "research_nomination",
             Some(2.0),
             Some(35.0),
+            None,
             3,
             &serde_json::json!([]),
             false,
@@ -215,5 +237,24 @@ mod tests {
         assert!(strong.score > weak.score + 20.0);
         assert!(strong.reasons.contains(&"evidence ready".to_string()));
         assert!(strong.reasons.contains(&"strong theme fit 88".to_string()));
+    }
+
+    #[test]
+    fn active_parent_theme_fit_boosts_rank() {
+        let got = rank_candidate(
+            "research_nomination",
+            Some(3.0),
+            Some(55.0),
+            Some(82.0),
+            2,
+            &serde_json::json!([]),
+            false,
+        );
+
+        assert_eq!(got.bucket, "high");
+        assert!(
+            got.reasons
+                .contains(&"active parent theme fit 82".to_string())
+        );
     }
 }

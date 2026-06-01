@@ -188,7 +188,7 @@ Current ownership:
 
 ```text
 source_task action                owner
-fmp_price_backfill                Rust ingest fmp_price loop
+fmp_price_backfill                Rust ingest fmp_price loop claims/completes
 fmp_news                          Rust ingest news loop
 massive_news                      Rust ingest news loop
 llm_sentiment_scoring             Rust ingest news loop scorer
@@ -449,10 +449,10 @@ Current gaps:
 - #128: the sweep is still split across source loops and cognition, but the
   expensive source loops now use a tiered deep-research universe so active names
   are no longer starved behind the broad screener pool.
-- #128: provider-wide retry gates now pause source tasks, but Rust market-data
-  adapters still write source-health summaries instead of claiming every
-  source_task row directly. Due source tasks do, however, now move their symbols
-  to the front of the expensive ingest scan universe.
+- #128: provider-wide retry gates now pause source tasks, and due source tasks
+  move their symbols to the front of the expensive ingest scan universe. The
+  FMP price loop now claims/completes `fmp_price_backfill` tasks directly; the
+  remaining Rust market-data adapters still need the same ownership path.
 - #136: evidence requirements and source tasks are synchronized from source
   health; Rust source loops still report through source health instead of
   claiming every `source_task` row directly.
@@ -675,12 +675,13 @@ implemented first slice
   satisfied source_task rows requeue when freshness is due
   provider-wide rate-limit pauses are applied to all matching source tasks
   due source_task symbols are prioritized by expensive ingest loops
+  FMP price loop claims/completes fmp_price_backfill source tasks
   active ticker evidence sync bootstraps newly added requirement keys
   Python source_task worker claims and runs due web research tasks
   cognition sweep refreshes open evidence rows before choosing targets
 
 missing
-  Rust market-data loops claim/complete source_task rows directly
+  remaining Rust market-data loops claim/complete source_task rows directly
   full producer adoption for attention retry/blocked transitions
   macro/sector thesis generation and scheduled re-evaluation
   paid semantic research provider if GDELT recall is insufficient

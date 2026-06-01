@@ -179,7 +179,8 @@ Implemented first slice:
 ```text
 ready_for_review -> resolved
 ready_for_review -> dismissed
-ready_for_review -> operator_deferred --hidden until resurface_at--> visible again
+ready_for_review -> operator_deferred --hidden until resurface_at--> ready_for_review
+any open state -> canonical transition endpoint -> history row
 ```
 
 Full target state machine:
@@ -210,8 +211,8 @@ source_ref
 
 Current gaps:
 
-- #147: retry/waiting transitions still need a canonical helper for services
-  that move long-running work between `evaluating`, `waiting_on_data`, and
+- #147: backend transition helpers exist; remaining work is broader producer
+  adoption for long-running work between `evaluating`, `waiting_on_data`, and
   `blocked`.
 - #89: each attention item should open a review packet with the same resolve
   grammar.
@@ -490,13 +491,15 @@ implemented first slice
   selected-symbol brain status and next action
   Defer 7d attention snooze/resurface
   attention producer initial state/owner adoption
+  attention transition API/helper
+  attention UI grouped by state/owner
   transition history for attention resolutions
   open-thesis last_evaluated_at freshness loop without no-change version churn
   evidence requirements carry source-health acquisition state
   cognition sweep refreshes open evidence rows before choosing targets
 
 missing
-  attention retry/blocked transition helper
+  full producer adoption for attention retry/blocked transitions
   macro/sector brain
   paid semantic research provider if GDELT recall is insufficient
   analyst price targets/recommendations

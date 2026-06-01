@@ -76,6 +76,10 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/attention", get(list_attention_items))
         .route("/api/attention/{id}/dismiss", post(dismiss_attention_item))
         .route(
+            "/api/attention/{id}/transition",
+            post(transition_attention_item),
+        )
+        .route(
             "/api/symbols/{symbol}/refresh-context",
             post(trigger_refresh_context),
         )
@@ -1461,6 +1465,21 @@ struct DismissReq {
     reason: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct AttentionTransitionReq {
+    to_state: String,
+    #[serde(default)]
+    owner: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    next_retry_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    resurface_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    source_ref: Option<serde_json::Value>,
+}
+
 async fn dismiss_attention_item(
     State(gw): State<Arc<Gateway>>,
     Path(id): Path<i64>,
@@ -1471,6 +1490,52 @@ async fn dismiss_attention_item(
         Ok(false) => (StatusCode::NOT_FOUND, "not open").into_response(),
         Err(e) => {
             warn!(id, error = %e, "dismiss_attention failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn transition_attention_item(
+    State(gw): State<Arc<Gateway>>,
+    Path(id): Path<i64>,
+    Json(req): Json<AttentionTransitionReq>,
+) -> impl IntoResponse {
+    let to_state = req.to_state.trim();
+    if !crate::attention::is_valid_fsm_state(to_state) {
+        return (StatusCode::BAD_REQUEST, "invalid attention state").into_response();
+    }
+    let owner = req
+        .owner
+        .as_deref()
+        .unwrap_or_else(|| crate::attention::default_owner_for_state(to_state));
+    if !crate::attention::is_valid_owner(owner) {
+        return (StatusCode::BAD_REQUEST, "invalid attention owner").into_response();
+    }
+    let resurface_at =
+        if to_state == crate::attention::fsm::OPERATOR_DEFERRED && req.resurface_at.is_none() {
+            Some(chrono::Utc::now() + chrono::Duration::days(7))
+        } else {
+            req.resurface_at
+        };
+    let reason = req.reason.as_deref().unwrap_or(to_state).trim().to_string();
+    let source_ref = req.source_ref.unwrap_or_else(|| json!({ "source": "api" }));
+    match gw
+        .store
+        .transition_attention(
+            id,
+            to_state,
+            owner,
+            &reason,
+            req.next_retry_at,
+            resurface_at,
+            source_ref,
+        )
+        .await
+    {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, "not open").into_response(),
+        Err(e) => {
+            warn!(id, error = %e, "transition_attention failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }

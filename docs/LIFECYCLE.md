@@ -146,7 +146,7 @@ The visible attention queue is not "all rows with `status = open`." It is:
 ```text
 open attention
 minus operator_deferred rows whose resurface_at is still in the future
-plus operator_deferred rows once resurface_at is due
+plus resurfaced rows moved back to ready_for_review once resurface_at is due
 ```
 
 This makes `Defer 7d` a real snooze instead of a terminal dismissal. Deferred
@@ -158,6 +158,23 @@ creating attention. Resolvers must close attention through a transition path
 that updates the coarse `status`, moves `fsm_state` to `resolved` or
 `dismissed`, and appends `attention_state_history`. Updating `status` alone is
 ambiguous and should be treated as a bug.
+
+The canonical manual transition endpoint is:
+
+```text
+POST /api/attention/:id/transition
+{
+  "to_state": "waiting_on_data | ready_for_review | operator_deferred | actionable | resolved | dismissed | blocked",
+  "owner": "system | operator | source | cognition | risk",
+  "reason": "short transition reason",
+  "next_retry_at": "optional timestamp",
+  "resurface_at": "optional timestamp",
+  "source_ref": { "links": "evidence, source health, candidate, thesis, or decision refs" }
+}
+```
+
+If `to_state = operator_deferred` and no `resurface_at` is supplied, the API
+defaults to a seven-day resurface.
 
 ## Discovery Composition
 

@@ -3,6 +3,7 @@ import { expect, type Page, type Route, test } from "@playwright/test";
 type Calls = {
   candleUrls: URL[];
   confirmBody: unknown | null;
+  decisionBody: unknown | null;
   addedSymbols: string[];
 };
 
@@ -54,7 +55,7 @@ async function json(route: Route, body: unknown, status = 200) {
 }
 
 async function mockApi(page: Page): Promise<Calls> {
-  const calls: Calls = { candleUrls: [], confirmBody: null, addedSymbols: [] };
+  const calls: Calls = { candleUrls: [], confirmBody: null, decisionBody: null, addedSymbols: [] };
   let attentionOpen = true;
   const watchlistMembers: MockWatchlistMember[] = [{
     watchlist_id: "wl-core",
@@ -432,6 +433,42 @@ async function mockApi(page: Page): Promise<Calls> {
       }]);
       return;
     }
+    if (path === "/api/positions") {
+      const symbol = url.searchParams.get("symbol");
+      await json(route, symbol === "OKTA" ? [{
+        position_id: "9b496f4d-cbb8-4bb5-bd41-9766f8f962f2",
+        thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+        symbol: "OKTA",
+        side: "long",
+        instrument: "equity",
+        qty: 12,
+        avg_price: 88,
+        delta_notional: 1056,
+        premium_at_risk: 0,
+        opened_at: "2026-06-01T00:00:00Z",
+        closed_at: null,
+        realized_pnl: null,
+        unrealized_pnl: 96,
+        latest_price: 96,
+        latest_price_at: "2026-06-01T00:00:00Z",
+        fill_count: 1,
+        thesis_state: "position_open",
+        thesis_direction: "up",
+      }] : []);
+      return;
+    }
+    if (path === "/api/decisions" && request.method() === "POST") {
+      calls.decisionBody = await request.postDataJSON();
+      await json(route, {
+        decision_id: "8b4c3f5b-8288-49ff-9282-b4398abe85ba",
+        ticket_id: "02543ae2-2270-4791-a8b3-e49c5fbafec4",
+        position_id: "9b496f4d-cbb8-4bb5-bd41-9766f8f962f2",
+        fill_id: "ecae97a9-8719-48f0-b6a7-b74c85324173",
+        risk_result: { status: "pass", veto: false, reasons: [], warnings: [] },
+        transitioned_to: null,
+      });
+      return;
+    }
     if (path === "/api/decisions") {
       await json(route, []);
       return;
@@ -628,6 +665,41 @@ test("watchlist rows show thesis state and direction", async ({ page }) => {
 
   await expect(row).toContainText("forming");
   await expect(row).toContainText("bull");
+});
+
+test("decisions tab shows positions and posts manual exit fills", async ({ page }) => {
+  const calls = await mockApi(page);
+  await page.goto("/");
+
+  await page.locator(".symbol-box input").fill("OKTA");
+  await page.locator(".symbol-box input").press("Enter");
+  await page.locator(".right").getByRole("button", { name: "decisions" }).click();
+
+  const position = page.locator(".positions li").filter({ hasText: "12" });
+  await expect(position).toContainText("long");
+  await expect(position).toContainText("@ $88.00");
+  await expect(position).toContainText("$96");
+
+  await position.getByRole("button", { name: "exit ↓" }).click();
+  await expect(page.getByLabel("Action")).toHaveValue("exit");
+  await expect(page.getByLabel("Qty")).toHaveValue("12");
+  await page.getByLabel("Fill price").fill("97");
+  await page.locator(".decform").getByRole("button", { name: "Submit" }).click();
+
+  await expect.poll(() => calls.decisionBody).toMatchObject({
+    thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+    action: "exit",
+    user_choice: "confirmed",
+    sizing: { side: "long", instrument: "equity", thesis_direction: "up" },
+    manual_fill: {
+      position_id: "9b496f4d-cbb8-4bb5-bd41-9766f8f962f2",
+      side: "long",
+      instrument: "equity",
+      qty: 12,
+      price: 97,
+      fees: 0,
+    },
+  });
 });
 
 test("discovery pool rows show thesis state and direction", async ({ page }) => {

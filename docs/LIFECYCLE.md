@@ -78,7 +78,16 @@ discovery_pool                              active ticker/watchlist universe
          enter/exit/skip/resize + side/instrument
               │
               ▼
+         trade_ticket
+         intended size + risk result
+              │
+              ▼
+         manual fill / broker fill
+         append-only position_fill
+              │
+              ▼
            position
+         actual exposure, basis, P/L
               │
               ▼
            outcome
@@ -122,6 +131,42 @@ attention.
 | `context_stale` | staler | A thesis depends on stale context. | refresh context |
 | `invalidation_hit` | evaluator/staler | Evidence may refute a thesis condition. | review transition/decision |
 | `outcome_ready` | reflection | A forecast horizon is ready to score. | score outcome |
+
+## Decision And Execution Contract
+
+Decisions and executions are separate concepts:
+
+```text
+decision
+  human says enter, exit, skip, resize, confirm, reject, or defer
+
+trade_ticket
+  proposed expression of the decision
+  thesis_id, symbol, side, instrument, intended_size, risk_result
+
+position_fill
+  actual execution fact
+  manual now, broker sync later
+  append-only fill_id, position_id, qty, price, fees, filled_at
+
+position
+  current exposure state derived from fills
+  basis, delta_notional, premium_at_risk, opened_at, closed_at, realized_pnl
+```
+
+The key invariant is:
+
+```text
+thesis actionable
+  -> decision may create a proposed/accepted ticket
+  -> only an actual fill creates a position
+  -> only after that fill may the thesis move to position_open
+```
+
+This matters because forecast quality, decision quality, and trade quality are
+different. A good thesis that was skipped, a bad thesis that was rejected, and
+a good thesis that was filled at a bad price must remain distinguishable in
+reflection.
 
 ### Attention State Machine
 

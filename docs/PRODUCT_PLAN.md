@@ -68,6 +68,12 @@ attention_item
 decision
   human action/inaction recorded at a point in time
 
+trade_ticket
+  proposed expression with side, instrument, intended size, and risk result
+
+position_fill
+  actual execution record; manual first, broker sync later
+
 position
   actual exposure tied to a thesis
 
@@ -84,6 +90,7 @@ no data gap without retry/acquisition state
 no LLM claim without evidence references
 no operator interruption without a needed judgment
 no trade decision without risk context
+no position_open thesis without an actual fill
 no outcome without preserving what was known at decision time
 ```
 
@@ -195,6 +202,12 @@ Wheat thesis: supply shock may support crop prices and food inflation
                             |
                             v
                  +----------------------+
+                 | ticket + fill        |
+                 | manual/broker exec   |
+                 +----------+-----------+
+                            |
+                            v
+                 +----------------------+
                  | position + outcome   |
                  +----------+-----------+
                             |
@@ -207,6 +220,33 @@ Wheat thesis: supply shock may support crop prices and food inflation
 Every loop must be observable. The UI should show the current state, owner,
 freshness, next retry, and reason instead of making the operator infer why
 nothing happened.
+
+## Execution Loop
+
+The system is not useful if it only records theoretical decisions. It must know
+whether the operator actually owns exposure, at what basis, and against which
+thesis.
+
+```text
+actionable thesis
+  -> thesis_actionable attention
+  -> operator opens decision drawer
+  -> side + instrument + intended exposure
+  -> deterministic risk evaluation against open positions and portfolio frame
+  -> trade_ticket
+  -> manual fill now / broker fill later
+  -> append-only position_fill
+  -> position current state
+  -> risk overlay uses real open exposure
+  -> evaluator watches invalidation and fulfillment conditions
+  -> exit decision + fill
+  -> closed position
+  -> outcome/reflection separates thesis quality from trade quality
+```
+
+Manual fills are the first bridge. Broker sync is still the target execution
+source, but the product must already behave like a real book: filled entries
+create positions, open positions show basis and P/L, and exits close exposure.
 
 ## Scheduler And Acquisition
 

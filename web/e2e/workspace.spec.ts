@@ -96,6 +96,74 @@ async function mockApi(page: Page): Promise<Calls> {
       await json(route, { predictions_total: 3, outcomes_scored: 0, mean_brier: null, mean_lead_time_days: null, median_lead_time_days: null });
       return;
     }
+    if (path === "/api/brain") {
+      await json(route, {
+        as_of: "2026-06-01T00:00:00Z",
+        market_state: { regime: "neutral", capitulation: false, indicators: {}, as_of: "2026-06-01T00:00:00Z" },
+        macro: {
+          id: "d29d2f1d-7467-45ca-9f1e-1243923c94aa",
+          scope: "macro",
+          key: "macro_regime",
+          name: "Macro Regime",
+          state: "forming",
+          direction: "neutral",
+          summary: "Macro posture is neutral until breadth and rates confirm a stronger view.",
+          core_claim: "Ticker conviction should respect the top-down risk regime.",
+          why_now: null,
+          evidence: [],
+          invalidation_conditions: [],
+          beneficiaries: [],
+          losers: [],
+          open_questions: ["Refresh FRED macro series"],
+          missing_evidence: ["fred_macro", "market_breadth"],
+          source_ref: {},
+          freshness_target_minutes: 720,
+          last_evaluated_at: null,
+          version: 1,
+          created_at: "2026-06-01T00:00:00Z",
+          updated_at: "2026-06-01T00:00:00Z",
+          freshness: "missing",
+          tickers: [],
+          watchlists: [],
+          nominations: [],
+          latest_changes: [],
+        },
+        sectors: [{
+          id: "b5e8dffa-0af8-4247-a6f3-100c668545d8",
+          scope: "theme",
+          key: "ai_compute_infrastructure",
+          name: "AI Compute Infrastructure",
+          state: "forming",
+          direction: "mixed",
+          summary: "AI capex remains the parent theme, but ticker selection must separate leaders from challengers.",
+          core_claim: "The edge is finding where adoption evidence diffuses slower than price consensus.",
+          why_now: "Product/customer adoption evidence is still arriving.",
+          evidence: [],
+          invalidation_conditions: [],
+          beneficiaries: ["NVDA", "AMD", "MU"],
+          losers: [],
+          open_questions: ["Which challengers have real customer traction?"],
+          missing_evidence: ["theme_estimate_revision_breadth"],
+          source_ref: {},
+          freshness_target_minutes: 720,
+          last_evaluated_at: null,
+          version: 1,
+          created_at: "2026-06-01T00:00:00Z",
+          updated_at: "2026-06-01T00:00:00Z",
+          freshness: "missing",
+          tickers: [
+            { symbol: "NVDA", role: "leader", rationale: "Accelerator platform leader.", conviction: 70, thesis_state: null, thesis_direction: null, open_theses: 0 },
+            { symbol: "OKTA", role: "candidate", rationale: "Mock linked row.", conviction: 50, thesis_state: "forming", thesis_direction: "up", open_theses: 1 },
+          ],
+          watchlists: [{ id: "wl-core", name: "Core", color: "#89b4fa", is_system: false }],
+          nominations: [{ candidate_id: 44, symbol: "NVDA", signal_name: "volume_anomaly", signal_value: 2.4, reasoning: "2.4x volume", proposed_at: "2026-06-01T00:00:00Z" }],
+          latest_changes: [],
+        }],
+        contradictions: [],
+        summary: { active_theses: 2, stale_or_missing: 2, open_nominations: 1 },
+      });
+      return;
+    }
     if (path === "/api/watchlists" && request.method() === "GET") {
       await json(route, [{ id: "wl-core", name: "Core", description: null, color: "#89b4fa", is_system: false, created_at: "2026-01-01T00:00:00Z", member_count: watchlistMembers.length }]);
       return;
@@ -420,6 +488,23 @@ test("overview explains selected symbol brain status and stale source", async ({
   await expect(brain).toContainText("stale");
 });
 
+test("brain tab shows macro and theme theses with linked tickers", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "brain" }).click();
+
+  await expect(page.locator(".brain-topline")).toContainText("2 active");
+  await expect(page.locator(".macro-theme")).toContainText("Macro Regime");
+  await expect(page.locator(".macro-theme")).toContainText("fred_macro");
+
+  const theme = page.locator(".brain-theme").filter({ hasText: "AI Compute Infrastructure" });
+  await expect(theme).toContainText("AI capex remains the parent theme");
+  await expect(theme).toContainText("Core");
+  await expect(theme.getByRole("button", { name: /NVDA leader/ })).toBeVisible();
+  await expect(theme.getByRole("button", { name: /OKTA/ })).toContainText("forming");
+});
+
 test("symbol routes deep-link selected ticker and keep navigation state", async ({ page }) => {
   await mockApi(page);
   await page.goto("/symbol/NVDA");
@@ -488,7 +573,7 @@ test("watchlist add form posts ticker and refreshes members", async ({ page }) =
   await page.locator(".wl-add-sym input").press("Enter");
 
   await expect.poll(() => calls.addedSymbols).toContainEqual("NVDA");
-  await expect(page.locator(".wl-members").filter({ hasText: "NVDA" })).toBeVisible();
+  await expect(page.locator(".wl-mem").filter({ hasText: "NVDA" }).first()).toBeVisible();
 });
 
 test("watchlist rows show thesis state and direction", async ({ page }) => {

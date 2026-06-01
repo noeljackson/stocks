@@ -8,6 +8,10 @@ operator only when judgment is required.
 ## Top-Level Brain
 
 ```text
+                macro + sector/theme theses
+                brain_thesis + mappings
+                         |
+                         v
                 broad market + company data
                          |
                          v
@@ -63,6 +67,28 @@ operator only when judgment is required.
 The invariant is: every active ticker should either have a current thesis, a
 visible reason why no thesis exists, or an evidence/source state explaining what
 the system is waiting for.
+
+The top-down layer is now first-class state:
+
+```text
+brain_thesis
+  macro thesis
+  sector/theme theses
+  freshness + missing evidence + invalidation conditions
+        |
+        +-> brain_thesis_ticker
+        |     role: leader/challenger/supplier/customer/beneficiary/hedge/candidate
+        |
+        +-> brain_thesis_watchlist
+              optional explicit list mapping
+```
+
+`GET /api/brain` reads those records and shows the operator the current macro
+view, active sector/theme views, linked tickers, implied watchlists, queued
+discovery nominations, stale/missing parent evidence, and simple
+macro/sector-direction contradictions. Ticker thesis drafting receives the
+linked parent theses as input, so a symbol-level view can inherit, reject, or
+explicitly contradict the parent theme instead of guessing in isolation.
 
 ## Data Acquisition Loops
 
@@ -167,7 +193,11 @@ What works now:
 
 Current gaps:
 
-- #143/#129: macro and sector theses do not yet steer discovery ranking.
+- #129: macro and sector theses exist as records, but no cognition service is
+  generating/updating them yet.
+- Discovery ranking reads watchlist/domain/signal quality today; it still needs
+  a theme-fit score from `brain_thesis_ticker` and active parent-thesis
+  direction.
 
 ## Attention Loop
 
@@ -454,7 +484,9 @@ confirm / defer / reject / decide
 
 Current gaps:
 
-- #143: Brain tab for macro and sector theses.
+- #143 first slice: Brain tab exists with macro/sector theses, mappings,
+  freshness, nominations, and contradictions. Remaining work is the cognition
+  service that updates those parent theses from live macro/sector evidence.
 - #89: review packet pattern for every attention-resolution flow.
 - #126: explicit workflow rail.
 - #82: terminology still needs simplification across UI/docs.
@@ -488,6 +520,9 @@ partially working
   decision/outcome validation
 
 implemented first slice
+  Brain tab for macro and sector/theme theses
+  first-class brain_thesis records and ticker/watchlist mappings
+  ticker thesis prompt receives linked parent theses
   selected-symbol brain status and next action
   Defer 7d attention snooze/resurface
   attention producer initial state/owner adoption
@@ -500,7 +535,7 @@ implemented first slice
 
 missing
   full producer adoption for attention retry/blocked transitions
-  macro/sector brain
+  macro/sector thesis generation and scheduled re-evaluation
   paid semantic research provider if GDELT recall is insufficient
   analyst price targets/recommendations
   real broker/position execution state

@@ -74,6 +74,31 @@ async def _load_prior_thesis(pool: asyncpg.Pool, symbol: str) -> dict | None:
     return {k: row[k] for k in row.keys()}
 
 
+async def _load_parent_theses(pool: asyncpg.Pool, symbol: str) -> list[dict]:
+    rows = await pool.fetch(
+        """SELECT bt.scope, bt.key, bt.name, bt.state, bt.direction,
+                  bt.summary, bt.core_claim, bt.why_now,
+                  bt.invalidation_conditions, bt.missing_evidence,
+                  bt.open_questions, bt.last_evaluated_at,
+                  btt.role, btt.rationale, btt.conviction
+             FROM brain_thesis_ticker btt
+             JOIN brain_thesis bt ON bt.id = btt.brain_thesis_id
+            WHERE btt.symbol = $1
+              AND bt.active = true
+         ORDER BY CASE bt.scope WHEN 'macro' THEN 0 WHEN 'sector' THEN 1 ELSE 2 END,
+                  COALESCE(btt.conviction, 0) DESC,
+                  bt.name""",
+        symbol,
+    )
+    out = []
+    for row in rows:
+        item = {k: row[k] for k in row.keys()}
+        if item.get("last_evaluated_at"):
+            item["last_evaluated_at"] = item["last_evaluated_at"].isoformat()
+        out.append(item)
+    return out
+
+
 def _extract_json(content: str) -> dict:
     s = content.strip()
     try:
@@ -518,6 +543,7 @@ async def draft(symbol: str) -> dict:
                     ),
                 }
         prior = await _load_prior_thesis(pool, symbol)
+        parent_theses = await _load_parent_theses(pool, symbol)
         missing_evidence = await load_open_evidence_requirements(pool, symbol)
         if prior is not None:
             log.info(
@@ -538,7 +564,8 @@ async def draft(symbol: str) -> dict:
                 "today": today,
                 "context": context,
                 "missing_evidence": missing_evidence,
-                "cluster_thesis": None,  # populated when #1 cluster-thesis work lands
+                "parent_theses": parent_theses,
+                "cluster_thesis": parent_theses[0]["summary"] if parent_theses else None,
                 "prior_thesis": _summarize_prior(prior) if prior else None,
             },
             default=str,

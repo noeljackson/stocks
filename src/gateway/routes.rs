@@ -376,6 +376,7 @@ async fn get_candles(
             )
                 .into_response();
         }
+        let mut fetch_error: Option<String> = None;
         match gw.store.latest_intraday_bar_ts(&sym, native).await {
             Ok(latest) => {
                 let stale = latest
@@ -390,6 +391,7 @@ async fn get_candles(
                         }
                         Err(e) => {
                             warn!(symbol = %sym, interval = native, error = %e, "fetch intraday bars failed");
+                            fetch_error = Some(e.to_string());
                         }
                     }
                 }
@@ -403,7 +405,21 @@ async fn get_candles(
             .intraday_candles_for(&sym, native, lookback_days, interval.bucket_minutes)
             .await
         {
-            Ok(rows) => return (StatusCode::OK, Json(rows)).into_response(),
+            Ok(rows) => {
+                if rows.is_empty() {
+                    if let Some(e) = fetch_error {
+                        return (
+                            StatusCode::BAD_GATEWAY,
+                            format!(
+                                "{intv} bars unavailable from FMP for {sym}: {e}",
+                                intv = interval.label,
+                            ),
+                        )
+                            .into_response();
+                    }
+                }
+                return (StatusCode::OK, Json(rows)).into_response();
+            }
             Err(e) => {
                 warn!(symbol = %sym, interval = native, error = %e, "get intraday candles failed");
                 return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();

@@ -954,10 +954,36 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
             })
         })
         .collect();
+        let source_tasks_by_state: Vec<serde_json::Value> = sqlx::query(
+            r#"SELECT state, COUNT(*) AS n
+                 FROM source_task
+             GROUP BY state ORDER BY n DESC, state"#,
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            json!({
+                "state": r.try_get::<String, _>("state").unwrap_or_default(),
+                "count": r.try_get::<i64, _>("n").unwrap_or(0),
+            })
+        })
+        .collect();
+        let source_tasks_due: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*) FROM source_task
+                WHERE state IN ('queued', 'no_rows', 'failed', 'rate_limited', 'blocked')
+                  AND due_at <= now()"#,
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
         json!({
             "open_requirements": open,
             "by_state": by_state,
             "by_reason": by_reason,
+            "source_tasks_due": source_tasks_due,
+            "source_tasks_by_state": source_tasks_by_state,
         })
     };
 

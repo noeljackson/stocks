@@ -127,15 +127,20 @@ watch. The target brain loop is:
 ```text
 source due
   -> respect vendor limiter
+  -> create/update source_task rows
   -> fetch available rows
   -> persist source_health
   -> update evidence_requirement
   -> publish events for downstream loops
 ```
 
-Open gap: #128 should become the canonical freshness orchestrator. It should
-decide what is stale, what source is safe to call next, and when to slow down
-because a vendor is rate limiting.
+`source_task` is the active work queue behind evidence requirements. A missing
+requirement says what is needed; source tasks say which provider/action should
+run, when it is due, whether it is rate-limited, and what retry state applies.
+
+Open gap: #128 should make source tasks the canonical freshness orchestrator.
+It should decide what is stale, what source is safe to call next, and when to
+slow down because a vendor is rate limiting.
 
 ## Discovery Loop
 
@@ -534,9 +539,11 @@ implemented first slice
   transition history for attention resolutions
   open-thesis last_evaluated_at freshness loop without no-change version churn
   evidence requirements carry source-health acquisition state
+  source_task rows track acquisition action/state/due time
   cognition sweep refreshes open evidence rows before choosing targets
 
 missing
+  source_task workers that actively drive every provider fetch
   full producer adoption for attention retry/blocked transitions
   macro/sector thesis generation and scheduled re-evaluation
   paid semantic research provider if GDELT recall is insufficient

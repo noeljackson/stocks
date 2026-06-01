@@ -1,7 +1,7 @@
 import datetime as dt
 
 from stocks.context_maintainer import _build_price_snapshot
-from stocks.evidence import assess_evidence_requirements
+from stocks.evidence import assess_evidence_requirements, build_source_tasks
 
 
 def _bar(day: int, close: float, volume: float = 100.0):
@@ -173,6 +173,69 @@ def test_assess_evidence_requirements_tracks_product_research() -> None:
     assert research["requirement_key"] == "product_research"
     assert research["source_type"] == "web_research"
     assert research["state_reason"] == "source_checked_no_new_rows"
+
+
+def test_build_source_tasks_maps_missing_requirement_to_fetch_work() -> None:
+    [news] = assess_evidence_requirements(
+        {
+            "price_bars": 12,
+            "company_facts": 2,
+            "recent_news": 0,
+            "estimate_snapshots": 4,
+            "research_evidence": 1,
+        },
+        {
+            "fmp_news": {
+                "source": "fmp_news",
+                "last_status": "no_new_rows",
+                "last_failure_kind": None,
+                "last_error": None,
+                "retry_after_at": None,
+                "rows_seen": 0,
+                "rows_inserted": 0,
+            },
+        },
+    )
+
+    tasks = build_source_tasks("MU", news)
+
+    assert [task["action"] for task in tasks] == [
+        "fmp_news",
+        "massive_news",
+        "llm_sentiment_scoring",
+    ]
+    assert {task["state"] for task in tasks} == {"no_rows"}
+    assert {task["provider"] for task in tasks} == {"fmp", "massive", "llm"}
+
+
+def test_build_source_tasks_maps_rate_limit_to_provider_pause() -> None:
+    [estimates] = assess_evidence_requirements(
+        {
+            "price_bars": 12,
+            "company_facts": 2,
+            "recent_news": 1,
+            "estimate_snapshots": 0,
+            "research_evidence": 1,
+        },
+        {
+            "fmp_estimates": {
+                "source": "fmp_estimates",
+                "last_status": "failed",
+                "last_failure_kind": "rate_limited",
+                "last_error": "429",
+                "retry_after_at": "2026-06-01T14:00:00Z",
+                "rows_seen": 0,
+                "rows_inserted": 0,
+            },
+        },
+    )
+
+    [task] = build_source_tasks("MU", estimates)
+
+    assert task["action"] == "fmp_analyst_estimates"
+    assert task["provider"] == "fmp"
+    assert task["state"] == "rate_limited"
+    assert task["next_retry_at"] == "2026-06-01T14:00:00Z"
 
 
 def test_assess_evidence_requirements_empty_when_core_inputs_present() -> None:

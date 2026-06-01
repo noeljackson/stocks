@@ -68,6 +68,16 @@ async fn main() -> Result<()> {
                     {
                         error!(error = %e, "fmp_price source health start record failed");
                     }
+                    if let Err(e) = store
+                        .mark_source_tasks_fetching(
+                            &["fmp_price_backfill"],
+                            &symbols,
+                            "ingest.fmp_price",
+                        )
+                        .await
+                    {
+                        error!(error = %e, "fmp_price source task claim failed");
+                    }
                     let oldest = store
                         .oldest_bar_per_symbol(&symbols)
                         .await
@@ -80,9 +90,27 @@ async fn main() -> Result<()> {
                             {
                                 error!(error = %e, "fmp_price source health success record failed");
                             }
+                            if let Err(e) = store
+                                .complete_source_tasks_for_attempt(
+                                    "fmp_price_backfill",
+                                    &symbols,
+                                    &[],
+                                    "ingest.fmp_price",
+                                    chrono::Duration::minutes(30),
+                                )
+                                .await
+                            {
+                                error!(error = %e, "fmp_price source task completion failed");
+                            }
                         }
                         Ok(rows) => match store.upsert_price_bars(&rows).await {
                             Ok(inserted) => {
+                                let symbols_with_rows: Vec<String> = rows
+                                    .iter()
+                                    .map(|r| r.symbol.clone())
+                                    .collect::<std::collections::BTreeSet<_>>()
+                                    .into_iter()
+                                    .collect();
                                 if let Err(e) = store
                                     .record_source_success(
                                         "fmp_price",
@@ -94,6 +122,18 @@ async fn main() -> Result<()> {
                                     .await
                                 {
                                     error!(error = %e, "fmp_price source health success record failed");
+                                }
+                                if let Err(e) = store
+                                    .complete_source_tasks_for_attempt(
+                                        "fmp_price_backfill",
+                                        &symbols,
+                                        &symbols_with_rows,
+                                        "ingest.fmp_price",
+                                        chrono::Duration::minutes(30),
+                                    )
+                                    .await
+                                {
+                                    error!(error = %e, "fmp_price source task completion failed");
                                 }
                                 info!(
                                     symbols = symbols.len(),
@@ -114,6 +154,19 @@ async fn main() -> Result<()> {
                                     .await
                                 {
                                     error!(error = %record_err, "fmp_price source health failure record failed");
+                                }
+                                if let Err(task_err) = store
+                                    .fail_source_tasks_for_attempt(
+                                        "fmp_price_backfill",
+                                        &symbols,
+                                        "ingest.fmp_price",
+                                        source_health::failure_kind(&message),
+                                        &message,
+                                        None,
+                                    )
+                                    .await
+                                {
+                                    error!(error = %task_err, "fmp_price source task failure record failed");
                                 }
                                 error!(error = %e, "fmp price persist failed")
                             }
@@ -136,6 +189,19 @@ async fn main() -> Result<()> {
                                 .await
                             {
                                 error!(error = %record_err, "fmp_price source health failure record failed");
+                            }
+                            if let Err(task_err) = store
+                                .fail_source_tasks_for_attempt(
+                                    "fmp_price_backfill",
+                                    &symbols,
+                                    "ingest.fmp_price",
+                                    source_health::failure_kind(&message),
+                                    &message,
+                                    retry_after_at,
+                                )
+                                .await
+                            {
+                                error!(error = %task_err, "fmp_price source task failure record failed");
                             }
                             error!(error = %e, "fmp price poll failed")
                         }

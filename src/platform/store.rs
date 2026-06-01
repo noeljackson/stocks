@@ -6,7 +6,7 @@
 //! SQLX_OFFLINE=true + checking in the sqlx-data.json.
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use sqlx::{
     Row,
     postgres::{PgPool, PgPoolOptions},
@@ -299,6 +299,136 @@ impl Store {
         .await
         .context("priority_scan_symbols")?;
         Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    pub async fn mark_source_tasks_fetching(
+        &self,
+        actions: &[&str],
+        symbols: &[String],
+        owner: &str,
+    ) -> Result<u64> {
+        if actions.is_empty() || symbols.is_empty() {
+            return Ok(0);
+        }
+        let actions: Vec<String> = actions.iter().map(|a| (*a).to_string()).collect();
+        let res = sqlx::query(
+            r#"UPDATE source_task
+                  SET state = 'fetching',
+                      attempts = attempts + 1,
+                      last_error = NULL,
+                      updated_at = now(),
+                      source_ref = source_ref || jsonb_build_object(
+                          'claimed_by', $3,
+                          'claimed_at', now()
+                      )
+                WHERE scope = 'symbol'
+                  AND target_id = ANY($1::text[])
+                  AND action = ANY($2::text[])
+                  AND state IN ('queued', 'no_rows', 'failed', 'rate_limited', 'satisfied')
+                  AND due_at <= now()"#,
+        )
+        .bind(symbols)
+        .bind(&actions)
+        .bind(owner)
+        .execute(&self.pool)
+        .await
+        .context("mark_source_tasks_fetching")?;
+        Ok(res.rows_affected())
+    }
+
+    pub async fn complete_source_tasks_for_attempt(
+        &self,
+        action: &str,
+        attempted_symbols: &[String],
+        symbols_with_rows: &[String],
+        owner: &str,
+        fresh_for: ChronoDuration,
+    ) -> Result<u64> {
+        if attempted_symbols.is_empty() {
+            return Ok(0);
+        }
+        let fresh_until = Utc::now() + fresh_for;
+        let retry_at = Utc::now() + ChronoDuration::minutes(30);
+        let res = sqlx::query(
+            r#"UPDATE source_task
+                  SET state = CASE
+                          WHEN target_id = ANY($3::text[]) THEN 'satisfied'
+                          ELSE 'no_rows'
+                      END,
+                      due_at = CASE
+                          WHEN target_id = ANY($3::text[]) THEN $5
+                          ELSE $6
+                      END,
+                      next_retry_at = NULL,
+                      last_error = NULL,
+                      updated_at = now(),
+                      source_ref = source_ref || jsonb_build_object(
+                          'completed_by', $4,
+                          'completed_at', now(),
+                          'result', CASE
+                              WHEN target_id = ANY($3::text[]) THEN 'rows_seen'
+                              ELSE 'no_rows'
+                          END
+                      )
+                WHERE scope = 'symbol'
+                  AND target_id = ANY($1::text[])
+                  AND action = $2"#,
+        )
+        .bind(attempted_symbols)
+        .bind(action)
+        .bind(symbols_with_rows)
+        .bind(owner)
+        .bind(fresh_until)
+        .bind(retry_at)
+        .execute(&self.pool)
+        .await
+        .context("complete_source_tasks_for_attempt")?;
+        Ok(res.rows_affected())
+    }
+
+    pub async fn fail_source_tasks_for_attempt(
+        &self,
+        action: &str,
+        attempted_symbols: &[String],
+        owner: &str,
+        state: &str,
+        error: &str,
+        retry_after_at: Option<DateTime<Utc>>,
+    ) -> Result<u64> {
+        if attempted_symbols.is_empty() {
+            return Ok(0);
+        }
+        let task_state = if state == "rate_limited" {
+            "rate_limited"
+        } else {
+            "failed"
+        };
+        let retry_at = retry_after_at.unwrap_or_else(|| Utc::now() + ChronoDuration::minutes(30));
+        let res = sqlx::query(
+            r#"UPDATE source_task
+                  SET state = $3,
+                      due_at = $6,
+                      next_retry_at = $6,
+                      last_error = $5,
+                      updated_at = now(),
+                      source_ref = source_ref || jsonb_build_object(
+                          'failed_by', $4,
+                          'failed_at', now()
+                      )
+                WHERE scope = 'symbol'
+                  AND target_id = ANY($1::text[])
+                  AND action = $2"#,
+        )
+        .bind(attempted_symbols)
+        .bind(action)
+        .bind(task_state)
+        .bind(owner)
+        .bind(error.chars().take(500).collect::<String>())
+        .bind(retry_at)
+        .execute(&self.pool)
+        .await
+        .context("fail_source_tasks_for_attempt")?;
+        Ok(res.rows_affected())
     }
 
     /// Active discovery pool symbols (not dropped). Used by the discovery

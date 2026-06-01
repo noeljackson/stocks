@@ -138,6 +138,26 @@ pub struct FactRow {
     pub filed_at: Option<NaiveDate>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct XbrlPollResult {
+    pub rows: Vec<FactRow>,
+    pub matched_symbols: Vec<String>,
+    pub missing_cik_symbols: Vec<String>,
+    pub failed_fetch_symbols: Vec<String>,
+}
+
+impl XbrlPollResult {
+    #[must_use]
+    pub fn missing_cik_count(&self) -> usize {
+        self.missing_cik_symbols.len()
+    }
+
+    #[must_use]
+    pub fn failed_fetch_count(&self) -> usize {
+        self.failed_fetch_symbols.len()
+    }
+}
+
 /// Pure function: turn a CompanyFacts blob into FactRow records.
 ///
 /// For each concept in CONCEPTS, walks every alias; for each found alias,
@@ -270,31 +290,32 @@ impl XbrlAdapter {
 
     /// Poll a runtime symbol set using SEC's public ticker -> CIK directory.
     ///
-    /// Returns `(rows, missing_cik_count, failed_fetch_count)`. Missing CIKs
-    /// and per-symbol fetch failures are degraded inputs, not fatal pass
-    /// failures, because one unsupported ticker should not block all other
-    /// fundamentals acquisition.
-    pub async fn poll_symbols(&self, symbols: &[String]) -> Result<(Vec<FactRow>, usize, usize)> {
+    /// Missing CIKs and per-symbol fetch failures are degraded inputs, not
+    /// fatal pass failures, because one unsupported ticker should not block
+    /// all other fundamentals acquisition.
+    pub async fn poll_symbols(&self, symbols: &[String]) -> Result<XbrlPollResult> {
         if symbols.is_empty() {
-            return Ok((Vec::new(), 0, 0));
+            return Ok(XbrlPollResult::default());
         }
         let ciks = sec::ciks_for_symbols(&self.client, &self.ua, symbols).await?;
         let requested: std::collections::BTreeSet<String> =
             symbols.iter().map(|s| s.to_ascii_uppercase()).collect();
         let matched: std::collections::BTreeSet<String> =
             ciks.iter().map(|(symbol, _)| symbol.clone()).collect();
-        let missing_cik_count = requested.difference(&matched).count();
-        let mut failed_fetch_count = 0;
-        let mut all = Vec::new();
+        let mut result = XbrlPollResult {
+            matched_symbols: matched.iter().cloned().collect(),
+            missing_cik_symbols: requested.difference(&matched).cloned().collect(),
+            ..Default::default()
+        };
 
         for (symbol, cik) in ciks {
             match self.fetch_one(&symbol, &cik).await {
                 Ok(rows) => {
                     tracing::info!(symbol = symbol, rows = rows.len(), "xbrl facts fetched");
-                    all.extend(rows);
+                    result.rows.extend(rows);
                 }
                 Err(e) => {
-                    failed_fetch_count += 1;
+                    result.failed_fetch_symbols.push(symbol.clone());
                     tracing::warn!(symbol = symbol, error = %e, "xbrl fetch failed; continuing");
                 }
             }
@@ -302,7 +323,7 @@ impl XbrlAdapter {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
 
-        Ok((all, missing_cik_count, failed_fetch_count))
+        Ok(result)
     }
 }
 
@@ -434,5 +455,17 @@ mod tests {
         let rows = extract("NVDA", "0001045810", &facts);
         // Still just 3 valid rows (2 Revenues + 1 GrossProfit).
         assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn poll_result_counts_missing_and_failed_symbols() {
+        let result = XbrlPollResult {
+            missing_cik_symbols: vec!["ZZZ".to_string()],
+            failed_fetch_symbols: vec!["NVDA".to_string(), "MU".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(result.missing_cik_count(), 1);
+        assert_eq!(result.failed_fetch_count(), 2);
     }
 }

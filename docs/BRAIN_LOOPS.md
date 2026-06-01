@@ -196,8 +196,8 @@ fmp_analyst_estimates             Rust ingest fmp_estimates loop claims/complete
 fmp_price_target_consensus        Rust ingest fmp_analyst_opinion loop claims/completes
 fmp_grades_historical             Rust ingest fmp_analyst_opinion loop claims/completes
 fmp_price_target_news             Rust ingest fmp_analyst_opinion loop claims/completes
-sec_company_tickers_cik_lookup    Rust EDGAR/XBRL loops
-sec_companyfacts_xbrl             Rust XBRL loop
+sec_company_tickers_cik_lookup    Rust XBRL loop claims/completes
+sec_companyfacts_xbrl             Rust XBRL loop claims/completes
 gdelt_doc_search                  Python source_task worker
 bing_news_rss_search              Python source_task worker
 ```
@@ -451,9 +451,9 @@ Current gaps:
   are no longer starved behind the broad screener pool.
 - #128: provider-wide retry gates now pause source tasks, and due source tasks
   move their symbols to the front of the expensive ingest scan universe. The
-  FMP price, estimates, analyst-opinion, and news loops now claim/complete their
-  source tasks directly; the remaining Rust market-data adapters still need the
-  same ownership path.
+  FMP price, estimates, analyst-opinion, news, and XBRL loops now
+  claim/complete their source tasks directly; the remaining Rust market-data
+  adapters still need the same ownership path.
 - #136: evidence requirements and source tasks are synchronized from source
   health; Rust source loops still report through source health instead of
   claiming every `source_task` row directly.
@@ -680,6 +680,7 @@ implemented first slice
   FMP estimates loop claims/completes fmp_analyst_estimates source tasks
   FMP analyst opinion loop claims/completes consensus, grades, and target-news source tasks
   news loop claims/completes FMP, Massive, and configured LLM sentiment source tasks
+  XBRL loop claims/completes SEC CIK lookup and companyfacts source tasks
   active ticker evidence sync bootstraps newly added requirement keys
   Python source_task worker claims and runs due web research tasks
   cognition sweep refreshes open evidence rows before choosing targets

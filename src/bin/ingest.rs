@@ -373,15 +373,43 @@ async fn main() -> Result<()> {
                 if let Err(e) = store.mark_source_started("xbrl", attempted).await {
                     error!(error = %e, "xbrl source health start record failed");
                 }
+                if let Err(e) = store
+                    .mark_source_tasks_fetching(
+                        &["sec_company_tickers_cik_lookup", "sec_companyfacts_xbrl"],
+                        &symbols,
+                        "ingest.xbrl",
+                    )
+                    .await
+                {
+                    error!(error = %e, "xbrl source task claim failed");
+                }
                 match adapter.poll_symbols(&symbols).await {
-                    Ok((rows, missing_cik_count, failed_fetch_count)) => {
-                        match store.upsert_company_facts(&rows).await {
+                    Ok(result) => {
+                        let symbols_with_rows: Vec<String> = result
+                            .rows
+                            .iter()
+                            .map(|r| r.symbol.clone())
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .into_iter()
+                            .collect();
+                        let successful_xbrl_symbols: Vec<String> = symbols
+                            .iter()
+                            .filter(|s| {
+                                !result
+                                    .failed_fetch_symbols
+                                    .contains(&s.to_ascii_uppercase())
+                            })
+                            .cloned()
+                            .collect();
+                        match store.upsert_company_facts(&result.rows).await {
                             Ok(inserted) => {
-                                let failed = (missing_cik_count + failed_fetch_count) as i32;
+                                let failed = (result.missing_cik_count()
+                                    + result.failed_fetch_count())
+                                    as i32;
                                 if let Err(e) = store
                                     .record_source_success(
                                         "xbrl",
-                                        rows.len() as i64,
+                                        result.rows.len() as i64,
                                         inserted as i64,
                                         attempted,
                                         failed,
@@ -390,12 +418,49 @@ async fn main() -> Result<()> {
                                 {
                                     error!(error = %e, "xbrl source health success record failed");
                                 }
+                                if let Err(e) = store
+                                    .complete_source_tasks_for_attempt(
+                                        "sec_company_tickers_cik_lookup",
+                                        &symbols,
+                                        &result.matched_symbols,
+                                        "ingest.xbrl",
+                                        chrono::Duration::minutes(30),
+                                    )
+                                    .await
+                                {
+                                    error!(error = %e, "xbrl CIK source task completion failed");
+                                }
+                                if let Err(e) = store
+                                    .complete_source_tasks_for_attempt(
+                                        "sec_companyfacts_xbrl",
+                                        &successful_xbrl_symbols,
+                                        &symbols_with_rows,
+                                        "ingest.xbrl",
+                                        chrono::Duration::minutes(30),
+                                    )
+                                    .await
+                                {
+                                    error!(error = %e, "xbrl source task completion failed");
+                                }
+                                if let Err(e) = store
+                                    .fail_source_tasks_for_attempt(
+                                        "sec_companyfacts_xbrl",
+                                        &result.failed_fetch_symbols,
+                                        "ingest.xbrl",
+                                        "failed",
+                                        "one or more SEC companyfacts requests failed",
+                                        None,
+                                    )
+                                    .await
+                                {
+                                    error!(error = %e, "xbrl source task failure record failed");
+                                }
                                 info!(
                                     symbols = symbols.len(),
-                                    rows = rows.len(),
+                                    rows = result.rows.len(),
                                     inserted,
-                                    missing_cik_count,
-                                    failed_fetch_count,
+                                    missing_cik_count = result.missing_cik_count(),
+                                    failed_fetch_count = result.failed_fetch_count(),
                                     "xbrl pass complete"
                                 )
                             }
@@ -411,6 +476,19 @@ async fn main() -> Result<()> {
                                     .await
                                 {
                                     error!(error = %record_err, "xbrl source health failure record failed");
+                                }
+                                if let Err(task_err) = store
+                                    .fail_source_tasks_for_attempt(
+                                        "sec_companyfacts_xbrl",
+                                        &symbols_with_rows,
+                                        "ingest.xbrl",
+                                        source_health::failure_kind(&message),
+                                        &message,
+                                        None,
+                                    )
+                                    .await
+                                {
+                                    error!(error = %task_err, "xbrl source task failure record failed");
                                 }
                                 error!(error = %e, "xbrl persist failed")
                             }
@@ -428,6 +506,32 @@ async fn main() -> Result<()> {
                             .await
                         {
                             error!(error = %record_err, "xbrl source health failure record failed");
+                        }
+                        if let Err(task_err) = store
+                            .fail_source_tasks_for_attempt(
+                                "sec_company_tickers_cik_lookup",
+                                &symbols,
+                                "ingest.xbrl",
+                                source_health::failure_kind(&message),
+                                &message,
+                                None,
+                            )
+                            .await
+                        {
+                            error!(error = %task_err, "xbrl CIK source task failure record failed");
+                        }
+                        if let Err(task_err) = store
+                            .fail_source_tasks_for_attempt(
+                                "sec_companyfacts_xbrl",
+                                &symbols,
+                                "ingest.xbrl",
+                                source_health::failure_kind(&message),
+                                &message,
+                                None,
+                            )
+                            .await
+                        {
+                            error!(error = %task_err, "xbrl source task failure record failed");
                         }
                         error!(error = %e, "xbrl poll failed")
                     }

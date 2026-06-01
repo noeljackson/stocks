@@ -21,6 +21,7 @@ Reads:
     COGNITION_OPEN_THESIS_MAX_AGE_MINUTES — default 30
     COGNITION_DECLINE_RETRY_HOURS — default 6
     COGNITION_MAX_SYMBOLS_PER_SWEEP — default 20
+    COGNITION_MIN_SYMBOLS_PER_SWEEP — default 20
     COGNITION_EVIDENCE_SYNC_LIMIT — default 200
     BRAIN_THESIS_SWEEP_LIMIT — default 50
     COGNITION_ACK_PROGRESS_SECONDS — default 10
@@ -68,6 +69,41 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         log.warning("invalid %s=%r; using %d", name, raw, default)
         return default
+
+
+def _open_thesis_max_age_minutes() -> int:
+    return max(1, _env_int("COGNITION_OPEN_THESIS_MAX_AGE_MINUTES", 30))
+
+
+def _effective_sweep_limit() -> int:
+    configured = max(1, _env_int("COGNITION_MAX_SYMBOLS_PER_SWEEP", 20))
+    floor = max(1, _env_int("COGNITION_MIN_SYMBOLS_PER_SWEEP", 20))
+    if configured < floor:
+        log.warning(
+            "COGNITION_MAX_SYMBOLS_PER_SWEEP=%s is below SLA floor %s; using %s",
+            configured,
+            floor,
+            floor,
+        )
+        return floor
+    return configured
+
+
+def _effective_sweep_interval_seconds() -> int:
+    configured = _env_int("COGNITION_SWEEP_SECONDS", 300)
+    if configured <= 0:
+        return configured
+    max_age_minutes = _open_thesis_max_age_minutes()
+    interval_cap = max(60, min(300, (max_age_minutes * 60) // 2))
+    if configured > interval_cap:
+        log.warning(
+            "COGNITION_SWEEP_SECONDS=%s exceeds thesis freshness cap %s; using %s",
+            configured,
+            interval_cap,
+            interval_cap,
+        )
+        return interval_cap
+    return configured
 
 
 async def _open_thesis_count(pool: asyncpg.Pool, symbol: str) -> int:
@@ -423,9 +459,9 @@ def _sweep_trigger(evidence_rows: int, thesis_id: object | None) -> str:
 
 async def _sweep_once(pool: asyncpg.Pool) -> None:
     context_max_age_hours = _env_int("COGNITION_CONTEXT_MAX_AGE_HOURS", 12)
-    open_thesis_max_age_minutes = _env_int("COGNITION_OPEN_THESIS_MAX_AGE_MINUTES", 30)
+    open_thesis_max_age_minutes = _open_thesis_max_age_minutes()
     decline_retry_hours = _env_int("COGNITION_DECLINE_RETRY_HOURS", 6)
-    limit = max(1, _env_int("COGNITION_MAX_SYMBOLS_PER_SWEEP", 20))
+    limit = _effective_sweep_limit()
     evidence_sync_limit = max(1, _env_int("COGNITION_EVIDENCE_SYNC_LIMIT", 200))
     brain_thesis_limit = max(1, _env_int("BRAIN_THESIS_SWEEP_LIMIT", 50))
     brain_updated = await refresh_brain_theses(pool, limit=brain_thesis_limit)
@@ -489,14 +525,14 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
 
 
 async def _sweep_loop(pool: asyncpg.Pool) -> None:
-    interval = _env_int("COGNITION_SWEEP_SECONDS", 300)
+    interval = _effective_sweep_interval_seconds()
     if interval <= 0:
         log.info("cognition maintenance sweep disabled")
         return
     log.info(
         "cognition maintenance sweep enabled: every %ss, max %s symbols",
         interval,
-        _env_int("COGNITION_MAX_SYMBOLS_PER_SWEEP", 20),
+        _effective_sweep_limit(),
     )
     await asyncio.sleep(5)
     while True:

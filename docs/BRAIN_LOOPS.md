@@ -428,8 +428,15 @@ COGNITION_CONTEXT_MAX_AGE_HOURS        12
 COGNITION_OPEN_THESIS_MAX_AGE_MINUTES  30
 COGNITION_DECLINE_RETRY_HOURS          6
 COGNITION_MAX_SYMBOLS_PER_SWEEP        20
+COGNITION_MIN_SYMBOLS_PER_SWEEP        20
 COGNITION_EVIDENCE_SYNC_LIMIT          200
 ```
+
+The worker treats the freshness target as a guardrail: nonzero sweep intervals
+are capped at half the open-thesis freshness window, with an upper cap of 300s
+and lower cap of 60s. Batch size is floored by
+`COGNITION_MIN_SYMBOLS_PER_SWEEP`. This prevents stale environment config like
+`900s/5 symbols` from silently breaking the 30-minute product SLA.
 
 Sweep priority is opinion-first. A stale open thesis outranks broad bootstrap
 work, because the current standing view is what the operator is relying on.

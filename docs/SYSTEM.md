@@ -355,6 +355,24 @@ market      fast     price, volume, technicals, sentiment
 Freshness is part of the output. A stale narrative band is a decision input, not
 just an ops warning.
 
+The cognition service owns automatic maintenance. It reacts immediately to
+`discovery.confirmed`, but it also periodically sweeps active tickers so the
+Universe does not rot while waiting for a user to open a tab:
+
+```text
+ticker.status = active
+  + no context OR context older than COGNITION_CONTEXT_MAX_AGE_HOURS
+  -> refresh context
+
+active ticker with no open thesis
+  + no decline OR decline older than COGNITION_DECLINE_RETRY_HOURS
+  -> draft thesis
+  -> persist monitoring/actionable thesis OR record thesis_incomplete reason
+```
+
+This means "no data" and transient provider failures are retryable operating
+states, not final product states.
+
 ### 5. Discovery
 
 Discovery scans the wider universe for cheap signals that might deserve deeper

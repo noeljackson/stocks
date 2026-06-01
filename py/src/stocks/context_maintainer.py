@@ -400,6 +400,25 @@ async def _persist_context(
     return new_version
 
 
+async def _resolve_stale_incomplete_attention(
+    pool: asyncpg.Pool,
+    symbol: str,
+    version: int,
+) -> None:
+    await pool.execute(
+        """UPDATE attention_item
+              SET status = 'resolved',
+                  resolved_at = now(),
+                  resolution_kind = 'context_refreshed',
+                  source_ref = source_ref || $2::jsonb
+            WHERE status = 'open'
+              AND kind = 'thesis_incomplete'
+              AND symbol = $1""",
+        symbol,
+        json.dumps({"resolved_by_context_version": version}),
+    )
+
+
 async def refresh(symbol: str, *, limit: int = 50) -> int:
     """Refresh context for `symbol`. Returns the new ticker_context.version."""
     cfg = config.load()
@@ -445,6 +464,7 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
             and prior is not None
             and prior_has_market
         ):
+            await _resolve_stale_incomplete_attention(pool, symbol, prior["version"])
             log.info("no new signal since v%d — skipping refresh", prior["version"])
             return prior["version"]
 
@@ -489,6 +509,8 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
         new_version = await _persist_context(
             pool, symbol, structural, narrative, market, prior["version"] if prior else None
         )
+        if market:
+            await _resolve_stale_incomplete_attention(pool, symbol, new_version)
         log.info(
             "persisted ticker_context v%d for %s (input_tokens=%d output_tokens=%d)",
             new_version, symbol, resp.usage.input_tokens, resp.usage.output_tokens,

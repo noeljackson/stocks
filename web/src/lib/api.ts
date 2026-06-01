@@ -121,6 +121,26 @@ export async function fetchTheses(symbol: string): Promise<ThesisDetail[]> {
   return ((await r.json()) as ThesisDetail[] | null) ?? [];
 }
 
+export interface ThesisDecline {
+  id: number;
+  symbol?: string | null;
+  candidate_id?: number | null;
+  severity: string;
+  status: "open" | "resolved" | "dismissed";
+  title: string;
+  reason?: string | null;
+  source_ref: Record<string, unknown>;
+  created_at: string;
+  resolved_at?: string | null;
+  resolution_kind?: string | null;
+}
+
+export async function fetchThesisDeclines(symbol: string): Promise<ThesisDecline[]> {
+  const r = await fetch(`/api/thesis-declines?symbol=${encodeURIComponent(symbol)}`);
+  if (!r.ok) throw new Error(`thesis declines ${r.status}`);
+  return ((await r.json()) as ThesisDecline[] | null) ?? [];
+}
+
 export interface TickerContext {
   symbol: string;
   version: number;

@@ -10,6 +10,8 @@ Cargo.lock.bak
 /web/dist/assets/
 /web/dist/*.js
 /web/dist/*.css
+/web/test-results/
+/web/playwright-report/
 
 # Python
 __pycache__/

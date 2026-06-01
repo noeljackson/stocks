@@ -319,6 +319,46 @@ impl Store {
             .collect()
     }
 
+    pub async fn thesis_declines_for_symbol(
+        &self,
+        symbol: &str,
+        limit: i64,
+    ) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query(
+            r#"SELECT id, symbol, candidate_id, severity, status, title, reason,
+                      source_ref, created_at, resolved_at, resolution_kind
+                 FROM attention_item
+                WHERE symbol = $1
+                  AND kind = 'thesis_incomplete'
+             ORDER BY created_at DESC
+                LIMIT $2"#,
+        )
+        .bind(symbol)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("thesis_declines_for_symbol")?;
+        rows.into_iter()
+            .map(|r| {
+                let created_at: DateTime<Utc> = r.try_get("created_at")?;
+                let resolved_at: Option<DateTime<Utc>> = r.try_get("resolved_at")?;
+                Ok(serde_json::json!({
+                    "id": r.try_get::<i64, _>("id")?,
+                    "symbol": r.try_get::<Option<String>, _>("symbol")?,
+                    "candidate_id": r.try_get::<Option<i64>, _>("candidate_id")?,
+                    "severity": r.try_get::<String, _>("severity")?,
+                    "status": r.try_get::<String, _>("status")?,
+                    "title": r.try_get::<String, _>("title")?,
+                    "reason": r.try_get::<Option<String>, _>("reason")?,
+                    "source_ref": r.try_get::<serde_json::Value, _>("source_ref")?,
+                    "created_at": created_at,
+                    "resolved_at": resolved_at,
+                    "resolution_kind": r.try_get::<Option<String>, _>("resolution_kind")?,
+                }))
+            })
+            .collect()
+    }
+
     /// Recent decisions for a given symbol — joins through thesis to filter.
     pub async fn decisions_for_symbol(&self, symbol: &str) -> Result<Vec<serde_json::Value>> {
         let rows = sqlx::query(

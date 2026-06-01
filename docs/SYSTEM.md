@@ -234,8 +234,8 @@ thesis and not a final answer.
 ```text
 evidence_requirement
   symbol
-  requirement_key     price_history | company_facts | recent_news | analyst_estimates
-  source_type         price | fundamentals | news | estimates
+  requirement_key     price_history | company_facts | recent_news | analyst_estimates | product_research
+  source_type         price | fundamentals | news | estimates | web_research
   reason
   priority            blocking | high | medium | low
   blocking_state      missing | fetching | partial | blocked | satisfied
@@ -249,6 +249,32 @@ Context maintenance updates this table before expensive LLM work. Blocking
 requirements stop context/thesis draft attempts. Non-blocking requirements
 travel into the thesis prompt and UI so the operator can see why the view is
 weak.
+
+### Research evidence
+
+The web/product evidence layer covers named product and theme claims that
+symbol-tagged vendor news often misses: accelerator SKUs, benchmark posts,
+deployment reports, customer adoption, and competitive roadmap evidence.
+
+```text
+research_evidence
+  symbol
+  query
+  url / title / publisher / published_at
+  retrieved_at
+  provider
+  source_type
+  credibility
+  tags
+```
+
+Context refresh runs targeted retrieval before the LLM pass and feeds the
+retrieved rows into `ticker_context.narrative`. The first providers are GDELT
+Doc 2.0 plus Bing News RSS fallback because neither requires a key; paid
+semantic search can replace or augment them if recall is too weak. A thesis
+should not claim "no public data" for a named
+product unless the `product_research` evidence requirement shows the retrieval
+state.
 
 ### Thesis
 

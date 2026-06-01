@@ -209,7 +209,7 @@ watch-all: ## Show how to run all services in watch mode
 	@echo "  make watch-ingest    # only when actively iterating on adapter code"
 
 # ---- Python ----
-.PHONY: py-setup py-check run-context
+.PHONY: py-setup py-check run-context research
 py-setup: ## Create venv + install pinned python deps
 	cd py && python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 
@@ -219,6 +219,9 @@ py-check: ## Ruff lint + pytest
 
 refresh-context: ## Refresh ticker_context for one symbol (SYMBOL=NVDA make refresh-context)
 	cd py && $(RUN) .venv/bin/python -m stocks.context_maintainer $(SYMBOL) $(if $(LIMIT),--limit $(LIMIT))
+
+research: ## Run product/theme web research for one symbol (SYMBOL=AMD make research)
+	cd py && $(RUN) .venv/bin/python -m stocks.research $(SYMBOL) $(if $(FORCE),--force)
 
 draft-thesis: ## Draft a thesis from the latest ticker_context (SYMBOL=NVDA make draft-thesis)
 	cd py && $(RUN) .venv/bin/python -m stocks.thesis_engine $(SYMBOL)

@@ -34,6 +34,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
             "/api/evidence-requirements",
             get(list_evidence_requirements),
         )
+        .route("/api/research-evidence", get(list_research_evidence))
         .route(
             "/api/theses/{thesis_id}/transition",
             post(transition_thesis),
@@ -131,6 +132,22 @@ async fn list_evidence_requirements(
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),
         Err(e) => {
             warn!(symbol = %sym, error = %e, "list_evidence_requirements failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn list_research_evidence(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<ThesesQuery>,
+) -> impl IntoResponse {
+    let Some(sym) = q.symbol else {
+        return (StatusCode::BAD_REQUEST, "symbol query param required").into_response();
+    };
+    match gw.store.research_evidence_for_symbol(&sym).await {
+        Ok(v) => (StatusCode::OK, Json(v)).into_response(),
+        Err(e) => {
+            warn!(symbol = %sym, error = %e, "list_research_evidence failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
@@ -1106,6 +1123,7 @@ async fn get_brain_status(
               (SELECT max(ingested_at) FROM news_article WHERE symbol = $1) AS news_at,
               (SELECT max(published_at) FROM news_article WHERE symbol = $1) AS news_published_at,
               (SELECT max(snapshot_at) FROM estimate_snapshot WHERE symbol = $1) AS estimates_at,
+              (SELECT max(retrieved_at) FROM research_evidence WHERE symbol = $1) AS research_at,
               (SELECT max(ingested_at) FROM company_fact WHERE symbol = $1) AS fundamentals_at,
               (SELECT max(ingested_at) FROM ingest_event
                 WHERE source = 'edgar' AND symbol = $1) AS filings_at,
@@ -1177,6 +1195,7 @@ async fn get_brain_status(
         "fmp_estimates".to_string(),
         "xbrl".to_string(),
         "edgar".to_string(),
+        "web_research".to_string(),
     ])
     .fetch_all(pool)
     .await
@@ -1199,10 +1218,12 @@ async fn get_brain_status(
     let price_health = health(&["fmp_price"], ChronoDuration::minutes(30));
     let news_health = health(&["fmp_news", "massive_news"], ChronoDuration::minutes(30));
     let estimates_health = health(&["fmp_estimates"], ChronoDuration::minutes(30));
+    let research_health = health(&["web_research"], ChronoDuration::hours(24));
     let fundamentals_health = health(&["xbrl"], ChronoDuration::minutes(360));
     let filings_health = health(&["edgar"], ChronoDuration::minutes(30));
     let news_status = source_status(&news_health).to_string();
     let estimates_status = source_status(&estimates_health).to_string();
+    let research_status = source_status(&research_health).to_string();
     let fundamentals_status = source_status(&fundamentals_health).to_string();
     let filings_status = source_status(&filings_health).to_string();
 
@@ -1212,6 +1233,7 @@ async fn get_brain_status(
     let news_published_at: Option<chrono::DateTime<chrono::Utc>> =
         row.try_get("news_published_at").ok();
     let estimates_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("estimates_at").ok();
+    let research_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("research_at").ok();
     let fundamentals_at: Option<chrono::DateTime<chrono::Utc>> =
         row.try_get("fundamentals_at").ok();
     let filings_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("filings_at").ok();
@@ -1235,6 +1257,7 @@ async fn get_brain_status(
         &price_health,
         &news_health,
         &estimates_health,
+        &research_health,
         &fundamentals_health,
         &filings_health,
     ]
@@ -1244,6 +1267,7 @@ async fn get_brain_status(
         price_status,
         news_status.as_str(),
         estimates_status.as_str(),
+        research_status.as_str(),
         filings_status.as_str(),
     ]
     .iter()
@@ -1303,6 +1327,7 @@ async fn get_brain_status(
                 "latest_published_at": news_published_at,
             })),
             source_json("estimates", &estimates_status, estimates_at, estimates_health, json!({})),
+            source_json("research", &research_status, research_at, research_health, json!({})),
             source_json("fundamentals", &fundamentals_status, fundamentals_at, fundamentals_health, json!({})),
             source_json("filings", &filings_status, filings_at, filings_health, json!({})),
             json!({

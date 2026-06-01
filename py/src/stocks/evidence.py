@@ -11,6 +11,7 @@ SOURCE_HEALTH_BY_REQUIREMENT = {
     "company_facts": ["edgar", "xbrl"],
     "recent_news": ["fmp_news", "massive_news"],
     "analyst_estimates": ["fmp_estimates"],
+    "product_research": ["web_research"],
 }
 
 EVIDENCE_REQUIREMENTS = {
@@ -41,6 +42,15 @@ EVIDENCE_REQUIREMENTS = {
         "reason": "Need analyst estimate snapshots before evaluating revision/consensus drift.",
         "fetch_actions": ["fmp_analyst_estimates"],
     },
+    "product_research": {
+        "source_type": "web_research",
+        "priority": "high",
+        "reason": (
+            "Need product/theme web research before claiming public evidence "
+            "does or does not exist."
+        ),
+        "fetch_actions": ["gdelt_doc_search", "bing_news_rss_search"],
+    },
 }
 
 
@@ -56,7 +66,10 @@ async def load_evidence_counts(pool: asyncpg.Pool, symbol: str) -> dict[str, int
               (SELECT count(*) FROM news_article
                 WHERE symbol = $1
                   AND published_at > now() - interval '30 days') AS recent_news,
-              (SELECT count(*) FROM estimate_snapshot WHERE symbol = $1) AS estimate_snapshots
+              (SELECT count(*) FROM estimate_snapshot WHERE symbol = $1) AS estimate_snapshots,
+              (SELECT count(*) FROM research_evidence
+                WHERE symbol = $1
+                  AND retrieved_at > now() - interval '30 days') AS research_evidence
         """,
         symbol,
     )
@@ -159,6 +172,7 @@ def assess_evidence_requirements(
         "company_facts": evidence_counts.get("company_facts", 0) > 0,
         "recent_news": evidence_counts.get("recent_news", 0) > 0,
         "analyst_estimates": evidence_counts.get("estimate_snapshots", 0) > 0,
+        "product_research": evidence_counts.get("research_evidence", 0) > 0,
     }
     for key, satisfied in checks.items():
         if satisfied:

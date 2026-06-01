@@ -23,6 +23,7 @@ from . import config
 from .evidence import load_evidence_counts, load_source_health, sync_evidence_requirements
 from .llm import TransportConfig, detect, new_provider
 from .prompts import AsyncpgRecorder, invoke, load
+from .research import load_research_evidence, refresh_research_evidence
 
 log = logging.getLogger("context_maintainer")
 
@@ -333,6 +334,7 @@ def _build_user_message(
     price_snapshot: dict | None,
     news: list[dict],
     estimate_revisions: list[dict],
+    research_evidence: list[dict],
     evidence_counts: dict[str, int],
     missing_evidence: list[dict],
     today: str,
@@ -349,6 +351,7 @@ def _build_user_message(
             "price_snapshot": price_snapshot,
             "recent_news": news,
             "estimate_revisions": estimate_revisions,
+            "research_evidence": research_evidence,
             "evidence_counts": evidence_counts,
             "missing_evidence": missing_evidence,
         },
@@ -434,6 +437,12 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
         price_snapshot = await _load_price_snapshot(pool, symbol)
         news = await _load_recent_news(pool, symbol, since)
         estimate_revisions = await _load_estimate_revisions(pool, symbol, since)
+        await refresh_research_evidence(
+            pool,
+            symbol,
+            context=prior,
+        )
+        research_evidence = await load_research_evidence(pool, symbol)
         evidence_counts = await load_evidence_counts(pool, symbol)
         source_health = await load_source_health(pool)
         missing_evidence = await sync_evidence_requirements(
@@ -441,13 +450,15 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
         )
         log.info(
             "symbol=%s prior=%s events_count=%d facts_count=%d "
-            "news_count=%d revisions_count=%d price=%s missing_evidence=%d",
+            "news_count=%d revisions_count=%d research_count=%d "
+            "price=%s missing_evidence=%d",
             symbol,
             f"v{prior['version']}" if prior else "none",
             len(events),
             len(facts),
             len(news),
             len(estimate_revisions),
+            len(research_evidence),
             "yes" if price_snapshot else "no",
             len(missing_evidence),
         )
@@ -469,6 +480,7 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
             and not facts
             and not news
             and not estimate_revisions
+            and not research_evidence
             and prior is not None
             and prior_has_market
         ):
@@ -490,6 +502,7 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
             price_snapshot,
             news,
             estimate_revisions,
+            research_evidence,
             evidence_counts,
             missing_evidence,
             today,

@@ -71,6 +71,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         )
         .route("/api/discovery-pool", get(list_discovery_pool))
         .route("/api/system-status", get(get_system_status))
+        .route("/api/brain-status", get(get_brain_status))
         .route("/api/attention", get(list_attention_items))
         .route("/api/attention/{id}/dismiss", post(dismiss_attention_item))
         .route(
@@ -978,6 +979,345 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
         "llm": llm,
     });
     (StatusCode::OK, Json(body)).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct BrainStatusQuery {
+    symbol: String,
+}
+
+#[derive(Debug, Clone)]
+struct SourceHealthSnapshot {
+    source: String,
+    last_status: String,
+    last_success_at: Option<chrono::DateTime<chrono::Utc>>,
+    last_started_at: Option<chrono::DateTime<chrono::Utc>>,
+    last_failure_kind: Option<String>,
+    last_error: Option<String>,
+    retry_after_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+async fn get_brain_status(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<BrainStatusQuery>,
+) -> impl IntoResponse {
+    use crate::platform::brain::{BrainDecisionInput, age_freshness, decide};
+    use chrono::Duration as ChronoDuration;
+    use sqlx::Row;
+
+    let symbol = q.symbol.trim().to_ascii_uppercase();
+    if symbol.is_empty() || symbol.len() > 10 {
+        return (StatusCode::BAD_REQUEST, "invalid symbol").into_response();
+    }
+    let pool = &gw.store.pool;
+    let now = chrono::Utc::now();
+    let expected_price_session =
+        crate::platform::market_calendar::expected_latest_us_equity_session(now);
+
+    let row = match sqlx::query(
+        r#"SELECT
+              EXISTS (
+                SELECT 1 FROM ticker WHERE symbol = $1 AND status = 'active'
+              ) AS active_ticker,
+              (SELECT max(ts) FROM price_bar WHERE symbol = $1) AS price_at,
+              (SELECT max(ts)::date FROM price_bar WHERE symbol = $1) AS price_session,
+              (SELECT max(ingested_at) FROM news_article WHERE symbol = $1) AS news_at,
+              (SELECT max(published_at) FROM news_article WHERE symbol = $1) AS news_published_at,
+              (SELECT max(snapshot_at) FROM estimate_snapshot WHERE symbol = $1) AS estimates_at,
+              (SELECT max(ingested_at) FROM company_fact WHERE symbol = $1) AS fundamentals_at,
+              (SELECT max(ingested_at) FROM ingest_event
+                WHERE source = 'edgar' AND symbol = $1) AS filings_at,
+              (SELECT version FROM ticker_context
+                WHERE symbol = $1 ORDER BY version DESC LIMIT 1) AS context_version,
+              (SELECT created_at FROM ticker_context
+                WHERE symbol = $1 ORDER BY version DESC LIMIT 1) AS context_at,
+              (SELECT structural_as_of FROM ticker_context
+                WHERE symbol = $1 ORDER BY version DESC LIMIT 1) AS structural_as_of,
+              (SELECT narrative_as_of FROM ticker_context
+                WHERE symbol = $1 ORDER BY version DESC LIMIT 1) AS narrative_as_of,
+              (SELECT market_as_of FROM ticker_context
+                WHERE symbol = $1 ORDER BY version DESC LIMIT 1) AS market_as_of,
+              (SELECT thesis_id FROM thesis
+                WHERE symbol = $1 AND state NOT IN ('closed', 'disqualified')
+                ORDER BY updated_at DESC LIMIT 1) AS open_thesis_id,
+              (SELECT state FROM thesis
+                WHERE symbol = $1 AND state NOT IN ('closed', 'disqualified')
+                ORDER BY updated_at DESC LIMIT 1) AS open_thesis_state,
+              (SELECT forecast->>'direction' FROM thesis
+                WHERE symbol = $1 AND state NOT IN ('closed', 'disqualified')
+                ORDER BY updated_at DESC LIMIT 1) AS open_thesis_direction,
+              (SELECT updated_at FROM thesis
+                WHERE symbol = $1 AND state NOT IN ('closed', 'disqualified')
+                ORDER BY updated_at DESC LIMIT 1) AS open_thesis_at,
+              (SELECT count(*) FROM evidence_requirement
+                WHERE symbol = $1) AS evidence_rows,
+              (SELECT count(*) FROM evidence_requirement
+                WHERE symbol = $1 AND blocking_state <> 'satisfied') AS open_evidence,
+              (SELECT count(*) FROM evidence_requirement
+                WHERE symbol = $1 AND priority = 'blocking'
+                  AND blocking_state <> 'satisfied') AS blocking_evidence,
+              (SELECT count(*) FROM evidence_requirement
+                WHERE symbol = $1 AND blocking_state <> 'satisfied'
+                  AND (next_retry_at IS NULL OR next_retry_at <= now())) AS due_evidence,
+              (SELECT count(*) FROM attention_item
+                WHERE symbol = $1 AND status = 'open') AS open_attention
+        "#,
+    )
+    .bind(&symbol)
+    .fetch_one(pool)
+    .await
+    {
+        Ok(row) => row,
+        Err(e) => {
+            warn!(symbol = %symbol, error = %e, "get_brain_status failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    };
+
+    let health_rows = sqlx::query(
+        r#"SELECT source, last_status, last_started_at, last_success_at,
+                  last_failure_kind, last_error, retry_after_at
+             FROM source_health
+            WHERE source = ANY($1)
+         ORDER BY source"#,
+    )
+    .bind(vec![
+        "fmp_price".to_string(),
+        "fmp_news".to_string(),
+        "massive_news".to_string(),
+        "fmp_estimates".to_string(),
+        "xbrl".to_string(),
+        "edgar".to_string(),
+    ])
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|r| SourceHealthSnapshot {
+        source: r.try_get("source").unwrap_or_default(),
+        last_status: r.try_get("last_status").unwrap_or_default(),
+        last_success_at: r.try_get("last_success_at").ok().flatten(),
+        last_started_at: r.try_get("last_started_at").ok().flatten(),
+        last_failure_kind: r.try_get("last_failure_kind").ok().flatten(),
+        last_error: r.try_get("last_error").ok().flatten(),
+        retry_after_at: r.try_get("retry_after_at").ok().flatten(),
+    })
+    .collect::<Vec<_>>();
+
+    let health = |names: &[&str], max_age: ChronoDuration| {
+        source_health_group(&health_rows, names, now, max_age)
+    };
+    let price_health = health(&["fmp_price"], ChronoDuration::minutes(30));
+    let news_health = health(&["fmp_news", "massive_news"], ChronoDuration::minutes(30));
+    let estimates_health = health(&["fmp_estimates"], ChronoDuration::minutes(30));
+    let fundamentals_health = health(&["xbrl"], ChronoDuration::minutes(360));
+    let filings_health = health(&["edgar"], ChronoDuration::minutes(30));
+    let news_status = source_status(&news_health).to_string();
+    let estimates_status = source_status(&estimates_health).to_string();
+    let fundamentals_status = source_status(&fundamentals_health).to_string();
+    let filings_status = source_status(&filings_health).to_string();
+
+    let price_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("price_at").ok();
+    let price_session: Option<chrono::NaiveDate> = row.try_get("price_session").ok();
+    let news_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("news_at").ok();
+    let news_published_at: Option<chrono::DateTime<chrono::Utc>> =
+        row.try_get("news_published_at").ok();
+    let estimates_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("estimates_at").ok();
+    let fundamentals_at: Option<chrono::DateTime<chrono::Utc>> =
+        row.try_get("fundamentals_at").ok();
+    let filings_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("filings_at").ok();
+    let context_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("context_at").ok();
+    let thesis_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("open_thesis_at").ok();
+    let evidence_rows: i64 = row.try_get("evidence_rows").unwrap_or(0);
+    let open_evidence: i64 = row.try_get("open_evidence").unwrap_or(0);
+    let blocking_evidence: i64 = row.try_get("blocking_evidence").unwrap_or(0);
+    let due_evidence: i64 = row.try_get("due_evidence").unwrap_or(0);
+
+    let price_status = match price_session {
+        Some(d) if d >= expected_price_session => "fresh",
+        Some(_) => "stale",
+        None => "missing",
+    };
+    let context_freshness = age_freshness(now, context_at, ChronoDuration::hours(12));
+    let thesis_freshness = age_freshness(now, thesis_at, ChronoDuration::minutes(30));
+    let source_blocked = [
+        &price_health,
+        &news_health,
+        &estimates_health,
+        &fundamentals_health,
+        &filings_health,
+    ]
+    .iter()
+    .any(|s| source_is_blocked(s));
+    let any_source_stale = [
+        price_status,
+        news_status.as_str(),
+        estimates_status.as_str(),
+        filings_status.as_str(),
+    ]
+    .iter()
+    .any(|s| matches!(*s, "stale" | "missing" | "rate_limited" | "failed"));
+
+    let decision = decide(BrainDecisionInput {
+        evidence_rows,
+        open_evidence,
+        blocking_evidence,
+        due_evidence,
+        has_context: context_at.is_some(),
+        context_stale: context_freshness.as_str() == "stale",
+        has_open_thesis: thesis_at.is_some(),
+        thesis_stale: thesis_freshness.as_str() == "stale",
+        any_source_stale,
+        source_blocked,
+    });
+
+    let attention_kinds = sqlx::query(
+        r#"SELECT kind, count(*) AS n
+             FROM attention_item
+            WHERE symbol = $1 AND status = 'open'
+         GROUP BY kind
+         ORDER BY n DESC, kind"#,
+    )
+    .bind(&symbol)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|r| {
+        json!({
+            "kind": r.try_get::<String, _>("kind").unwrap_or_default(),
+            "count": r.try_get::<i64, _>("n").unwrap_or(0),
+        })
+    })
+    .collect::<Vec<_>>();
+
+    let body = json!({
+        "symbol": symbol,
+        "as_of": now,
+        "active_ticker": row.try_get::<bool, _>("active_ticker").unwrap_or(false),
+        "status": decision.status,
+        "next_action": decision.next_action,
+        "reason": decision.reason,
+        "freshness_target_minutes": 30,
+        "sources": [
+            source_json("price", price_status, price_at, price_health, json!({
+                "expected_latest_session": expected_price_session,
+                "actual_latest_session": price_session,
+            })),
+            source_json("news", &news_status, news_at, news_health, json!({
+                "latest_published_at": news_published_at,
+            })),
+            source_json("estimates", &estimates_status, estimates_at, estimates_health, json!({})),
+            source_json("fundamentals", &fundamentals_status, fundamentals_at, fundamentals_health, json!({})),
+            source_json("filings", &filings_status, filings_at, filings_health, json!({})),
+            json!({
+                "source": "context",
+                "status": context_freshness.as_str(),
+                "last_changed_at": context_at,
+                "last_checked_at": context_at,
+                "max_age_minutes": 720,
+                "version": row.try_get::<Option<i32>, _>("context_version").ok().flatten(),
+                "structural_as_of": row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("structural_as_of").ok().flatten(),
+                "narrative_as_of": row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("narrative_as_of").ok().flatten(),
+                "market_as_of": row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("market_as_of").ok().flatten(),
+            }),
+            json!({
+                "source": "thesis",
+                "status": thesis_freshness.as_str(),
+                "last_changed_at": thesis_at,
+                "last_checked_at": thesis_at,
+                "max_age_minutes": 30,
+                "thesis_id": row.try_get::<Option<uuid::Uuid>, _>("open_thesis_id").ok().flatten(),
+                "state": row.try_get::<Option<String>, _>("open_thesis_state").ok().flatten(),
+                "direction": row.try_get::<Option<String>, _>("open_thesis_direction").ok().flatten(),
+            }),
+        ],
+        "evidence": {
+            "rows": evidence_rows,
+            "open": open_evidence,
+            "blocking": blocking_evidence,
+            "due": due_evidence,
+        },
+        "attention": {
+            "open": row.try_get::<i64, _>("open_attention").unwrap_or(0),
+            "by_kind": attention_kinds,
+        },
+    });
+    (StatusCode::OK, Json(body)).into_response()
+}
+
+fn source_health_group(
+    rows: &[SourceHealthSnapshot],
+    names: &[&str],
+    now: chrono::DateTime<chrono::Utc>,
+    max_age: chrono::Duration,
+) -> serde_json::Value {
+    let matching = rows
+        .iter()
+        .filter(|r| names.contains(&r.source.as_str()))
+        .collect::<Vec<_>>();
+    let last_checked_at = matching
+        .iter()
+        .filter_map(|r| r.last_success_at.or(r.last_started_at))
+        .max();
+    let retry_after_at = matching.iter().filter_map(|r| r.retry_after_at).max();
+    let last_error = matching.iter().find_map(|r| r.last_error.clone());
+    let failure_kind = matching.iter().find_map(|r| r.last_failure_kind.clone());
+    let status = if matching.is_empty() {
+        "missing"
+    } else if matching
+        .iter()
+        .any(|r| r.last_failure_kind.as_deref() == Some("rate_limited"))
+    {
+        "rate_limited"
+    } else if matching.iter().any(|r| r.last_status == "failed") {
+        "failed"
+    } else if matching.iter().any(|r| r.last_status == "running") {
+        "running"
+    } else {
+        crate::platform::brain::age_freshness(now, last_checked_at, max_age).as_str()
+    };
+    json!({
+        "status": status,
+        "last_checked_at": last_checked_at,
+        "retry_after_at": retry_after_at,
+        "failure_kind": failure_kind,
+        "last_error": last_error,
+        "sources": names,
+        "max_age_minutes": max_age.num_minutes(),
+    })
+}
+
+fn source_status(health: &serde_json::Value) -> &str {
+    health
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("missing")
+}
+
+fn source_is_blocked(health: &serde_json::Value) -> bool {
+    matches!(source_status(health), "rate_limited" | "failed")
+}
+
+fn source_json(
+    source: &str,
+    status: &str,
+    last_changed_at: Option<chrono::DateTime<chrono::Utc>>,
+    health: serde_json::Value,
+    detail: serde_json::Value,
+) -> serde_json::Value {
+    json!({
+        "source": source,
+        "status": status,
+        "last_changed_at": last_changed_at,
+        "last_checked_at": health.get("last_checked_at").cloned().unwrap_or(serde_json::Value::Null),
+        "retry_after_at": health.get("retry_after_at").cloned().unwrap_or(serde_json::Value::Null),
+        "failure_kind": health.get("failure_kind").cloned().unwrap_or(serde_json::Value::Null),
+        "last_error": health.get("last_error").cloned().unwrap_or(serde_json::Value::Null),
+        "max_age_minutes": health.get("max_age_minutes").cloned().unwrap_or(serde_json::Value::Null),
+        "source_health": health,
+        "detail": detail,
+    })
 }
 
 async fn list_attention_items(

@@ -10,6 +10,7 @@
     confirmCandidate,
     createWatchlist,
     fetchAlerts,
+    fetchBrainStatus,
     fetchCalibration,
     fetchAttention,
     dismissAttention,
@@ -30,6 +31,8 @@
     subscribe,
     type Alert,
     type AttentionItem,
+    type BrainSourceStatus,
+    type BrainStatus,
     type Calibration,
     type DecisionRow,
     type EvidenceRequirement,
@@ -159,7 +162,26 @@
     if (failureKind) return failureKind;
     if (status === "no_new_rows") return "checked, no new rows";
     if (status === "ok") return "new data";
+    if (status === "rate_limited") return "rate limited";
     return status;
+  }
+
+  function brainStatusLabel(status: string): string {
+    return status.replace(/_/g, " ");
+  }
+
+  function brainActionLabel(action: string): string {
+    return action.replace(/_/g, " ");
+  }
+
+  function sourceLabel(source: string): string {
+    return source.replace(/_/g, " ");
+  }
+
+  function sourceTime(source: BrainSourceStatus): string {
+    if (source.last_checked_at) return `checked ${relativeTime(source.last_checked_at)}`;
+    if (source.last_changed_at) return `changed ${relativeTime(source.last_changed_at)}`;
+    return "not seen";
   }
 
   function evidenceActions(req: EvidenceRequirement): string[] {
@@ -229,6 +251,7 @@
   // ---------- selected-symbol-scoped data ----------
   let symbolContext = $state<TickerContext | null | undefined>(undefined);
   let symbolEvidence = $state<EvidenceRequirement[] | undefined>(undefined);
+  let symbolBrain = $state<BrainStatus | null | undefined>(undefined);
   let symbolTheses = $state<ThesisDetail[] | null | undefined>(undefined);
   let symbolDeclines = $state<ThesisDecline[] | null | undefined>(undefined);
   let symbolDecisions = $state<DecisionRow[] | null | undefined>(undefined);
@@ -400,19 +423,22 @@
     selectedSymbol = symbol;
     symbolContext = undefined;
     symbolEvidence = undefined;
+    symbolBrain = undefined;
     symbolTheses = undefined;
     symbolDeclines = undefined;
     symbolDecisions = undefined;
     // Fetch detail in parallel.
-    const [ctx, evidence, theses, declines, decisions] = await Promise.all([
+    const [ctx, evidence, brain, theses, declines, decisions] = await Promise.all([
       fetchTickerContext(symbol).catch(() => null),
       fetchEvidenceRequirements(symbol).catch(() => []),
+      fetchBrainStatus(symbol).catch(() => null),
       fetchTheses(symbol).catch(() => []),
       fetchThesisDeclines(symbol).catch(() => []),
       fetchDecisions(symbol).catch(() => []),
     ]);
     symbolContext = ctx;
     symbolEvidence = evidence;
+    symbolBrain = brain;
     symbolTheses = theses;
     symbolDeclines = declines;
     symbolDecisions = decisions;
@@ -1278,6 +1304,38 @@
               {:else}
                 <p class="muted">Ticker metadata not loaded yet.</p>
               {/if}
+              {#if symbolBrain === undefined}
+                <p class="muted">Loading brain status…</p>
+              {:else if symbolBrain}
+                <section class="brain-card brain-{symbolBrain.status}">
+                  <div class="brain-hdr">
+                    <span class="brain-title">Brain</span>
+                    <span class="badge tiny brain-{symbolBrain.status}">
+                      {brainStatusLabel(symbolBrain.status)}
+                    </span>
+                    <strong>{brainActionLabel(symbolBrain.next_action)}</strong>
+                  </div>
+                  <p>{symbolBrain.reason}</p>
+                  <dl class="meta-list inline">
+                    <dt>evidence</dt><dd>{symbolBrain.evidence.rows} rows, {symbolBrain.evidence.open} open</dd>
+                    <dt>attention</dt><dd>{symbolBrain.attention.open} open</dd>
+                    <dt>target</dt><dd>{symbolBrain.freshness_target_minutes}m</dd>
+                  </dl>
+                  <ul class="brain-sources">
+                    {#each symbolBrain.sources as s (s.source)}
+                      <li title={s.last_error ?? ""}>
+                        <strong>{sourceLabel(s.source)}</strong>
+                        <span class="badge tiny brain-source-{s.status}">
+                          {healthLabel(s.status, s.failure_kind)}
+                        </span>
+                        <span class="muted">{sourceTime(s)}</span>
+                      </li>
+                    {/each}
+                  </ul>
+                </section>
+              {:else}
+                <p class="muted">Brain status unavailable.</p>
+              {/if}
             {:else if rightTab === "context"}
               {#if symbolContext === undefined}
                 <p class="muted">Loading…</p>
@@ -1781,6 +1839,51 @@
     display: flex; align-items: baseline; gap: .4rem; margin-bottom: .25rem;
   }
   .decline-card p { margin: 0; color: #bac2de; line-height: 1.35; }
+  .brain-card {
+    margin-top: .65rem;
+    border: 1px solid #1f2733;
+    border-left: 3px solid #45567a;
+    border-radius: 4px;
+    background: #0c1019;
+    padding: .6rem .7rem;
+    font-size: .8rem;
+  }
+  .brain-card.brain-fresh { border-left-color: rgb(166,227,161); }
+  .brain-card.brain-due,
+  .brain-card.brain-stale,
+  .brain-card.brain-waiting_on_evidence { border-left-color: rgb(249,226,175); }
+  .brain-card.brain-blocked { border-left-color: rgb(243,139,168); }
+  .brain-card p {
+    margin: .35rem 0;
+    color: #bac2de;
+    line-height: 1.35;
+  }
+  .brain-hdr {
+    display: flex;
+    align-items: baseline;
+    gap: .4rem;
+    flex-wrap: wrap;
+  }
+  .brain-title {
+    font-size: .7rem;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: #9aa3b8;
+  }
+  .brain-sources {
+    list-style: none;
+    padding: 0;
+    margin: .45rem 0 0;
+    display: flex;
+    flex-direction: column;
+    gap: .28rem;
+  }
+  .brain-sources li {
+    display: flex;
+    align-items: baseline;
+    gap: .35rem;
+    flex-wrap: wrap;
+  }
   .evidence-list {
     list-style: none; padding: 0; margin: 0;
     display: flex; flex-direction: column; gap: .45rem;
@@ -1824,6 +1927,18 @@
   .badge.health-no_new_rows { background: rgba(137,180,250,.16); color: rgb(137,180,250); }
   .badge.health-running { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
   .badge.health-failed { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
+  .badge.health-rate_limited { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
+  .badge.brain-fresh,
+  .badge.brain-source-fresh { background: rgba(166,227,161,.18); color: rgb(166,227,161); }
+  .badge.brain-due,
+  .badge.brain-stale,
+  .badge.brain-waiting_on_evidence,
+  .badge.brain-source-stale,
+  .badge.brain-source-missing,
+  .badge.brain-source-running { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
+  .badge.brain-blocked,
+  .badge.brain-source-failed,
+  .badge.brain-source-rate_limited { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
 
   /* Attention queue (#86) — grouped card design */
   .att-toolbar { display: flex; gap: .5rem; align-items: baseline; margin-bottom: .5rem; flex-wrap: wrap; }

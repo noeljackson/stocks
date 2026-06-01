@@ -281,6 +281,26 @@ Current gaps:
 - #93: normalized evidence items are still missing; context/thesis use raw table
   slices rather than a first-class fact layer.
 
+Selected-symbol status now exposes the first slice of #128:
+
+```text
+symbol overview
+  -> /api/brain-status?symbol=MU
+  -> source freshness
+  -> evidence rows/open/blocking/due
+  -> context age
+  -> thesis age
+  -> open attention count
+  -> deterministic status + next_action
+```
+
+That endpoint is intentionally derived from existing tables. It does not
+mutate state and it does not replace the orchestrator. Its job is to make the
+brain loop legible: every ticker should say `fresh`, `due`, `stale`,
+`waiting_on_evidence`, or `blocked`, plus the next system action. The remaining
+#128 work is to make the same decision object drive active source fetches and
+cognition jobs instead of only explaining what should happen next.
+
 ## Thesis Loop
 
 The thesis is the current standing view. A symbol should not accumulate multiple
@@ -424,6 +444,8 @@ Current gaps:
 - #82: terminology still needs simplification across UI/docs.
 - #119: symbol alerts tab should not show unrelated global alerts.
 - #118: live event stream in Vite dev still has tracked rough edges.
+- #128: selected-symbol freshness status is visible, but the top-level
+  orchestrator is still not actively scheduling every stale source.
 
 ## Current Status Summary
 
@@ -445,8 +467,10 @@ partially working
   30-minute brain freshness
   evidence acquisition FSM
   thesis reconciliation timeline
-  system status/freshness explanations
   decision/outcome validation
+
+implemented first slice
+  selected-symbol brain status and next action
 
 missing
   attention FSM

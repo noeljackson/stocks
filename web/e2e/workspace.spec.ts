@@ -177,6 +177,46 @@ async function mockApi(page: Page): Promise<Calls> {
       });
       return;
     }
+    if (path === "/api/brain-status") {
+      const symbol = url.searchParams.get("symbol") ?? "MSFT";
+      await json(route, {
+        symbol,
+        as_of: "2026-06-01T00:00:00Z",
+        active_ticker: true,
+        status: symbol === "OKTA" ? "fresh" : "due",
+        next_action: symbol === "OKTA" ? "monitor" : "reevaluate_thesis",
+        reason: symbol === "OKTA"
+          ? "brain loop is current for this symbol"
+          : "open thesis is past the re-evaluation window",
+        freshness_target_minutes: 30,
+        sources: [
+          {
+            source: "price",
+            status: "fresh",
+            last_changed_at: "2026-06-01T00:00:00Z",
+            last_checked_at: "2026-06-01T00:00:00Z",
+            max_age_minutes: 30,
+          },
+          {
+            source: "news",
+            status: "fresh",
+            last_changed_at: "2026-06-01T00:00:00Z",
+            last_checked_at: "2026-06-01T00:00:00Z",
+            max_age_minutes: 30,
+          },
+          {
+            source: "thesis",
+            status: symbol === "OKTA" ? "fresh" : "stale",
+            last_changed_at: "2026-05-31T23:00:00Z",
+            last_checked_at: "2026-05-31T23:00:00Z",
+            max_age_minutes: 30,
+          },
+        ],
+        evidence: { rows: 4, open: 0, blocking: 0, due: 0 },
+        attention: { open: symbol === "OKTA" ? 0 : 1, by_kind: [] },
+      });
+      return;
+    }
     if (path === "/api/theses") {
       const symbol = url.searchParams.get("symbol");
       await json(route, symbol === "OKTA" ? [{
@@ -306,6 +346,22 @@ test("theses tab lists declined thesis attempts with reasons", async ({ page }) 
   await expect(page.getByText("Declined thesis attempts")).toBeVisible();
   await expect(page.getByText("Context contains no non-consensus edge yet")).toBeVisible();
   await expect(page.getByText("No thesis attempts")).toHaveCount(0);
+});
+
+test("overview explains selected symbol brain status and stale source", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+
+  const brain = page.locator(".brain-card");
+  await expect(brain).toBeVisible();
+  await expect(brain).toContainText("Brain");
+  await expect(brain).toContainText("due");
+  await expect(brain).toContainText("reevaluate thesis");
+  await expect(brain).toContainText("open thesis is past the re-evaluation window");
+  await expect(brain).toContainText("4 rows, 0 open");
+  await expect(brain).toContainText("price");
+  await expect(brain).toContainText("thesis");
+  await expect(brain).toContainText("stale");
 });
 
 test("attention Confirm posts selected watchlist memberships", async ({ page }) => {

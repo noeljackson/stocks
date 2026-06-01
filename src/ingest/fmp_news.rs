@@ -9,6 +9,8 @@ use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use reqwest::Client;
 use serde::Deserialize;
 
+use super::rate_limit;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct FmpNewsRow {
     pub symbol: String,
@@ -84,16 +86,23 @@ impl FmpNewsAdapter {
             self.base_url,
             key = self.api_key,
         );
+        rate_limit::fmp().wait().await;
         let resp = self
             .client
             .get(&url)
             .send()
             .await
             .with_context(|| format!("fmp news fetch {symbol}"))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
+        let status = resp.status();
+        let retry_after = rate_limit::retry_after(resp.headers());
+        rate_limit::fmp().observe_status(status, retry_after).await;
+        if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("fmp news {symbol} {}: {}", status.as_u16(), &body[..body.len().min(256)]);
+            anyhow::bail!(
+                "fmp news {symbol} {}: {}",
+                status.as_u16(),
+                &body[..body.len().min(256)]
+            );
         }
         let rows: Vec<FmpNewsRow> = resp
             .json()
@@ -131,14 +140,20 @@ mod tests {
         assert_eq!(a.symbol, "MU");
         assert_eq!(a.source, "fmp");
         assert!(a.title.contains("Trillion-Dollar"));
-        assert_eq!(a.body.as_deref().unwrap(), "Micron joins players including Nvidia and Microsoft in this exclusive group.");
+        assert_eq!(
+            a.body.as_deref().unwrap(),
+            "Micron joins players including Nvidia and Microsoft in this exclusive group."
+        );
         assert_eq!(a.publisher.as_deref().unwrap(), "Fool - Investing News");
     }
 
     #[test]
     fn normalize_parses_published_date_as_utc() {
         let rows = normalize(&sample_response());
-        assert_eq!(rows[0].published_at.to_rfc3339(), "2026-05-31T05:05:00+00:00");
+        assert_eq!(
+            rows[0].published_at.to_rfc3339(),
+            "2026-05-31T05:05:00+00:00"
+        );
     }
 
     #[test]

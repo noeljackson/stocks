@@ -18,6 +18,7 @@ pub mod fred;
 pub mod massive;
 pub mod massive_news;
 pub mod news_service;
+pub mod rate_limit;
 pub mod sec;
 pub mod xbrl;
 
@@ -40,9 +41,9 @@ use crate::platform::store::Store;
 pub struct Event {
     pub source: String,
     pub kind: String,
-    pub symbol: String,    // "" for market-wide
-    pub subject: String,   // NATS subject to publish on
-    pub payload: Vec<u8>,  // canonical JSON
+    pub symbol: String,   // "" for market-wide
+    pub subject: String,  // NATS subject to publish on
+    pub payload: Vec<u8>, // canonical JSON
     pub source_ts: Option<DateTime<Utc>>,
 }
 
@@ -128,7 +129,11 @@ async fn run_once(adapter: &dyn Adapter, store: &Store, bus: &Bus, name: &str) {
     let mut stored = 0u32;
     let mut published = 0u32;
     for ev in events {
-        let symbol_opt = if ev.symbol.is_empty() { None } else { Some(ev.symbol.as_str()) };
+        let symbol_opt = if ev.symbol.is_empty() {
+            None
+        } else {
+            Some(ev.symbol.as_str())
+        };
         let inserted = match store
             .append_ingest_event(
                 &ev.source,

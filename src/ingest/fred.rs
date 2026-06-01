@@ -15,6 +15,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::warn;
 
+use super::rate_limit;
 use super::{Adapter, Event};
 use crate::platform::subjects;
 
@@ -84,11 +85,18 @@ impl FredAdapter {
              ?series_id={id}&api_key={}&file_type=json&sort_order=desc&limit=1",
             self.api_key
         );
+        rate_limit::fred().wait().await;
         let resp = self.client.get(&url).send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
+        let status = resp.status();
+        let retry_after = rate_limit::retry_after(resp.headers());
+        rate_limit::fred().observe_status(status, retry_after).await;
+        if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("fred {id} {}: {}", status.as_u16(), &body[..body.len().min(256)]);
+            anyhow::bail!(
+                "fred {id} {}: {}",
+                status.as_u16(),
+                &body[..body.len().min(256)]
+            );
         }
         let parsed: FredResp = resp.json().await?;
         let Some(obs) = parsed.observations.into_iter().next() else {

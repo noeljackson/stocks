@@ -157,6 +157,7 @@ def test_assess_evidence_requirements_marks_checked_sources_as_missing() -> None
 
 
 def test_assess_evidence_requirements_tracks_product_research() -> None:
+    checked_at = dt.datetime(2026, 6, 1, 14, 0, tzinfo=dt.UTC).isoformat()
     missing = assess_evidence_requirements(
         {
             "price_bars": 12,
@@ -165,6 +166,7 @@ def test_assess_evidence_requirements_tracks_product_research() -> None:
             "estimate_snapshots": 4,
             "analyst_price_target_snapshots": 1,
             "research_evidence": 0,
+            "research_run_last_at": checked_at,
         },
         {
             "web_research": {
@@ -182,7 +184,38 @@ def test_assess_evidence_requirements_tracks_product_research() -> None:
     [research] = missing
     assert research["requirement_key"] == "product_research"
     assert research["source_type"] == "web_research"
-    assert research["state_reason"] == "source_checked_no_new_rows"
+    assert research["state_reason"] == "source_checked_no_relevant_rows"
+
+
+def test_product_research_ignores_global_health_until_symbol_checked() -> None:
+    missing = assess_evidence_requirements(
+        {
+            "price_bars": 12,
+            "company_facts": 2,
+            "recent_news": 1,
+            "estimate_snapshots": 4,
+            "analyst_price_target_snapshots": 1,
+            "research_evidence": 0,
+            "research_run_last_at": None,
+        },
+        {
+            "web_research": {
+                "source": "web_research",
+                "last_status": "no_new_rows",
+                "last_failure_kind": None,
+                "last_error": None,
+                "retry_after_at": None,
+                "rows_seen": 0,
+                "rows_inserted": 0,
+            },
+        },
+    )
+
+    [research] = missing
+    assert research["requirement_key"] == "product_research"
+    assert research["state_reason"] == "source_not_seen_for_symbol"
+    tasks = build_source_tasks("NVDA", research)
+    assert {task["state"] for task in tasks} == {"queued"}
 
 
 def test_assess_evidence_requirements_tracks_analyst_opinion() -> None:

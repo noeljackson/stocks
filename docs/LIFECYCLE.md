@@ -220,6 +220,14 @@ reference. Blocking missing evidence stops the context/thesis LLM path and
 leaves a visible `thesis_incomplete` item that says the system is waiting for
 acquisition.
 
+Evidence requirements also carry the latest source-health snapshot for the
+feeds that can satisfy them. A missing requirement should explain whether the
+source has not run, is currently fetching, is rate-limited/failed, produced no
+new rows, or succeeded but produced no relevant rows for that symbol. This is
+the difference between "no data exists" and "the acquisition loop is still
+working." Diagnostics aggregate the same acquisition reasons, so a global
+problem like rate limits is visible without opening each ticker.
+
 The thesis engine may still decline after evidence is present. A decline is not
 failure when there is no measurable edge. Example: a mega-cap can have fresh
 context and still get no actionable thesis if the facts are already consensus

@@ -890,9 +890,33 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
         .fetch_one(pool)
         .await
         .unwrap_or(0);
+        let by_reason: Vec<serde_json::Value> = sqlx::query(
+            r#"SELECT reason, COUNT(*) AS n
+                 FROM (
+                    SELECT COALESCE(
+                               NULLIF(source_ref->>'acquisition_state', ''),
+                               blocking_state
+                           ) AS reason
+                      FROM evidence_requirement
+                     WHERE blocking_state <> 'satisfied'
+                 ) reasons
+             GROUP BY reason ORDER BY n DESC"#,
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            json!({
+                "reason": r.try_get::<String, _>("reason").unwrap_or_default(),
+                "count": r.try_get::<i64, _>("n").unwrap_or(0),
+            })
+        })
+        .collect();
         json!({
             "open_requirements": open,
             "by_state": by_state,
+            "by_reason": by_reason,
         })
     };
 

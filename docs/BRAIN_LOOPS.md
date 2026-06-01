@@ -482,6 +482,7 @@ implemented first slice
   attention producer initial state/owner adoption
   transition history for attention resolutions
   open-thesis last_evaluated_at freshness loop without no-change version churn
+  evidence requirements carry source-health acquisition state
 
 missing
   attention retry/blocked transition helper

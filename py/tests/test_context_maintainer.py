@@ -281,7 +281,43 @@ def test_build_source_tasks_maps_rate_limit_to_provider_pause() -> None:
     assert task["action"] == "fmp_analyst_estimates"
     assert task["provider"] == "fmp"
     assert task["state"] == "rate_limited"
-    assert task["next_retry_at"] == "2026-06-01T14:00:00Z"
+    assert task["next_retry_at"] == dt.datetime(2026, 6, 1, 14, 0, tzinfo=dt.UTC)
+
+
+def test_build_source_tasks_applies_provider_wide_pause() -> None:
+    retry_after = "2099-06-01T14:00:00Z"
+    expected_retry = dt.datetime(2099, 6, 1, 14, 0, tzinfo=dt.UTC)
+    source_health = {
+        "fmp_estimates": {
+            "source": "fmp_estimates",
+            "last_status": "failed",
+            "last_failure_kind": "rate_limited",
+            "last_error": "429",
+            "retry_after_at": retry_after,
+            "rows_seen": 0,
+            "rows_inserted": 0,
+        },
+    }
+    [price] = assess_evidence_requirements(
+        {
+            "price_bars": 0,
+            "company_facts": 2,
+            "recent_news": 1,
+            "estimate_snapshots": 4,
+            "analyst_price_target_snapshots": 1,
+            "research_evidence": 1,
+        },
+        source_health,
+    )
+
+    [task] = build_source_tasks("MU", price, source_health)
+
+    assert task["action"] == "fmp_price_backfill"
+    assert task["provider"] == "fmp"
+    assert task["state"] == "rate_limited"
+    assert task["due_at"] == expected_retry
+    assert task["next_retry_at"] == expected_retry
+    assert task["source_ref"]["provider_pause"]["source"] == "fmp_estimates"
 
 
 def test_assess_evidence_requirements_empty_when_core_inputs_present() -> None:
@@ -347,3 +383,38 @@ def test_build_satisfied_source_tasks_requeues_stale_requirement() -> None:
     [task] = tasks
     assert task["state"] == "queued"
     assert task["source_ref"]["acquisition_state"] == "freshness_due"
+
+
+def test_satisfied_source_tasks_pause_only_limited_provider() -> None:
+    now = dt.datetime.now(dt.UTC)
+    retry_after = (now + dt.timedelta(hours=1)).isoformat()
+    tasks = build_satisfied_source_tasks(
+        "MU",
+        "recent_news",
+        {
+            "source_type": "news",
+            "priority": "high",
+            "fetch_actions": ["fmp_news", "massive_news", "llm_sentiment_scoring"],
+        },
+        {
+            "recent_news": 2,
+            "news_last_ingested_at": (now - dt.timedelta(hours=2)).isoformat(),
+        },
+        {
+            "fmp_analyst_opinion": {
+                "source": "fmp_analyst_opinion",
+                "last_status": "failed",
+                "last_failure_kind": "rate_limited",
+                "last_error": "429",
+                "retry_after_at": retry_after,
+                "rows_seen": 0,
+                "rows_inserted": 0,
+            },
+        },
+    )
+
+    by_action = {task["action"]: task for task in tasks}
+    assert by_action["fmp_news"]["state"] == "rate_limited"
+    assert by_action["fmp_news"]["next_retry_at"] == dt.datetime.fromisoformat(retry_after)
+    assert by_action["massive_news"]["state"] == "queued"
+    assert by_action["llm_sentiment_scoring"]["state"] == "queued"

@@ -83,12 +83,15 @@ def _iso(value) -> str | None:
 
 def _task_json(task: dict) -> dict:
     due_at = task["due_at"]
+    next_retry_at = task["next_retry_at"]
     return {
         "action": task["action"],
         "provider": task["provider"],
         "state": task["state"],
         "due_at": _iso(due_at) if hasattr(due_at, "isoformat") else due_at,
-        "next_retry_at": task["next_retry_at"],
+        "next_retry_at": (
+            _iso(next_retry_at) if hasattr(next_retry_at, "isoformat") else next_retry_at
+        ),
     }
 
 
@@ -193,6 +196,76 @@ def provider_for_fetch_action(action: str, source_type: str) -> str:
     return source_type
 
 
+def provider_for_source(source: str) -> str:
+    if source.startswith("fmp_"):
+        return "fmp"
+    if source.startswith("massive_"):
+        return "massive"
+    if source in {"edgar", "xbrl"}:
+        return "sec"
+    if source in {"fred", "cboe", "web_research"}:
+        return source
+    return source
+
+
+def provider_pause_until(
+    provider: str,
+    source_health: dict[str, dict] | None,
+    *,
+    now: dt.datetime | None = None,
+) -> tuple[dt.datetime, dict] | None:
+    """Return the active provider-wide retry gate, if any.
+
+    Source-specific health rows are produced by many adapters, but a vendor
+    429 is provider-wide in practice. If `fmp_estimates` is paused, the planner
+    should also hold `fmp_price_backfill`, `fmp_news`, and analyst-opinion tasks
+    until the shared retry time.
+    """
+    if not source_health:
+        return None
+    now = now or dt.datetime.now(dt.UTC)
+    best: tuple[dt.datetime, dict] | None = None
+    for row in source_health.values():
+        if provider_for_source(row.get("source") or "") != provider:
+            continue
+        if row.get("last_failure_kind") != "rate_limited":
+            continue
+        retry_at = _parse_dt(row.get("retry_after_at"))
+        if retry_at is None or retry_at <= now:
+            continue
+        if best is None or retry_at > best[0]:
+            best = (retry_at, row)
+    if best is None:
+        return None
+    return best[0], best[1]
+
+
+def apply_provider_pause(
+    task: dict,
+    source_health: dict[str, dict] | None,
+    *,
+    now: dt.datetime | None = None,
+) -> dict:
+    pause = provider_pause_until(task["provider"], source_health, now=now)
+    if pause is None:
+        return task
+    retry_after_at, source_row = pause
+    out = dict(task)
+    out["state"] = "rate_limited"
+    out["due_at"] = retry_after_at
+    out["next_retry_at"] = retry_after_at
+    out["last_error"] = out.get("last_error") or source_row.get("last_error")
+    source_ref = dict(out.get("source_ref") or {})
+    source_ref["provider_pause"] = {
+        "provider": task["provider"],
+        "source": source_row.get("source"),
+        "retry_after_at": _iso(retry_after_at),
+        "last_error": source_row.get("last_error"),
+    }
+    out["source_ref"] = source_ref
+    return out
+
+
 def source_task_state(blocking_state: str, acquisition_state: str | None) -> str:
     if blocking_state == "satisfied":
         return "satisfied"
@@ -211,45 +284,51 @@ def source_task_state(blocking_state: str, acquisition_state: str | None) -> str
     return "queued"
 
 
-def _task_due_at(state: str, retry_after_at: str | None) -> dt.datetime | str:
+def _task_due_at(state: str, retry_after_at: object | None) -> dt.datetime:
     if retry_after_at:
-        return retry_after_at
+        parsed = _parse_dt(retry_after_at)
+        if parsed is not None:
+            return parsed
     now = dt.datetime.now(dt.UTC)
     if state in {"no_rows", "failed", "blocked"}:
         return now + dt.timedelta(minutes=30)
     return now
 
 
-def build_source_tasks(symbol: str, requirement: dict) -> list[dict]:
+def build_source_tasks(
+    symbol: str,
+    requirement: dict,
+    source_health: dict[str, dict] | None = None,
+) -> list[dict]:
     state = source_task_state(
         requirement["blocking_state"],
         requirement.get("state_reason"),
     )
     tasks = []
+    retry_after_at = _parse_dt(requirement.get("retry_after_at"))
     for action in requirement.get("fetch_actions", []):
         provider = provider_for_fetch_action(action, requirement["source_type"])
-        tasks.append(
-            {
-                "source_type": requirement["source_type"],
-                "requirement_key": requirement["requirement_key"],
-                "action": action,
-                "scope": "symbol",
-                "target_id": symbol,
-                "provider": provider,
-                "limiter_key": provider,
-                "state": state,
-                "priority": requirement["priority"],
-                "due_at": _task_due_at(state, requirement.get("retry_after_at")),
-                "attempts": requirement.get("attempts", 0),
-                "next_retry_at": requirement.get("retry_after_at"),
-                "last_error": requirement.get("last_error"),
-                "source_ref": {
-                    "acquisition_state": requirement.get("state_reason"),
-                    "evidence_counts": requirement.get("source_ref", {}).get("counts", {}),
-                    "source_health": requirement.get("source_ref", {}).get("source_health", []),
-                },
-            }
-        )
+        task = {
+            "source_type": requirement["source_type"],
+            "requirement_key": requirement["requirement_key"],
+            "action": action,
+            "scope": "symbol",
+            "target_id": symbol,
+            "provider": provider,
+            "limiter_key": provider,
+            "state": state,
+            "priority": requirement["priority"],
+            "due_at": _task_due_at(state, retry_after_at),
+            "attempts": requirement.get("attempts", 0),
+            "next_retry_at": retry_after_at,
+            "last_error": requirement.get("last_error"),
+            "source_ref": {
+                "acquisition_state": requirement.get("state_reason"),
+                "evidence_counts": requirement.get("source_ref", {}).get("counts", {}),
+                "source_health": requirement.get("source_ref", {}).get("source_health", []),
+            },
+        }
+        tasks.append(apply_provider_pause(task, source_health))
     return tasks
 
 
@@ -268,32 +347,31 @@ def build_satisfied_source_tasks(
     tasks = []
     for action in spec.get("fetch_actions", []):
         provider = provider_for_fetch_action(action, spec["source_type"])
-        tasks.append(
-            {
-                "source_type": spec["source_type"],
-                "requirement_key": requirement_key,
-                "action": action,
-                "scope": "symbol",
-                "target_id": symbol,
-                "provider": provider,
-                "limiter_key": provider,
-                "state": state,
-                "priority": spec["priority"],
-                "due_at": due_at,
-                "attempts": 0,
-                "next_retry_at": None,
-                "last_error": None,
-                "source_ref": {
-                    "acquisition_state": state_reason,
-                    "evidence_counts": evidence_counts,
-                    "source_health": [
-                        source_health[s]
-                        for s in SOURCE_HEALTH_BY_REQUIREMENT.get(requirement_key, [])
-                        if source_health and s in source_health
-                    ],
-                },
-            }
-        )
+        task = {
+            "source_type": spec["source_type"],
+            "requirement_key": requirement_key,
+            "action": action,
+            "scope": "symbol",
+            "target_id": symbol,
+            "provider": provider,
+            "limiter_key": provider,
+            "state": state,
+            "priority": spec["priority"],
+            "due_at": due_at,
+            "attempts": 0,
+            "next_retry_at": None,
+            "last_error": None,
+            "source_ref": {
+                "acquisition_state": state_reason,
+                "evidence_counts": evidence_counts,
+                "source_health": [
+                    source_health[s]
+                    for s in SOURCE_HEALTH_BY_REQUIREMENT.get(requirement_key, [])
+                    if source_health and s in source_health
+                ],
+            },
+        }
+        tasks.append(apply_provider_pause(task, source_health))
     return tasks
 
 
@@ -490,7 +568,7 @@ async def sync_evidence_requirements(
     for key, spec in EVIDENCE_REQUIREMENTS.items():
         if key in missing_by_key:
             req = missing_by_key[key]
-            source_tasks = build_source_tasks(symbol, req)
+            source_tasks = build_source_tasks(symbol, req, source_health)
             req["source_ref"]["source_tasks"] = [_task_json(task) for task in source_tasks]
             await pool.execute(
                 """INSERT INTO evidence_requirement
@@ -532,7 +610,7 @@ async def sync_evidence_requirements(
                 req["reason"],
                 req["priority"],
                 req["blocking_state"],
-                req["retry_after_at"],
+                _parse_dt(req["retry_after_at"]),
                 req["last_error"],
                 json.dumps(req["source_ref"]),
             )

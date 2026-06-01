@@ -197,9 +197,15 @@ gdelt_doc_search                  Python source_task worker
 bing_news_rss_search              Python source_task worker
 ```
 
-Remaining gap: #128 should finish central limiter ownership so provider
-backoff is coordinated in one scheduler instead of split between the Rust
-market-data loops and the Python research worker.
+Provider backoff is now applied at planning time across every task that shares
+the same provider key. If `fmp_estimates` records a 429 with `retry_after_at`,
+new or recurring `fmp_price_backfill`, `fmp_news`, and analyst-opinion tasks are
+held in `rate_limited` until that retry time instead of being claimed by another
+worker path immediately.
+
+Remaining gap: #128 should make the Rust market-data loops claim and complete
+their `source_task` rows directly. They currently feed source health, and the
+planner translates that health into provider-wide task pauses.
 
 ## Execution Loop
 
@@ -437,6 +443,9 @@ Current gaps:
 - #128: the sweep is still split across source loops and cognition, but the
   expensive source loops now use a tiered deep-research universe so active names
   are no longer starved behind the broad screener pool.
+- #128: provider-wide retry gates now pause source tasks, but Rust market-data
+  adapters still write source-health summaries instead of claiming every
+  source_task row directly.
 - #136: evidence requirements and source tasks are synchronized from source
   health; Rust source loops still report through source health instead of
   claiming every `source_task` row directly.
@@ -651,12 +660,13 @@ implemented first slice
   evidence requirements carry source-health acquisition state
   source_task rows track acquisition action/state/due time
   satisfied source_task rows requeue when freshness is due
+  provider-wide rate-limit pauses are applied to all matching source tasks
   active ticker evidence sync bootstraps newly added requirement keys
   Python source_task worker claims and runs due web research tasks
   cognition sweep refreshes open evidence rows before choosing targets
 
 missing
-  central source_task limiter that directly owns every provider fetch
+  Rust market-data loops claim/complete source_task rows directly
   full producer adoption for attention retry/blocked transitions
   macro/sector thesis generation and scheduled re-evaluation
   paid semantic research provider if GDELT recall is insufficient

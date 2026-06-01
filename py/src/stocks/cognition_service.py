@@ -131,8 +131,7 @@ async def _run_pipeline(
         log.exception("cognition: context refresh failed for %s", symbol)
 
     if not draft_when_thesis_exists and await _open_thesis_count(pool, symbol) > 0:
-        log.info("cognition: %s already has an open thesis; refresh only", symbol)
-        return
+        log.info("cognition: %s already has an open thesis; draft will reconcile", symbol)
 
     open_evidence = await load_open_evidence_requirements(pool, symbol)
     blocking_evidence = [r for r in open_evidence if r["priority"] == "blocking"]

@@ -1,34 +1,52 @@
-from stocks.thesis_engine import (
-    _context_has_substance,
-    _draft_kind,
-    _normalize_monitoring_draft,
-)
+from stocks.thesis_engine import classify_reconciliation
 
 
-def test_blank_context_declines_no_edge_result():
-    parsed = {"edge_present": False, "no_edge_reason": "context is a blank slate"}
-    assert not _context_has_substance({"structural": {}, "narrative": {}, "market": {}})
-    assert _draft_kind(parsed, {"structural": {}, "narrative": {}, "market": {}}) == "decline"
-
-
-def test_substantial_no_edge_result_becomes_monitoring():
-    context = {
-        "structural": {"summary": "large profitable AI accelerator supplier"},
-        "narrative": {},
-        "market": {},
+def test_classify_reconciliation_flags_dropped_invalidation_as_weakened() -> None:
+    prior = {
+        "edge_rationale": "edge",
+        "forecast": {"direction": "up"},
+        "invalidation_conditions": [{"name": "margin_floor"}],
+        "conviction_tier": "medium",
     }
-    parsed = {
-        "edge_present": False,
-        "no_edge_reason": "facts are already consensus",
+    draft = {
+        "edge_rationale": "edge updated",
+        "forecast": {"direction": "up"},
+        "invalidation_conditions": [],
+        "conviction_tier": "high",
     }
-    assert _context_has_substance(context)
-    assert _draft_kind(parsed, context) == "monitoring"
-    normalized = _normalize_monitoring_draft("NVDA", parsed)
-    assert normalized["thesis_kind"] == "monitoring"
-    assert normalized["forecast"]["direction"] == "neutral"
-    assert "Monitoring thesis for NVDA" in normalized["edge_rationale"]
+
+    assert classify_reconciliation(prior, draft) == ("weakened_view", True)
 
 
-def test_explicit_actionable_kind_wins():
-    parsed = {"thesis_kind": "actionable_edge", "edge_present": True}
-    assert _draft_kind(parsed, None) == "actionable_edge"
+def test_classify_reconciliation_detects_material_direction_change() -> None:
+    prior = {
+        "edge_rationale": "edge",
+        "forecast": {"direction": "up"},
+        "invalidation_conditions": [],
+        "conviction_tier": "medium",
+    }
+    draft = {
+        "edge_rationale": "edge updated",
+        "forecast": {"direction": "down"},
+        "invalidation_conditions": [],
+        "conviction_tier": "medium",
+    }
+
+    assert classify_reconciliation(prior, draft) == ("material_change", False)
+
+
+def test_classify_reconciliation_detects_strengthening() -> None:
+    prior = {
+        "edge_rationale": "edge",
+        "forecast": {"direction": "up"},
+        "invalidation_conditions": [{"name": "margin_floor"}],
+        "conviction_tier": "low",
+    }
+    draft = {
+        "edge_rationale": "edge with more support",
+        "forecast": {"direction": "up"},
+        "invalidation_conditions": [{"name": "margin_floor"}],
+        "conviction_tier": "high",
+    }
+
+    assert classify_reconciliation(prior, draft) == ("strengthened_view", False)

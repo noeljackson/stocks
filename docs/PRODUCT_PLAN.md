@@ -839,6 +839,7 @@ Do this in order. Do not keep adding UI surfaces over an incoherent loop.
 ```text
 source freshness panel
 selected-symbol brain status
+checked/changed/evaluated timestamps per source
 evidence requirement wording
 declined/retired thesis history
 one open thesis timeline

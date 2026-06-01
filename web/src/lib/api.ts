@@ -211,8 +211,8 @@ export interface BrainSourceStatus {
   failure_kind?: string | null;
   last_error?: string | null;
   max_age_minutes?: number | null;
-  detail?: Record<string, unknown>;
-  source_health?: Record<string, unknown>;
+  detail?: Record<string, unknown> | null;
+  source_health?: Record<string, unknown> | null;
   version?: number | null;
   thesis_id?: string | null;
   state?: string | null;

@@ -39,6 +39,8 @@ use tracing::{error, info};
 use crate::platform::bus::Bus;
 use crate::platform::store::Store;
 
+const MACRO_TARGET: &str = "macro_regime";
+
 #[must_use]
 pub fn interval_secs_from_env(name: &str, default_secs: u64) -> Duration {
     let secs = std::env::var(name)
@@ -165,8 +167,23 @@ async fn adapter_loop(
 }
 
 async fn run_once(adapter: &dyn Adapter, store: &Store, bus: &Bus, name: &str) {
+    let owner = format!("ingest.{name}");
     if let Err(e) = store.mark_source_started(name, 0).await {
         error!(adapter = name, error = %e, "source health start record failed");
+    }
+    let benchmark_task = benchmark_task_for_adapter(name);
+    if let Some((action, target)) = benchmark_task {
+        if let Err(e) = store
+            .mark_source_tasks_fetching_for_scope(
+                "benchmark",
+                &[action],
+                &[target.to_string()],
+                &owner,
+            )
+            .await
+        {
+            error!(adapter = name, error = %e, "source task claim failed");
+        }
     }
     let events = match adapter.poll().await {
         Ok(e) => e,
@@ -187,6 +204,22 @@ async fn run_once(adapter: &dyn Adapter, store: &Store, bus: &Bus, name: &str) {
                 .await
             {
                 error!(adapter = name, error = %record_err, "source health failure record failed");
+            }
+            if let Some((action, target)) = benchmark_task {
+                if let Err(task_err) = store
+                    .fail_source_tasks_for_scope(
+                        "benchmark",
+                        action,
+                        &[target.to_string()],
+                        &owner,
+                        failure_kind,
+                        &message,
+                        retry_after_at,
+                    )
+                    .await
+                {
+                    error!(adapter = name, error = %task_err, "source task failure record failed");
+                }
             }
             error!(adapter = name, error = %e, "poll failed");
             return;
@@ -244,11 +277,38 @@ async fn run_once(adapter: &dyn Adapter, store: &Store, bus: &Bus, name: &str) {
     {
         error!(adapter = name, error = %e, "source health success record failed");
     }
+    if let Some((action, target)) = benchmark_task {
+        let targets_with_rows = if rows_seen > 0 {
+            vec![target.to_string()]
+        } else {
+            Vec::new()
+        };
+        if let Err(e) = store
+            .complete_source_tasks_for_scope(
+                "benchmark",
+                action,
+                &[target.to_string()],
+                &targets_with_rows,
+                &owner,
+                chrono::Duration::minutes(30),
+            )
+            .await
+        {
+            error!(adapter = name, error = %e, "source task completion failed");
+        }
+    }
 }
 
 fn is_rate_limit_error(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("429") || lower.contains("rate limit")
+}
+
+fn benchmark_task_for_adapter(name: &str) -> Option<(&'static str, &'static str)> {
+    match name {
+        "fred" => Some(("fred_macro", MACRO_TARGET)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -302,5 +362,14 @@ mod tests {
         assert_eq!(parse_positive_i64("-1"), None);
         assert_eq!(parse_positive_i64(""), None);
         assert_eq!(parse_positive_i64("nope"), None);
+    }
+
+    #[test]
+    fn fred_adapter_maps_to_macro_benchmark_task() {
+        assert_eq!(
+            benchmark_task_for_adapter("fred"),
+            Some(("fred_macro", "macro_regime"))
+        );
+        assert_eq!(benchmark_task_for_adapter("edgar"), None);
     }
 }

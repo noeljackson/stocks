@@ -66,7 +66,7 @@ impl Adapter for FredAdapter {
             if !self.warned_no_key.swap(true, Ordering::Relaxed) {
                 warn!("fred: FRED_API_KEY not set; skipping macro ingest");
             }
-            return Ok(Vec::new());
+            anyhow::bail!("FRED_API_KEY not set");
         }
         let mut out = Vec::new();
         for id in SERIES {

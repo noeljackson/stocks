@@ -264,11 +264,11 @@ async fn main() -> Result<()> {
     // Crowd sentiment (#20): CBOE put/call + VIX daily CSV → crowd_sentiment.
     // Feeds the consensus retail_attention component.
     {
-        let pool = store.pool.clone();
+        let store = store.clone();
         tokio::spawn(async move {
             let adapter = CboeAdapter::new();
             let interval = ingest::interval_secs_from_env("CBOE_INTERVAL_SECS", 30 * 60);
-            if let Err(e) = crowd_sentiment_service::run(pool, adapter, interval).await {
+            if let Err(e) = crowd_sentiment_service::run(store, adapter, interval).await {
                 error!(error = %e, "crowd_sentiment service exited");
             }
         });

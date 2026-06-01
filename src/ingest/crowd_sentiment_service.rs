@@ -6,12 +6,16 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use sqlx::postgres::PgPool;
 use tracing::{info, warn};
 
 use super::cboe::{CboeAdapter, CrowdRow};
 use super::source_health;
+use crate::platform::store::Store;
+
+const CBOE_TASK_ACTION: &str = "cboe_crowd_sentiment";
+const MACRO_TARGET: &str = "macro_regime";
 
 /// One pass: fetch all configured sources, upsert. Returns total rows inserted.
 pub async fn run_once(pool: &PgPool, adapter: &CboeAdapter) -> Result<usize> {
@@ -38,6 +42,9 @@ pub async fn run_once(pool: &PgPool, adapter: &CboeAdapter) -> Result<usize> {
             failures += 1;
             warn!(error = %e, "cboe vix fetch failed");
         }
+    }
+    if failures == 2 {
+        bail!("all cboe crowd sentiment fetches failed");
     }
     source_health::record_success(pool, "cboe", rows_seen as i64, inserted as i64, 2, failures)
         .await?;
@@ -69,7 +76,60 @@ async fn upsert_many(pool: &PgPool, rows: &[CrowdRow]) -> Result<usize> {
     Ok(inserted)
 }
 
-pub async fn run(pool: PgPool, adapter: CboeAdapter, interval: Duration) -> Result<()> {
+async fn mark_macro_task_fetching(store: &Store) {
+    if let Err(e) = store
+        .mark_source_tasks_fetching_for_scope(
+            "benchmark",
+            &[CBOE_TASK_ACTION],
+            &[MACRO_TARGET.to_string()],
+            "ingest.cboe",
+        )
+        .await
+    {
+        warn!(error = %e, "cboe source task claim failed");
+    }
+}
+
+async fn complete_macro_task(store: &Store, rows_seen: bool) {
+    let targets_with_rows = if rows_seen {
+        vec![MACRO_TARGET.to_string()]
+    } else {
+        Vec::new()
+    };
+    if let Err(e) = store
+        .complete_source_tasks_for_scope(
+            "benchmark",
+            CBOE_TASK_ACTION,
+            &[MACRO_TARGET.to_string()],
+            &targets_with_rows,
+            "ingest.cboe",
+            chrono::Duration::minutes(30),
+        )
+        .await
+    {
+        warn!(error = %e, "cboe source task completion failed");
+    }
+}
+
+async fn fail_macro_task(store: &Store, error: &str) {
+    if let Err(e) = store
+        .fail_source_tasks_for_scope(
+            "benchmark",
+            CBOE_TASK_ACTION,
+            &[MACRO_TARGET.to_string()],
+            "ingest.cboe",
+            source_health::failure_kind(error),
+            error,
+            None,
+        )
+        .await
+    {
+        warn!(error = %e, "cboe source task failure record failed");
+    }
+}
+
+pub async fn run(store: Store, adapter: CboeAdapter, interval: Duration) -> Result<()> {
+    let pool = store.pool.clone();
     info!(
         interval_secs = interval.as_secs(),
         "crowd_sentiment service started"
@@ -78,11 +138,18 @@ pub async fn run(pool: PgPool, adapter: CboeAdapter, interval: Duration) -> Resu
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         ticker.tick().await;
+        mark_macro_task_fetching(&store).await;
         match run_once(&pool, &adapter).await {
-            Ok(n) if n > 0 => info!(inserted = n, "crowd_sentiment pass complete"),
-            Ok(_) => {}
+            Ok(n) if n > 0 => {
+                complete_macro_task(&store, true).await;
+                info!(inserted = n, "crowd_sentiment pass complete");
+            }
+            Ok(_) => {
+                complete_macro_task(&store, false).await;
+            }
             Err(e) => {
                 let message = e.to_string();
+                fail_macro_task(&store, &message).await;
                 if let Err(record_err) = source_health::record_failure(
                     &pool,
                     "cboe",

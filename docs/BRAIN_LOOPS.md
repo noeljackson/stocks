@@ -223,6 +223,8 @@ fmp_grades_historical             Rust ingest fmp_analyst_opinion loop claims/co
 fmp_price_target_news             Rust ingest fmp_analyst_opinion loop claims/completes
 sec_company_tickers_cik_lookup    Rust XBRL loop claims/completes
 sec_companyfacts_xbrl             Rust XBRL loop claims/completes
+fred_macro                        Rust FRED loop claims/completes benchmark task
+cboe_crowd_sentiment              Rust CBOE loop claims/completes benchmark task
 gdelt_doc_search                  Python source_task worker
 bing_news_rss_search              Python source_task worker
 ```
@@ -233,9 +235,10 @@ new or recurring `fmp_price_backfill`, `fmp_news`, and analyst-opinion tasks are
 held in `rate_limited` until that retry time instead of being claimed by another
 worker path immediately.
 
-Remaining gap: #128 should make the Rust market-data loops claim and complete
-their `source_task` rows directly. They currently feed source health, and the
-planner translates that health into provider-wide task pauses.
+Remaining gap: #128 should make EDGAR filing freshness and future market/factor
+adapters claim and complete their `source_task` rows directly. The main
+price/news/estimate/opinion/XBRL/FRED/CBOE loops now own task rows as well as
+source health.
 
 ## Execution Loop
 
@@ -509,9 +512,9 @@ Current gaps:
   are no longer starved behind the broad screener pool.
 - #128: provider-wide retry gates now pause source tasks, and due source tasks
   move their symbols to the front of the expensive ingest scan universe. The
-  FMP price, estimates, analyst-opinion, news, and XBRL loops now
-  claim/complete their source tasks directly; the remaining Rust market-data
-  adapters still need the same ownership path.
+  FMP price, estimates, analyst-opinion, news, XBRL, FRED, and CBOE loops now
+  claim/complete their source tasks directly; EDGAR filing freshness still
+  needs the same ownership path.
 - #136: evidence requirements and source tasks are synchronized from source
   health; Rust source loops still report through source health instead of
   claiming every `source_task` row directly.
@@ -751,12 +754,14 @@ implemented first slice
   FMP analyst opinion loop claims/completes consensus, grades, and target-news source tasks
   news loop claims/completes FMP, Massive, and configured LLM sentiment source tasks
   XBRL loop claims/completes SEC CIK lookup and companyfacts source tasks
+  FRED loop claims/completes macro benchmark source task
+  CBOE loop claims/completes crowd sentiment benchmark source task
   active ticker evidence sync bootstraps newly added requirement keys
   Python source_task worker claims and runs due web research tasks
   cognition sweep refreshes open evidence rows before choosing targets
 
 missing
-  remaining Rust market-data loops claim/complete source_task rows directly
+  EDGAR filing freshness claims/completes source_task rows directly
   full producer adoption for attention retry/blocked transitions
   broader macro/factor/commodity data coverage for parent thesis generation
   paid semantic research provider if GDELT recall is insufficient

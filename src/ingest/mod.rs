@@ -37,6 +37,28 @@ use tracing::{error, info};
 use crate::platform::bus::Bus;
 use crate::platform::store::Store;
 
+#[must_use]
+pub fn interval_secs_from_env(name: &str, default_secs: u64) -> Duration {
+    let secs = std::env::var(name)
+        .ok()
+        .and_then(|v| parse_interval_secs(&v, default_secs))
+        .unwrap_or(default_secs);
+    Duration::from_secs(secs.max(1))
+}
+
+#[must_use]
+pub fn parse_interval_secs(raw: &str, default_secs: u64) -> Option<u64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.parse::<u64>() {
+        Ok(0) => Some(default_secs),
+        Ok(v) => Some(v),
+        Err(_) => None,
+    }
+}
+
 /// Normalized item produced by an adapter.
 #[derive(Debug, Clone)]
 pub struct Event {
@@ -238,5 +260,14 @@ mod tests {
         let original = a.content_hash();
         a.symbol = "MU".into();
         assert_ne!(a.content_hash(), original);
+    }
+
+    #[test]
+    fn parse_interval_secs_tolerates_bad_inputs() {
+        assert_eq!(parse_interval_secs("1800", 60), Some(1800));
+        assert_eq!(parse_interval_secs(" 30 ", 60), Some(30));
+        assert_eq!(parse_interval_secs("0", 60), Some(60));
+        assert_eq!(parse_interval_secs("", 60), None);
+        assert_eq!(parse_interval_secs("nope", 60), None);
     }
 }

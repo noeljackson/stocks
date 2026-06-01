@@ -58,7 +58,7 @@ impl Adapter for FredAdapter {
         "fred"
     }
     fn interval(&self) -> Duration {
-        Duration::from_secs(6 * 3600)
+        super::interval_secs_from_env("FRED_INTERVAL_SECS", 30 * 60)
     }
 
     async fn poll(&self) -> Result<Vec<Event>> {

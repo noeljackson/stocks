@@ -86,7 +86,13 @@ async def claim_due_web_research_symbols(
                  FROM source_task
                 WHERE scope = 'symbol'
                   AND action = ANY($1::text[])
-                  AND state = ANY($2::text[])
+                  AND (
+                      state = ANY($2::text[])
+                      OR (
+                          state = 'fetching'
+                          AND updated_at < now() - interval '15 minutes'
+                      )
+                  )
                   AND due_at <= now()
                   AND NOT EXISTS (
                       SELECT 1
@@ -111,7 +117,13 @@ async def claim_due_web_research_symbols(
                 WHERE st.scope = 'symbol'
                   AND st.target_id = ds.target_id
                   AND st.action = ANY($1::text[])
-                  AND st.state = ANY($2::text[])
+                  AND (
+                      st.state = ANY($2::text[])
+                      OR (
+                          st.state = 'fetching'
+                          AND st.updated_at < now() - interval '15 minutes'
+                      )
+                  )
                   AND st.due_at <= now()
                   AND NOT EXISTS (
                       SELECT 1

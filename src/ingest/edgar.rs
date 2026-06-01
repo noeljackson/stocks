@@ -16,6 +16,26 @@ use crate::platform::subjects;
 
 const MAX_FILINGS: usize = 10;
 
+#[derive(Debug, Clone, Default)]
+pub struct EdgarPollResult {
+    pub events: Vec<Event>,
+    pub matched_symbols: Vec<String>,
+    pub missing_cik_symbols: Vec<String>,
+    pub failed_fetch_symbols: Vec<String>,
+}
+
+impl EdgarPollResult {
+    #[must_use]
+    pub fn missing_cik_count(&self) -> usize {
+        self.missing_cik_symbols.len()
+    }
+
+    #[must_use]
+    pub fn failed_fetch_count(&self) -> usize {
+        self.failed_fetch_symbols.len()
+    }
+}
+
 pub struct EdgarAdapter {
     ua: String,
     ciks: HashMap<String, String>, // ticker → 10-digit CIK
@@ -86,28 +106,29 @@ impl Adapter for EdgarAdapter {
 impl EdgarAdapter {
     /// Poll a runtime symbol set using SEC's public ticker -> CIK directory.
     ///
-    /// Returns `(events, missing_cik_count, failed_fetch_count)`. Missing CIKs
-    /// and per-symbol fetch failures are degraded inputs, not fatal pass
-    /// failures, because one unsupported ticker should not block filings for
-    /// the rest of the research universe.
-    pub async fn poll_symbols(&self, symbols: &[String]) -> Result<(Vec<Event>, usize, usize)> {
+    /// Missing CIKs and per-symbol fetch failures are degraded inputs, not
+    /// fatal pass failures, because one unsupported ticker should not block
+    /// filings for the rest of the research universe.
+    pub async fn poll_symbols(&self, symbols: &[String]) -> Result<EdgarPollResult> {
         if symbols.is_empty() {
-            return Ok((Vec::new(), 0, 0));
+            return Ok(EdgarPollResult::default());
         }
         let ciks = sec::ciks_for_symbols(&self.client, &self.ua, symbols).await?;
         let requested: std::collections::BTreeSet<String> =
             symbols.iter().map(|s| s.to_ascii_uppercase()).collect();
         let matched: std::collections::BTreeSet<String> =
             ciks.iter().map(|(symbol, _)| symbol.clone()).collect();
-        let missing_cik_count = requested.difference(&matched).count();
-        let mut failed_fetch_count = 0;
-        let mut out = Vec::new();
+        let mut result = EdgarPollResult {
+            matched_symbols: matched.iter().cloned().collect(),
+            missing_cik_symbols: requested.difference(&matched).cloned().collect(),
+            ..Default::default()
+        };
 
         for (symbol, cik) in ciks {
             match self.poll_one(&symbol, &cik).await {
-                Ok(events) => out.extend(events),
+                Ok(events) => result.events.extend(events),
                 Err(e) => {
-                    failed_fetch_count += 1;
+                    result.failed_fetch_symbols.push(symbol.clone());
                     tracing::warn!(symbol = %symbol, error = %e, "edgar filings fetch failed; continuing");
                 }
             }
@@ -115,7 +136,7 @@ impl EdgarAdapter {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
 
-        Ok((out, missing_cik_count, failed_fetch_count))
+        Ok(result)
     }
 
     async fn poll_one(&self, ticker: &str, cik: &str) -> Result<Vec<Event>> {

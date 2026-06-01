@@ -9,6 +9,7 @@ import asyncpg
 
 FRESHNESS_TARGETS_MINUTES = {
     "price_history": 30,
+    "filing_metadata": 30,
     "company_facts": 6 * 60,
     "recent_news": 30,
     "analyst_estimates": 30,
@@ -18,7 +19,8 @@ FRESHNESS_TARGETS_MINUTES = {
 
 SOURCE_HEALTH_BY_REQUIREMENT = {
     "price_history": ["fmp_price"],
-    "company_facts": ["edgar", "xbrl"],
+    "filing_metadata": ["edgar"],
+    "company_facts": ["xbrl"],
     "recent_news": ["fmp_news", "massive_news"],
     "analyst_estimates": ["fmp_estimates"],
     "analyst_opinion": ["fmp_analyst_opinion"],
@@ -29,6 +31,9 @@ SOURCE_TYPE_REQUIREMENT_ALIASES = {
     "price": "price_history",
     "technical": "price_history",
     "market": "price_history",
+    "edgar": "filing_metadata",
+    "sec_filings": "filing_metadata",
+    "filing_metadata": "filing_metadata",
     "fundamentals": "company_facts",
     "filings": "company_facts",
     "xbrl": "company_facts",
@@ -53,6 +58,15 @@ EVIDENCE_REQUIREMENTS = {
         "priority": "blocking",
         "reason": "Need daily OHLCV bars before evaluating technical setup or context freshness.",
         "fetch_actions": ["fmp_price_backfill"],
+    },
+    "filing_metadata": {
+        "source_type": "filings",
+        "priority": "medium",
+        "reason": (
+            "Need recent SEC submission metadata to catch 8-K, 10-Q, and 10-K events "
+            "between slower fundamental fact refreshes."
+        ),
+        "fetch_actions": ["sec_edgar_submissions"],
     },
     "company_facts": {
         "source_type": "fundamentals",
@@ -148,6 +162,11 @@ def canonical_requirement_key(item: dict) -> str | None:
     haystack = f"{raw_key} {source_type} {reason}"
     if any(token in haystack for token in ("price", "ohlcv", "sma", "rsi", "technical")):
         return "price_history"
+    if any(
+        token in haystack
+        for token in ("8-k", "submission", "filing metadata", "recent filing")
+    ):
+        return "filing_metadata"
     if any(token in haystack for token in ("filing", "xbrl", "fundamental", "10-q", "10-k")):
         return "company_facts"
     if any(token in haystack for token in ("news", "article", "headline", "narrative")):
@@ -227,6 +246,7 @@ def satisfied_source_task_state(
     )
     symbol_check_at = {
         "price_history": _parse_dt(evidence_counts.get("price_last_bar_at")),
+        "filing_metadata": _parse_dt(evidence_counts.get("filing_event_last_ingested_at")),
         "company_facts": _parse_dt(evidence_counts.get("company_fact_last_ingested_at")),
         "recent_news": _parse_dt(evidence_counts.get("news_last_ingested_at")),
         "analyst_estimates": _parse_dt(evidence_counts.get("estimate_snapshot_last_at")),
@@ -449,6 +469,12 @@ async def load_evidence_counts(pool: asyncpg.Pool, symbol: str) -> dict[str, obj
         """SELECT
               (SELECT count(*) FROM price_bar WHERE symbol = $1) AS price_bars,
               (SELECT max(ts) FROM price_bar WHERE symbol = $1) AS price_last_bar_at,
+              (SELECT count(*) FROM ingest_event
+                WHERE symbol = $1 AND source = 'edgar') AS filing_events,
+              (SELECT max(ingested_at)
+                 FROM ingest_event
+                WHERE symbol = $1
+                  AND source = 'edgar') AS filing_event_last_ingested_at,
               (SELECT count(*) FROM company_fact WHERE symbol = $1) AS company_facts,
               (SELECT max(ingested_at)
                  FROM company_fact WHERE symbol = $1) AS company_fact_last_ingested_at,
@@ -611,6 +637,7 @@ def assess_evidence_requirements(
     missing = []
     checks = {
         "price_history": evidence_counts.get("price_bars", 0) > 0,
+        "filing_metadata": evidence_counts.get("filing_events", 0) > 0,
         "company_facts": evidence_counts.get("company_facts", 0) > 0,
         "recent_news": evidence_counts.get("recent_news", 0) > 0,
         "analyst_estimates": evidence_counts.get("estimate_snapshots", 0) > 0,

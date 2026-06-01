@@ -7,6 +7,7 @@
     CandlestickSeries,
     HistogramSeries,
     LineSeries,
+    LineStyle,
     createSeriesMarkers,
     type IChartApi,
     type ISeriesApi,
@@ -44,6 +45,7 @@
   let chart: IChartApi | null = null;
   let priceSeries: ISeriesApi<"Candlestick"> | null = null;
   let volSeries: ISeriesApi<"Histogram"> | null = null;
+  let rsiSeries: ISeriesApi<"Line"> | null = null;
   const smaSeries = new Map<number, ISeriesApi<"Line">>();
   let markersApi: ISeriesMarkersPluginApi<Time> | null = null;
   let candles = $state<Candle[] | null>(null);
@@ -153,6 +155,7 @@
     ensureChart();
     priceSeries?.setData([]);
     volSeries?.setData([]);
+    rsiSeries?.setData([]);
     for (const series of smaSeries.values()) series.setData([]);
     markersApi?.setMarkers([]);
   }
@@ -192,6 +195,32 @@
     return SMA_WINDOWS.some((window) => hasSma(window));
   }
 
+  function rsiData(window = 14): LineData[] {
+    if (!candles || candles.length <= window) return [];
+    const out: LineData[] = [];
+    let gains = 0;
+    let losses = 0;
+    for (let i = 1; i <= window; i += 1) {
+      const change = candles[i].close - candles[i - 1].close;
+      if (change >= 0) gains += change;
+      else losses -= change;
+    }
+    let avgGain = gains / window;
+    let avgLoss = losses / window;
+    const toRsi = () => (avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss)));
+    out.push({ time: toUtc(candles[window].time), value: toRsi() });
+
+    for (let i = window + 1; i < candles.length; i += 1) {
+      const change = candles[i].close - candles[i - 1].close;
+      const gain = change > 0 ? change : 0;
+      const loss = change < 0 ? -change : 0;
+      avgGain = ((avgGain * (window - 1)) + gain) / window;
+      avgLoss = ((avgLoss * (window - 1)) + loss) / window;
+      out.push({ time: toUtc(candles[i].time), value: toRsi() });
+    }
+    return out;
+  }
+
   function ensureChart() {
     if (!container || chart) return;
     chart = createChart(container, {
@@ -228,6 +257,46 @@
       });
       smaSeries.set(window, series);
     }
+    rsiSeries = chart.addSeries(LineSeries, {
+      color: "#fab387",
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: true,
+      crosshairMarkerVisible: true,
+      priceScaleId: "rsi",
+      title: "RSI 14",
+      priceFormat: { type: "price", precision: 1, minMove: 0.1 },
+    }, 1);
+    chart.priceScale("rsi", 1).applyOptions({
+      scaleMargins: { top: 0.12, bottom: 0.12 },
+      borderColor: "#2a3548",
+    });
+    rsiSeries.createPriceLine({
+      price: 70,
+      color: "rgba(243, 139, 168, 0.7)",
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      axisLabelVisible: true,
+      title: "70",
+    });
+    rsiSeries.createPriceLine({
+      price: 50,
+      color: "rgba(186, 194, 222, 0.35)",
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      axisLabelVisible: false,
+      title: "50",
+    });
+    rsiSeries.createPriceLine({
+      price: 30,
+      color: "rgba(166, 227, 161, 0.7)",
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      axisLabelVisible: true,
+      title: "30",
+    });
+    chart.panes()[0]?.setStretchFactor(4);
+    chart.panes()[1]?.setStretchFactor(1);
     markersApi = createSeriesMarkers(priceSeries, []);
   }
 
@@ -245,6 +314,7 @@
     }));
     priceSeries.setData(cs);
     volSeries.setData(vs);
+    rsiSeries?.setData(rsiData(14));
     chart.timeScale().applyOptions({ timeVisible: isIntraday(interval), secondsVisible: false });
     for (const window of SMA_WINDOWS) {
       smaSeries.get(window)?.applyOptions({ title: smaLabel(window) });
@@ -264,6 +334,7 @@
       chart = null;
       priceSeries = null;
       volSeries = null;
+      rsiSeries = null;
       smaSeries.clear();
       markersApi = null;
     };
@@ -299,6 +370,9 @@
           {/if}
         {/each}
       </span>
+    {/if}
+    {#if candles && candles.length > 14}
+      <span class="rsi-key" data-testid="rsi-legend">RSI 14</span>
     {/if}
     <span class="interval-picker" aria-label="Chart interval">
       {#each INTERVALS as intv}
@@ -360,6 +434,11 @@
   .sma-key::before {
     content: ""; width: .9rem; height: 2px; background: var(--sma-color);
     display: inline-block; border-radius: 2px;
+  }
+  .rsi-key {
+    color: #fab387;
+    font-size: .72rem;
+    white-space: nowrap;
   }
   .interval-picker { margin-left: auto; }
   .interval-picker,

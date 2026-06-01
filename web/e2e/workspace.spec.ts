@@ -232,6 +232,7 @@ test("chart defaults to ALL range and interval controls change bar size only", a
   await expect(page.getByTestId("chart-interval-status")).toContainText("1D");
   await expect(page.getByTestId("chart-interval-status")).toContainText("ALL");
   await expect(page.getByText("SMA 200D")).toBeVisible();
+  await expect(page.getByTestId("rsi-legend")).toHaveText("RSI 14");
   await expect.poll(() => calls.candleUrls.some((url) =>
     url.searchParams.get("symbol") === "MSFT"
     && url.searchParams.get("range") === "ALL"

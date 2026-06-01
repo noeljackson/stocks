@@ -176,6 +176,28 @@ struct TransitionErr {
     missing: Vec<String>,
 }
 
+fn thesis_transition_event_payload(
+    thesis_id: uuid::Uuid,
+    thesis: &crate::platform::domain::ThesisDetail,
+    to: crate::platform::domain::ThesisState,
+    rationale: &str,
+    at: chrono::DateTime<chrono::Utc>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "thesis_id": thesis_id,
+        "symbol": thesis.symbol,
+        "cluster_id": thesis.cluster_id,
+        "from": thesis.state.as_str(),
+        "to": to.as_str(),
+        "rationale": rationale,
+        "forecast": thesis.forecast,
+        "conviction_tier": thesis.conviction_tier,
+        "instrument": thesis.instrument,
+        "intended_size": thesis.intended_size,
+        "at": at,
+    })
+}
+
 async fn transition_thesis(
     State(gw): State<Arc<Gateway>>,
     Path(thesis_id): Path<uuid::Uuid>,
@@ -254,14 +276,8 @@ async fn transition_thesis(
         crate::platform::domain::ThesisState::Closed => crate::platform::subjects::THESIS_FULFILLED,
         _ => crate::platform::subjects::THESIS_UPDATED,
     };
-    let payload = serde_json::json!({
-        "thesis_id": thesis_id,
-        "symbol": t.symbol,
-        "from": t.state.as_str(),
-        "to": req.to.as_str(),
-        "rationale": req.rationale,
-        "at": chrono::Utc::now(),
-    });
+    let payload =
+        thesis_transition_event_payload(thesis_id, &t, req.to, &req.rationale, chrono::Utc::now());
     if let Err(e) = gw.bus.publish(topic, payload.to_string().as_bytes()).await {
         warn!(error = %e, "transition publish failed (best-effort)");
     }
@@ -2943,5 +2959,71 @@ async fn reject_candidate(
             warn!(id, error = %e, "reject_candidate failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::domain::{ThesisDetail, ThesisState};
+    use chrono::{TimeZone, Utc};
+    use serde_json::json;
+
+    fn thesis_fixture(thesis_id: uuid::Uuid) -> ThesisDetail {
+        ThesisDetail {
+            thesis_id,
+            symbol: "NVDA".to_string(),
+            cluster_id: Some("ai".to_string()),
+            cluster_thesis: None,
+            state: ThesisState::Armed,
+            edge_rationale: "edge".to_string(),
+            bull_case: None,
+            bear_case: None,
+            forecast: json!({
+                "direction": "up",
+                "target": 220,
+                "horizon_days": 180
+            }),
+            conviction_conditions: json!([]),
+            trigger_conditions: json!([]),
+            invalidation_conditions: json!([]),
+            fulfillment_conditions: json!([]),
+            conviction_tier: Some("high".to_string()),
+            instrument: Some("LEAPS".to_string()),
+            intended_size: json!({ "pct": 0.04 }),
+            version: 3,
+            immutable_original: json!({}),
+            created_at: Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap(),
+            updated_at: Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap(),
+            last_evaluated_at: None,
+            history: vec![],
+            substance: None,
+        }
+    }
+
+    #[test]
+    fn transition_payload_includes_prediction_context() {
+        let thesis_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000123").unwrap();
+        let thesis = thesis_fixture(thesis_id);
+        let at = Utc.with_ymd_and_hms(2026, 6, 1, 13, 0, 0).unwrap();
+
+        let payload = thesis_transition_event_payload(
+            thesis_id,
+            &thesis,
+            ThesisState::Actionable,
+            "ready",
+            at,
+        );
+
+        assert_eq!(payload["thesis_id"], json!(thesis_id));
+        assert_eq!(payload["symbol"], "NVDA");
+        assert_eq!(payload["cluster_id"], "ai");
+        assert_eq!(payload["from"], "armed");
+        assert_eq!(payload["to"], "actionable");
+        assert_eq!(payload["forecast"]["direction"], "up");
+        assert_eq!(payload["forecast"]["horizon_days"], 180);
+        assert_eq!(payload["conviction_tier"], "high");
+        assert_eq!(payload["instrument"], "LEAPS");
+        assert_eq!(payload["intended_size"]["pct"], 0.04);
     }
 }

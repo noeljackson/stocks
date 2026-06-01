@@ -61,6 +61,12 @@ This file remains the lower-level loop map and current implementation status.
               |
               v
        +-------------+
+       | ticket/fill |
+       | execution   |
+       +-------------+
+              |
+              v
+       +-------------+
        | position    |
        | outcome     |
        | reflection  |
@@ -70,6 +76,11 @@ This file remains the lower-level loop map and current implementation status.
 The invariant is: every active ticker should either have a current thesis, a
 visible reason why no thesis exists, or an evidence/source state explaining what
 the system is waiting for.
+
+The execution invariant is: every open position must be tied to a thesis and an
+actual fill, not merely to an operator intention. A decision can create a trade
+ticket, but only a fill creates exposure and advances the thesis to
+`position_open`.
 
 The top-down layer is now first-class state:
 
@@ -189,6 +200,54 @@ bing_news_rss_search              Python source_task worker
 Remaining gap: #128 should finish central limiter ownership so provider
 backoff is coordinated in one scheduler instead of split between the Rust
 market-data loops and the Python research worker.
+
+## Execution Loop
+
+Execution is the bridge between cognition and a real portfolio.
+
+```text
+thesis.state = actionable
+        |
+        v
+thesis_actionable attention
+        |
+        v
+decision: enter / skip / defer / resize / exit
+        |
+        v
+trade_ticket
+  side
+  instrument
+  intended_size
+  risk_result
+        |
+        v
+position_fill
+  manual source now
+  broker source later
+  qty, price, fees, filled_at
+        |
+        v
+position current state
+  basis
+  delta_notional
+  premium_at_risk
+  realized/unrealized P/L
+        |
+        v
+risk + evaluator + reflection
+```
+
+Current status:
+
+```text
+manual fill entry        live
+append-only fills        live
+position basis/P&L UI    live
+broker sync              pending #25
+partial exits            pending
+trade-quality scoring    pending reflection extension
+```
 
 ## Discovery Loop
 

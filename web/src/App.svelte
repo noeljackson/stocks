@@ -19,6 +19,7 @@
     fetchDiscoveryPool,
     fetchEvidenceRequirements,
     fetchPendingCandidates,
+    fetchPositions,
     fetchRegime,
     fetchResearchEvidence,
     fetchThesisDeclines,
@@ -43,6 +44,7 @@
     type MarketState,
     type PendingCandidate,
     type PoolMember,
+    type PositionRow,
     type ResearchEvidence,
     type StreamEvent,
     type ThesisDetail,
@@ -414,12 +416,16 @@
   let symbolTheses = $state<ThesisDetail[] | null | undefined>(undefined);
   let symbolDeclines = $state<ThesisDecline[] | null | undefined>(undefined);
   let symbolDecisions = $state<DecisionRow[] | null | undefined>(undefined);
+  let symbolPositions = $state<PositionRow[] | null | undefined>(undefined);
   let openSymbolTheses = $derived.by<ThesisDetail[]>(() =>
     [...(symbolTheses ?? [])]
       .filter((t) => !["closed", "disqualified"].includes(t.state))
       .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)),
   );
   let currentSymbolThesis = $derived<ThesisDetail | null>(openSymbolTheses[0] ?? null);
+  let openSymbolPositions = $derived<PositionRow[]>(
+    (symbolPositions ?? []).filter((p) => !p.closed_at),
+  );
   let retiredSymbolTheses = $derived.by<ThesisDetail[]>(() =>
     [...(symbolTheses ?? [])]
       .filter((t) => ["closed", "disqualified"].includes(t.state))
@@ -451,6 +457,14 @@
   let decInstrument = $state("equity");
   let decChoice = $state("deferred");
   let decStatus = $state<string | null>(null);
+  let decRecordFill = $state(false);
+  let decPositionId = $state("");
+  let decQty = $state("");
+  let decPrice = $state("");
+  let decFees = $state("");
+  let decDeltaNotional = $state("");
+  let decPremiumAtRisk = $state("");
+  let decFillNotes = $state("");
   let decThesis = $derived(symbolTheses?.find((t) => t.thesis_id === decThesisId) ?? null);
   let decThesisDirection = $derived(forecastDirectionFrom(decThesis?.forecast));
 
@@ -528,6 +542,47 @@
     if (!s) return "";
     const d = new Date(s);
     return d.toLocaleTimeString();
+  }
+
+  function money(v: number | null | undefined): string {
+    if (v === null || v === undefined || Number.isNaN(v)) return "—";
+    return v.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+  }
+
+  function price(v: number | null | undefined): string {
+    if (v === null || v === undefined || Number.isNaN(v)) return "—";
+    return v.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
+  }
+
+  function parseOptionalNumber(value: unknown): number | undefined {
+    const trimmed = String(value ?? "").trim();
+    if (!trimmed) return undefined;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : undefined;
+  }
+
+  function resetFillForm() {
+    decPositionId = "";
+    decQty = "";
+    decPrice = "";
+    decFees = "";
+    decDeltaNotional = "";
+    decPremiumAtRisk = "";
+    decFillNotes = "";
+  }
+
+  function usePositionForExit(p: PositionRow) {
+    decThesisId = p.thesis_id ?? "";
+    decAction = "exit";
+    decChoice = "confirmed";
+    decRecordFill = true;
+    decPositionId = p.position_id;
+    decSide = p.side;
+    decInstrument = p.instrument;
+    decQty = String(p.qty);
+    decPrice = p.latest_price ? String(p.latest_price) : "";
+    bottomMode = "decisions";
+    if (!bottomOpen) bottomPane?.expand();
   }
 
   function forecastDirectionFrom(forecast: Record<string, unknown> | null | undefined): string | null {
@@ -615,8 +670,9 @@
     symbolTheses = undefined;
     symbolDeclines = undefined;
     symbolDecisions = undefined;
+    symbolPositions = undefined;
     // Fetch detail in parallel.
-    const [ctx, evidence, research, brain, theses, declines, decisions] = await Promise.all([
+    const [ctx, evidence, research, brain, theses, declines, decisions, positions] = await Promise.all([
       fetchTickerContext(symbol).catch(() => null),
       fetchEvidenceRequirements(symbol).catch(() => []),
       fetchResearchEvidence(symbol).catch(() => []),
@@ -624,6 +680,7 @@
       fetchTheses(symbol).catch(() => []),
       fetchThesisDeclines(symbol).catch(() => []),
       fetchDecisions(symbol).catch(() => []),
+      fetchPositions(symbol).catch(() => []),
     ]);
     symbolContext = ctx;
     symbolEvidence = evidence;
@@ -632,6 +689,7 @@
     symbolTheses = theses;
     symbolDeclines = declines;
     symbolDecisions = decisions;
+    symbolPositions = positions;
   }
 
   function pickFirstSymbol() {
@@ -765,23 +823,63 @@
       decStatus = "pick a trade side before entering";
       return;
     }
+    const qty = parseOptionalNumber(decQty);
+    const fillPrice = parseOptionalNumber(decPrice);
+    const fees = parseOptionalNumber(decFees) ?? 0;
+    if (decRecordFill && (qty === undefined || qty <= 0 || fillPrice === undefined || fillPrice <= 0)) {
+      decStatus = "manual fill needs positive qty and price";
+      return;
+    }
     decStatus = "sending…";
     try {
       const sizing: Record<string, unknown> = {};
-      if (decAction === "enter" || decAction === "resize") {
+      if (decAction === "enter" || decAction === "resize" || decAction === "exit") {
         sizing.side = decSide;
         sizing.instrument = decInstrument;
       }
+      const delta = parseOptionalNumber(decDeltaNotional);
+      const premium = parseOptionalNumber(decPremiumAtRisk);
+      if (delta !== undefined) sizing.delta_notional = delta;
+      if (premium !== undefined) sizing.premium_at_risk = premium;
       if (decThesisDirection) sizing.thesis_direction = decThesisDirection;
+      const manual_fill = decRecordFill && qty !== undefined && fillPrice !== undefined
+        ? {
+            position_id: decPositionId || undefined,
+            side: decSide,
+            instrument: decInstrument,
+            qty,
+            price: fillPrice,
+            fees,
+            delta_notional: delta,
+            premium_at_risk: premium,
+            notes: decFillNotes.trim() || undefined,
+          }
+        : undefined;
       await postDecision({
         thesis_id: decThesisId || undefined,
         action: decAction,
         user_choice: decChoice,
         sizing: Object.keys(sizing).length > 0 ? sizing : undefined,
+        manual_fill,
       });
       decStatus = "recorded ✓";
       setTimeout(() => (decStatus = null), 2500);
-      decThesisId = "";
+      resetFillForm();
+      if (selectedSymbol) {
+        const [theses, decisions, positions] = await Promise.all([
+          fetchTheses(selectedSymbol).catch(() => symbolTheses ?? []),
+          fetchDecisions(selectedSymbol).catch(() => symbolDecisions ?? []),
+          fetchPositions(selectedSymbol).catch(() => symbolPositions ?? []),
+        ]);
+        symbolTheses = theses;
+        symbolDecisions = decisions;
+        symbolPositions = positions;
+        await Promise.all([
+          fetchTickers().then((t) => (tickers = t)).catch(() => {}),
+          refreshAttention(),
+          fetchBrainOverview().then((b) => (brainOverview = b)).catch(() => {}),
+        ]);
+      }
     } catch (err) {
       decStatus = `error: ${err}`;
     }
@@ -846,6 +944,13 @@
     }
   });
 
+  $effect(() => {
+    if (decAction === "enter" && decSide === "none") {
+      if (decThesisDirection === "up") decSide = "long";
+      if (decThesisDirection === "down") decSide = "short";
+    }
+  });
+
   onMount(() => {
     const routedSymbol = symbolFromRoute();
     if (routedSymbol) void selectSymbol(routedSymbol, { replaceRoute: true });
@@ -865,6 +970,10 @@
           fetchAlerts({ unacked: !showAcked }).then((a) => (alerts = a)).catch(() => {});
           fetchBrainOverview().then((b) => (brainOverview = b)).catch(() => {});
           refreshAttention();
+        }
+        if (e.subject?.startsWith("decision.") && selectedSymbol) {
+          fetchDecisions(selectedSymbol).then((d) => (symbolDecisions = d)).catch(() => {});
+          fetchPositions(selectedSymbol).then((p) => (symbolPositions = p)).catch(() => {});
         }
         // Discovery hits also produce attention items; refresh on any
         // discovery.* subject too.
@@ -1259,7 +1368,13 @@
                     {:else if g.kind === "thesis_actionable"}
                       <button class="confirm" onclick={() => {
                         const tid = g.items[0]?.thesis_id;
-                        if (tid) { decThesisId = tid; bottomMode = "decisions"; }
+                        if (tid) {
+                          decThesisId = tid;
+                          decAction = "enter";
+                          decChoice = "confirmed";
+                          decRecordFill = true;
+                          bottomMode = "decisions";
+                        }
                       }}>Enter ▾</button>
                       <button class="reject" onclick={() => g.items.forEach((it) => deferOne(it.id))}>Defer 7d</button>
                       <button class="reject" onclick={() => g.items.forEach((it) => dismissOne(it.id, "skip"))}>Skip</button>
@@ -1407,6 +1522,55 @@
                 <option>confirmed</option><option>rejected</option><option>deferred</option>
               </select>
             </label>
+            <label class="checkline">
+              <input type="checkbox" bind:checked={decRecordFill} />
+              <span>record manual fill</span>
+            </label>
+            {#if decRecordFill}
+              {#if decAction === "exit" && openSymbolPositions.length > 0}
+                <label>
+                  Position
+                  <select bind:value={decPositionId} onchange={() => {
+                    const p = openSymbolPositions.find((x) => x.position_id === decPositionId);
+                    if (p) {
+                      decSide = p.side;
+                      decInstrument = p.instrument;
+                      decQty = String(p.qty);
+                      decPrice = p.latest_price ? String(p.latest_price) : decPrice;
+                    }
+                  }}>
+                    <option value="">latest open position</option>
+                    {#each openSymbolPositions as p (p.position_id)}
+                      <option value={p.position_id}>{p.side} {p.instrument} · {p.qty} @ {price(p.avg_price)}</option>
+                    {/each}
+                  </select>
+                </label>
+              {/if}
+              <label>
+                Qty
+                <input type="number" min="0" step="any" bind:value={decQty} />
+              </label>
+              <label>
+                Fill price
+                <input type="number" min="0" step="any" bind:value={decPrice} />
+              </label>
+              <label>
+                Fees
+                <input type="number" min="0" step="any" bind:value={decFees} />
+              </label>
+              <label>
+                Delta notional
+                <input type="number" min="0" step="any" bind:value={decDeltaNotional} placeholder="auto for equity" />
+              </label>
+              <label>
+                Premium at risk
+                <input type="number" min="0" step="any" bind:value={decPremiumAtRisk} placeholder="auto for options" />
+              </label>
+              <label class="wide">
+                Notes
+                <input bind:value={decFillNotes} placeholder="fill source, broker note, reason" />
+              </label>
+            {/if}
             <button type="submit">Submit</button>
             {#if decStatus}<span class="muted">{decStatus}</span>{/if}
           </form>
@@ -1874,40 +2038,76 @@
                 </ul>
               {/if}
             {:else if rightTab === "decisions"}
-              {#if symbolDecisions === undefined}
+              {#if symbolDecisions === undefined || symbolPositions === undefined}
                 <p class="muted">Loading…</p>
-              {:else if symbolDecisions && symbolDecisions.length > 0}
+              {:else}
                 {#if activeThesisDirections.length > 1}
                   <p class="decision-warning">
                     Conflicting open thesis directions: {activeThesisDirections.join(" / ")}.
                     Choose the thesis before recording a decision.
                   </p>
                 {/if}
-                <ul class="decisions">
-                  {#each symbolDecisions as d (d.decision_id)}
-                    {@const extraSizing = visibleSizing(d)}
-                    <li>
-                      <span class="badge tiny dec-{d.action} thesis-{d.thesis_direction ?? 'unknown'}">{decisionIntentLabel(d)}</span>
-                      {#if d.thesis_direction}<span class="muted">thesis {d.thesis_direction}</span>{/if}
-                      {#if d.instrument}<span class="muted">{d.instrument}</span>{/if}
-                      {#if d.user_choice}<span class="muted">{d.user_choice}</span>{/if}
-                      <span class="muted">{shortTs(d.at)}</span>
-                      {#if d.thesis_id}
-                        <button
-                          class="link-mini"
-                          onclick={() => { decThesisId = d.thesis_id ?? ""; bottomMode = "decisions"; if (!bottomOpen) bottomPane?.expand(); }}
-                          title="prefill the decision form with this thesis"
-                        >use ↓</button>
-                      {/if}
-                      {#if extraSizing}
-                        <pre class="dec-sizing">{JSON.stringify(extraSizing)}</pre>
-                      {/if}
-                    </li>
-                  {/each}
-                </ul>
-                <p class="muted hint">Submit new decisions via the bottom drawer's <strong>decisions</strong> tab.</p>
-              {:else}
-                <p class="muted">No decisions recorded yet for <strong>{selectedSymbol}</strong>.</p>
+                {#if symbolPositions && symbolPositions.length > 0}
+                  <h4>Positions</h4>
+                  <ul class="positions">
+                    {#each symbolPositions as p (p.position_id)}
+                      <li class:closed={!!p.closed_at}>
+                        <div class="pos-line">
+                          <span class="badge tiny thesis-{p.thesis_direction ?? 'none'}">{p.side}</span>
+                          <strong>{p.qty}</strong>
+                          <span>{p.instrument}</span>
+                          <span class="muted">@ {price(p.avg_price)}</span>
+                          {#if p.closed_at}
+                            <span class="muted">closed {shortTs(p.closed_at)}</span>
+                            <span class:pnl-win={(p.realized_pnl ?? 0) > 0} class:pnl-loss={(p.realized_pnl ?? 0) < 0}>
+                              {money(p.realized_pnl)}
+                            </span>
+                          {:else}
+                            <span class="muted">mark {price(p.latest_price)}</span>
+                            <span class:pnl-win={(p.unrealized_pnl ?? 0) > 0} class:pnl-loss={(p.unrealized_pnl ?? 0) < 0}>
+                              {money(p.unrealized_pnl)}
+                            </span>
+                            <button class="link-mini" onclick={() => usePositionForExit(p)}>exit ↓</button>
+                          {/if}
+                        </div>
+                        <div class="pos-risk muted">
+                          delta {money(p.delta_notional)} · premium {money(p.premium_at_risk)} · fills {p.fill_count}
+                        </div>
+                      </li>
+                    {/each}
+                  </ul>
+                {:else}
+                  <p class="muted">No positions recorded yet for <strong>{selectedSymbol}</strong>.</p>
+                {/if}
+
+                {#if symbolDecisions && symbolDecisions.length > 0}
+                  <h4>Decisions</h4>
+                  <ul class="decisions">
+                    {#each symbolDecisions as d (d.decision_id)}
+                      {@const extraSizing = visibleSizing(d)}
+                      <li>
+                        <span class="badge tiny dec-{d.action} thesis-{d.thesis_direction ?? 'unknown'}">{decisionIntentLabel(d)}</span>
+                        {#if d.thesis_direction}<span class="muted">thesis {d.thesis_direction}</span>{/if}
+                        {#if d.instrument}<span class="muted">{d.instrument}</span>{/if}
+                        {#if d.user_choice}<span class="muted">{d.user_choice}</span>{/if}
+                        <span class="muted">{shortTs(d.at)}</span>
+                        {#if d.thesis_id}
+                          <button
+                            class="link-mini"
+                            onclick={() => { decThesisId = d.thesis_id ?? ""; bottomMode = "decisions"; if (!bottomOpen) bottomPane?.expand(); }}
+                            title="prefill the decision form with this thesis"
+                          >use ↓</button>
+                        {/if}
+                        {#if extraSizing}
+                          <pre class="dec-sizing">{JSON.stringify(extraSizing)}</pre>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ul>
+                  <p class="muted hint">Submit new decisions via the bottom drawer's <strong>decisions</strong> tab.</p>
+                {:else}
+                  <p class="muted">No decisions recorded yet for <strong>{selectedSymbol}</strong>.</p>
+                {/if}
               {/if}
             {/if}
           </div>
@@ -2306,7 +2506,7 @@
 
   /* Decision form */
   .decform {
-    display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; max-width: 600px;
+    display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; max-width: 760px;
     font-size: .85rem;
   }
   .decform label { display: flex; flex-direction: column; gap: .15rem; }
@@ -2314,6 +2514,11 @@
     background: #0a0d14; color: #cdd6f4; border: 1px solid #2a3548; border-radius: 4px;
     padding: .25rem .4rem; font: inherit;
   }
+  .decform .checkline {
+    flex-direction: row; align-items: center; gap: .4rem; grid-column: 1 / -1;
+  }
+  .decform .checkline input { width: auto; }
+  .decform .wide { grid-column: 1 / -1; }
   .decform button {
     grid-column: 1;
     background: #1b2230; color: #cdd6f4; border: 1px solid #45567a;
@@ -2618,6 +2823,16 @@
     padding: .25rem .4rem; border: 1px solid #1f2733; border-radius: 3px;
     font-size: .8rem;
   }
+  .positions { list-style: none; padding: 0; margin: .15rem 0 .8rem; display: flex; flex-direction: column; gap: .25rem; }
+  .positions li {
+    border: 1px solid #263144; border-radius: 4px; padding: .35rem .45rem;
+    font-size: .8rem;
+  }
+  .positions li.closed { opacity: .72; }
+  .pos-line { display: flex; align-items: baseline; gap: .35rem; flex-wrap: wrap; }
+  .pos-risk { margin-top: .2rem; font-size: .72rem; }
+  .pnl-win { color: rgb(166,227,161); }
+  .pnl-loss { color: rgb(243,139,168); }
   .dec-sizing { font-size: .7rem; margin: 0; color: #6c7693; background: transparent; padding: 0; }
   .badge.dec-enter   { background: rgba(166,227,161,.18); color: rgb(166,227,161); }
   .badge.dec-exit    { background: rgba(243,139,168,.18); color: rgb(243,139,168); }

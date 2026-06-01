@@ -14,6 +14,7 @@ use axum::{
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sqlx::Row;
 use tokio_stream::wrappers::BroadcastStream;
 use tracing::warn;
 
@@ -43,6 +44,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/candles", get(get_candles))
         .route("/api/symbol-events", get(get_symbol_events))
         .route("/api/decisions", get(get_decisions).post(record_decision))
+        .route("/api/positions", get(get_positions))
         .route("/api/calibration", get(get_calibration))
         .route(
             "/api/watchlists",
@@ -515,6 +517,104 @@ async fn get_decisions(
     }
 }
 
+async fn get_positions(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<ThesesQuery>,
+) -> impl IntoResponse {
+    let Some(sym) = q.symbol else {
+        return (StatusCode::BAD_REQUEST, "symbol query param required").into_response();
+    };
+    let symbol = sym.trim().to_ascii_uppercase();
+    let rows = match sqlx::query(
+        r#"SELECT p.position_id, p.thesis_id, p.symbol, COALESCE(p.side, 'long') AS side,
+                  p.instrument,
+                  p.qty::float8 AS qty,
+                  p.avg_price::float8 AS avg_price,
+                  COALESCE(p.delta_notional, 0)::float8 AS delta_notional,
+                  COALESCE(p.premium_at_risk, 0)::float8 AS premium_at_risk,
+                  p.opened_at, p.closed_at,
+                  p.realized_pnl::float8 AS realized_pnl,
+                  t.state AS thesis_state,
+                  t.forecast->>'direction' AS thesis_direction,
+                  latest.close AS latest_price,
+                  latest.ts AS latest_price_at,
+                  COALESCE(fills.fill_count, 0) AS fill_count,
+                  CASE
+                    WHEN p.closed_at IS NOT NULL OR latest.close IS NULL THEN NULL
+                    WHEN COALESCE(p.side, 'long') = 'short' THEN
+                      (p.avg_price::float8 - latest.close) * p.qty::float8 *
+                      CASE WHEN p.instrument IN ('leaps','options') THEN 100.0 ELSE 1.0 END
+                    ELSE
+                      (latest.close - p.avg_price::float8) * p.qty::float8 *
+                      CASE WHEN p.instrument IN ('leaps','options') THEN 100.0 ELSE 1.0 END
+                  END AS unrealized_pnl
+             FROM position p
+             LEFT JOIN thesis t ON t.thesis_id = p.thesis_id
+             LEFT JOIN LATERAL (
+                   SELECT close::float8 AS close, ts
+                     FROM price_bar
+                    WHERE symbol = p.symbol
+                 ORDER BY ts DESC
+                    LIMIT 1
+             ) latest ON TRUE
+             LEFT JOIN LATERAL (
+                   SELECT COUNT(*)::int AS fill_count
+                     FROM position_fill pf
+                    WHERE pf.position_id = p.position_id
+             ) fills ON TRUE
+            WHERE p.symbol = $1
+         ORDER BY p.closed_at IS NULL DESC, p.opened_at DESC"#,
+    )
+    .bind(&symbol)
+    .fetch_all(&gw.store.pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!(symbol = %symbol, error = %e, "get_positions failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    };
+
+    let body: Vec<serde_json::Value> = match rows
+        .into_iter()
+        .map(|r| {
+            let opened_at: chrono::DateTime<chrono::Utc> = r.try_get("opened_at")?;
+            let closed_at: Option<chrono::DateTime<chrono::Utc>> = r.try_get("closed_at")?;
+            let latest_price_at: Option<chrono::DateTime<chrono::Utc>> =
+                r.try_get("latest_price_at")?;
+            Ok::<_, sqlx::Error>(json!({
+                "position_id": r.try_get::<uuid::Uuid, _>("position_id")?,
+                "thesis_id": r.try_get::<Option<uuid::Uuid>, _>("thesis_id")?,
+                "symbol": r.try_get::<String, _>("symbol")?,
+                "side": r.try_get::<String, _>("side")?,
+                "instrument": r.try_get::<String, _>("instrument")?,
+                "qty": r.try_get::<f64, _>("qty")?,
+                "avg_price": r.try_get::<f64, _>("avg_price")?,
+                "delta_notional": r.try_get::<f64, _>("delta_notional")?,
+                "premium_at_risk": r.try_get::<f64, _>("premium_at_risk")?,
+                "opened_at": opened_at,
+                "closed_at": closed_at,
+                "realized_pnl": r.try_get::<Option<f64>, _>("realized_pnl")?,
+                "unrealized_pnl": r.try_get::<Option<f64>, _>("unrealized_pnl")?,
+                "latest_price": r.try_get::<Option<f64>, _>("latest_price")?,
+                "latest_price_at": latest_price_at,
+                "fill_count": r.try_get::<i32, _>("fill_count")?,
+                "thesis_state": r.try_get::<Option<String>, _>("thesis_state")?,
+                "thesis_direction": r.try_get::<Option<String>, _>("thesis_direction")?,
+            }))
+        })
+        .collect::<Result<_, _>>()
+    {
+        Ok(body) => body,
+        Err(e) => {
+            warn!(symbol = %symbol, error = %e, "get_positions encode failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    };
+    (StatusCode::OK, Json(body)).into_response()
+}
+
 async fn get_symbol_events(
     State(gw): State<Arc<Gateway>>,
     Query(q): Query<CandlesQuery>,
@@ -618,6 +718,30 @@ struct DecisionReq {
     user_choice: String,
     #[serde(default)]
     sizing: Option<serde_json::Value>,
+    #[serde(default)]
+    manual_fill: Option<ManualFillReq>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ManualFillReq {
+    #[serde(default)]
+    position_id: Option<String>,
+    #[serde(default)]
+    side: Option<String>,
+    #[serde(default)]
+    instrument: Option<String>,
+    qty: f64,
+    price: f64,
+    #[serde(default)]
+    fees: Option<f64>,
+    #[serde(default)]
+    filled_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    delta_notional: Option<f64>,
+    #[serde(default)]
+    premium_at_risk: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1822,38 +1946,586 @@ async fn transition_attention_item(
     }
 }
 
+#[derive(Debug, Clone)]
+struct DecisionThesisMeta {
+    thesis_id: uuid::Uuid,
+    symbol: String,
+    cluster_id: String,
+    state: crate::platform::domain::ThesisState,
+    instrument: Option<String>,
+    intended_size: serde_json::Value,
+}
+
+async fn load_decision_thesis(
+    gw: &Gateway,
+    thesis_id: uuid::Uuid,
+) -> Result<Option<DecisionThesisMeta>, anyhow::Error> {
+    let row = sqlx::query(
+        r#"SELECT thesis_id, symbol, COALESCE(cluster_id, '') AS cluster_id,
+                  state, instrument, COALESCE(intended_size, '{}'::jsonb) AS intended_size
+             FROM thesis
+            WHERE thesis_id = $1"#,
+    )
+    .bind(thesis_id)
+    .fetch_optional(&gw.store.pool)
+    .await?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let state_s: String = row.try_get("state")?;
+    let state = serde_json::from_value(serde_json::Value::String(state_s))
+        .map_err(|e| anyhow::anyhow!("decode ThesisState: {e}"))?;
+    Ok(Some(DecisionThesisMeta {
+        thesis_id: row.try_get("thesis_id")?,
+        symbol: row.try_get("symbol")?,
+        cluster_id: row.try_get("cluster_id")?,
+        state,
+        instrument: row.try_get("instrument").ok(),
+        intended_size: row.try_get("intended_size")?,
+    }))
+}
+
+fn sizing_object(
+    sizing: Option<serde_json::Value>,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    match sizing.unwrap_or_else(|| json!({})) {
+        serde_json::Value::Null => Ok(serde_json::Map::new()),
+        serde_json::Value::Object(map) => Ok(map),
+        _ => Err("sizing must be a JSON object".into()),
+    }
+}
+
+fn sizing_string(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<String> {
+    map.get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn sizing_f64(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<f64> {
+    map.get(key).and_then(|v| v.as_f64())
+}
+
+fn validate_manual_fill(fill: &ManualFillReq) -> Result<(), String> {
+    if !fill.qty.is_finite() || fill.qty <= 0.0 {
+        return Err("manual fill qty must be positive".into());
+    }
+    if !fill.price.is_finite() || fill.price <= 0.0 {
+        return Err("manual fill price must be positive".into());
+    }
+    let fees = fill.fees.unwrap_or(0.0);
+    if !fees.is_finite() || fees < 0.0 {
+        return Err("manual fill fees must be non-negative".into());
+    }
+    Ok(())
+}
+
+async fn risk_result_for_intent(
+    gw: &Gateway,
+    meta: &DecisionThesisMeta,
+    instrument: &str,
+    delta_notional: f64,
+    premium_at_risk: f64,
+) -> serde_json::Value {
+    let Ok((cfg_json, cfg_ver)) = gw.store.active_config("risk").await else {
+        return json!({"status": "unavailable", "reason": "risk config unavailable"});
+    };
+    let Ok(cfg) = serde_json::from_value::<crate::risk::Config>(cfg_json) else {
+        return json!({"status": "unavailable", "reason": "risk config invalid"});
+    };
+    let positions = gw.store.open_positions_for_risk().await.unwrap_or_default();
+    let settings = gw.store.portfolio_settings().await.unwrap_or_default();
+    let realized_pnl = gw.store.realized_pnl_total().await.unwrap_or(0.0);
+    let (portfolio, portfolio_demo) =
+        match crate::risk::derive_portfolio(settings, &positions, realized_pnl) {
+            Some(p) => (p, false),
+            None => (
+                crate::risk::Portfolio {
+                    total_value: 100_000.0,
+                    cash_pct: 50.0,
+                    drawdown_pct: 0.0,
+                },
+                true,
+            ),
+        };
+    let decision = crate::risk::evaluate(
+        &crate::risk::Intent {
+            symbol: meta.symbol.clone(),
+            cluster: meta.cluster_id.clone(),
+            instrument: instrument.to_owned(),
+            delta_notional,
+            premium_at_risk,
+        },
+        &positions,
+        portfolio,
+        &cfg,
+    );
+    json!({
+        "status": if decision.veto { "veto" } else if decision.warnings.is_empty() { "pass" } else { "warning" },
+        "veto": decision.veto,
+        "reasons": decision.reasons,
+        "warnings": decision.warnings,
+        "size_mult": decision.size_mult,
+        "config_version": cfg_ver,
+        "portfolio_demo": portfolio_demo,
+        "portfolio": {
+            "total_value": portfolio.total_value,
+            "cash_pct": portfolio.cash_pct,
+            "drawdown_pct": portfolio.drawdown_pct,
+        },
+    })
+}
+
 async fn record_decision(
     State(gw): State<Arc<Gateway>>,
     Json(req): Json<DecisionReq>,
 ) -> impl IntoResponse {
-    let sizing = req.sizing.clone().unwrap_or(serde_json::Value::Null);
-    let thesis_uuid: Option<uuid::Uuid> = if req.thesis_id.is_empty() {
-        None
-    } else {
-        uuid::Uuid::parse_str(&req.thesis_id).ok()
-    };
+    match record_decision_inner(&gw, req).await {
+        Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+        Err((status, msg)) => (status, msg).into_response(),
+    }
+}
 
-    let result = sqlx::query(
-        r#"INSERT INTO decision (thesis_id, action, user_choice, sizing)
-           VALUES ($1, $2, $3, $4)"#,
-    )
-    .bind(thesis_uuid)
-    .bind(&req.action)
-    .bind(if req.user_choice.is_empty() {
-        None
-    } else {
-        Some(&req.user_choice)
-    })
-    .bind(sizing)
-    .execute(&gw.store.pool)
-    .await;
+async fn record_decision_inner(
+    gw: &Gateway,
+    req: DecisionReq,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    use crate::platform::domain::ThesisState;
 
-    if let Err(e) = result {
-        warn!(error = %e, "record_decision failed");
-        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    let action = req.action.trim().to_ascii_lowercase();
+    if !matches!(action.as_str(), "enter" | "exit" | "skip" | "resize") {
+        return Err((StatusCode::BAD_REQUEST, "invalid decision action".into()));
     }
 
-    // Resolve any open thesis_actionable attention item for this thesis (#86).
+    let mut sizing_map =
+        sizing_object(req.sizing.clone()).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let thesis_uuid: Option<uuid::Uuid> = if req.thesis_id.trim().is_empty() {
+        None
+    } else {
+        Some(
+            uuid::Uuid::parse_str(req.thesis_id.trim())
+                .map_err(|_| (StatusCode::BAD_REQUEST, "invalid thesis_id".to_string()))?,
+        )
+    };
+
+    let thesis_meta = if let Some(tid) = thesis_uuid {
+        Some(
+            load_decision_thesis(gw, tid)
+                .await
+                .map_err(|e| {
+                    warn!(error = %e, "load decision thesis failed");
+                    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                })?
+                .ok_or_else(|| (StatusCode::NOT_FOUND, format!("thesis {tid} not found")))?,
+        )
+    } else {
+        None
+    };
+
+    if let Some(fill) = req.manual_fill.as_ref() {
+        validate_manual_fill(fill).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+        let Some(meta) = thesis_meta.as_ref() else {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "manual fills must be linked to a thesis".into(),
+            ));
+        };
+        match (action.as_str(), meta.state) {
+            ("enter", ThesisState::Actionable) => {}
+            ("resize", ThesisState::PositionOpen) => {}
+            ("exit", ThesisState::PositionOpen | ThesisState::Exiting) => {}
+            ("enter", _) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "manual enter fill requires actionable thesis, got {}",
+                        meta.state.as_str()
+                    ),
+                ));
+            }
+            ("resize", _) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "manual resize fill requires position_open thesis, got {}",
+                        meta.state.as_str()
+                    ),
+                ));
+            }
+            ("exit", _) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "manual exit fill requires position_open/exiting thesis, got {}",
+                        meta.state.as_str()
+                    ),
+                ));
+            }
+            _ => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "manual fills are only supported for enter, resize, and exit decisions".into(),
+                ));
+            }
+        }
+    }
+
+    let sizing_side = sizing_string(&sizing_map, "side");
+    let sizing_instrument = sizing_string(&sizing_map, "instrument");
+    let fill_side = req.manual_fill.as_ref().and_then(|f| f.side.clone());
+    let fill_instrument = req.manual_fill.as_ref().and_then(|f| f.instrument.clone());
+    let side = fill_side.or(sizing_side).filter(|s| s != "none");
+    let instrument = fill_instrument
+        .or(sizing_instrument)
+        .or_else(|| thesis_meta.as_ref().and_then(|m| m.instrument.clone()))
+        .unwrap_or_else(|| "equity".to_string());
+
+    if let Some(side) = side.as_deref() {
+        if !crate::execution::allowed_side(side) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("invalid trade side: {side}"),
+            ));
+        }
+        sizing_map.insert("side".into(), json!(side));
+    }
+    if !crate::execution::allowed_instrument(&instrument) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("invalid trade instrument: {instrument}"),
+        ));
+    }
+    if matches!(action.as_str(), "enter" | "resize") {
+        sizing_map.insert("instrument".into(), json!(instrument.clone()));
+    }
+
+    let exposure = if let Some(fill) = req.manual_fill.as_ref() {
+        let fill_side = side.clone().ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "manual enter/resize/exit fill needs side".to_string(),
+            )
+        })?;
+        Some(crate::execution::default_exposure(
+            &fill_side,
+            &instrument,
+            fill.qty,
+            fill.price,
+            fill.delta_notional,
+            fill.premium_at_risk,
+        ))
+    } else {
+        let delta = sizing_f64(&sizing_map, "delta_notional").unwrap_or(0.0);
+        let premium = sizing_f64(&sizing_map, "premium_at_risk").unwrap_or(0.0);
+        if delta > 0.0 || premium > 0.0 {
+            Some(crate::execution::FillExposure {
+                delta_notional: delta,
+                premium_at_risk: premium,
+                multiplier: crate::execution::contract_multiplier(&instrument),
+            })
+        } else {
+            None
+        }
+    };
+
+    let should_create_ticket =
+        thesis_meta.is_some() && matches!(action.as_str(), "enter" | "exit" | "resize");
+    let mut risk_result = serde_json::Value::Null;
+    if matches!(action.as_str(), "enter" | "resize") {
+        if let (Some(meta), Some(exposure)) = (thesis_meta.as_ref(), exposure) {
+            risk_result = risk_result_for_intent(
+                gw,
+                meta,
+                &instrument,
+                exposure.delta_notional,
+                exposure.premium_at_risk,
+            )
+            .await;
+            sizing_map.insert("risk_result".into(), risk_result.clone());
+            sizing_map.insert("delta_notional".into(), json!(exposure.delta_notional));
+            sizing_map.insert("premium_at_risk".into(), json!(exposure.premium_at_risk));
+        }
+    }
+
+    let sizing_value = if sizing_map.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::Object(sizing_map.clone())
+    };
+    let user_choice = req.user_choice.trim().to_string();
+    let user_choice_db = if user_choice.is_empty() {
+        None
+    } else {
+        Some(user_choice.as_str())
+    };
+
+    let mut tx = gw.store.pool.begin().await.map_err(|e| {
+        warn!(error = %e, "record_decision begin failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
+
+    let decision_id: uuid::Uuid = sqlx::query_scalar(
+        r#"INSERT INTO decision (thesis_id, action, user_choice, sizing)
+           VALUES ($1, $2, $3, $4)
+       RETURNING decision_id"#,
+    )
+    .bind(thesis_uuid)
+    .bind(&action)
+    .bind(user_choice_db)
+    .bind(&sizing_value)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| {
+        warn!(error = %e, "record_decision insert failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
+
+    let mut ticket_id: Option<uuid::Uuid> = None;
+    if should_create_ticket {
+        let meta = thesis_meta.as_ref().expect("checked above");
+        let status = if req.manual_fill.is_some() {
+            "filled"
+        } else if user_choice == "rejected" {
+            "rejected"
+        } else if user_choice == "confirmed" {
+            "accepted"
+        } else {
+            "proposed"
+        };
+        let ticket: uuid::Uuid = sqlx::query_scalar(
+            r#"INSERT INTO trade_ticket
+                    (thesis_id, decision_id, symbol, action, side, instrument,
+                     intended_size, risk_result, status)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           RETURNING ticket_id"#,
+        )
+        .bind(meta.thesis_id)
+        .bind(decision_id)
+        .bind(&meta.symbol)
+        .bind(&action)
+        .bind(side.as_deref())
+        .bind(Some(instrument.as_str()))
+        .bind(&meta.intended_size)
+        .bind(if risk_result.is_null() {
+            json!({})
+        } else {
+            risk_result.clone()
+        })
+        .bind(status)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| {
+            warn!(error = %e, "trade_ticket insert failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        })?;
+        ticket_id = Some(ticket);
+    }
+
+    let mut position_id: Option<uuid::Uuid> = None;
+    let mut fill_id: Option<uuid::Uuid> = None;
+    let mut transitioned_to: Option<&'static str> = None;
+    if let Some(fill) = req.manual_fill.as_ref() {
+        let meta = thesis_meta.as_ref().expect("manual fill requires thesis");
+        let fill_side = side.as_deref().expect("manual fill side validated");
+        let fees = fill.fees.unwrap_or(0.0);
+        let filled_at = fill.filled_at.unwrap_or_else(chrono::Utc::now);
+        let exposure = exposure.expect("manual fill exposure exists");
+
+        match action.as_str() {
+            "enter" => {
+                let pos_id: uuid::Uuid = sqlx::query_scalar(
+                    r#"INSERT INTO position
+                            (thesis_id, symbol, side, instrument, qty, avg_price,
+                             delta_notional, premium_at_risk, opened_at)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                   RETURNING position_id"#,
+                )
+                .bind(meta.thesis_id)
+                .bind(&meta.symbol)
+                .bind(fill_side)
+                .bind(&instrument)
+                .bind(fill.qty)
+                .bind(fill.price)
+                .bind(exposure.delta_notional)
+                .bind(exposure.premium_at_risk)
+                .bind(filled_at)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| {
+                    warn!(error = %e, "position insert failed");
+                    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                })?;
+                position_id = Some(pos_id);
+            }
+            "resize" | "exit" => {
+                let explicit_position = fill
+                    .position_id
+                    .as_deref()
+                    .map(uuid::Uuid::parse_str)
+                    .transpose()
+                    .map_err(|_| (StatusCode::BAD_REQUEST, "invalid position_id".to_string()))?;
+                let row = if let Some(pid) = explicit_position {
+                    sqlx::query(
+                        r#"SELECT position_id, side, instrument, qty::float8 AS qty,
+                                  avg_price::float8 AS avg_price,
+                                  COALESCE(delta_notional, 0)::float8 AS delta_notional,
+                                  COALESCE(premium_at_risk, 0)::float8 AS premium_at_risk
+                             FROM position
+                            WHERE position_id = $1
+                              AND thesis_id = $2
+                              AND closed_at IS NULL
+                            FOR UPDATE"#,
+                    )
+                    .bind(pid)
+                    .bind(meta.thesis_id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                } else {
+                    sqlx::query(
+                        r#"SELECT position_id, side, instrument, qty::float8 AS qty,
+                                  avg_price::float8 AS avg_price,
+                                  COALESCE(delta_notional, 0)::float8 AS delta_notional,
+                                  COALESCE(premium_at_risk, 0)::float8 AS premium_at_risk
+                             FROM position
+                            WHERE thesis_id = $1
+                              AND closed_at IS NULL
+                         ORDER BY opened_at DESC
+                            LIMIT 1
+                            FOR UPDATE"#,
+                    )
+                    .bind(meta.thesis_id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                }
+                .map_err(|e| {
+                    warn!(error = %e, "open position lookup failed");
+                    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                })?;
+
+                let Some(row) = row else {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "no open position found for thesis".into(),
+                    ));
+                };
+                let pos_id: uuid::Uuid = row
+                    .try_get("position_id")
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                let existing_side: String = row.try_get("side").unwrap_or_else(|_| "long".into());
+                let existing_instrument: String = row
+                    .try_get("instrument")
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                if fill_side != existing_side || instrument != existing_instrument {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "manual fill side/instrument must match the open position".into(),
+                    ));
+                }
+                position_id = Some(pos_id);
+
+                let open_qty: f64 = row.try_get("qty").unwrap_or(0.0);
+                let avg_price: f64 = row.try_get("avg_price").unwrap_or(0.0);
+                let old_delta: f64 = row.try_get("delta_notional").unwrap_or(0.0);
+                let old_premium: f64 = row.try_get("premium_at_risk").unwrap_or(0.0);
+                if action == "resize" {
+                    let new_qty = open_qty + fill.qty;
+                    let new_avg = ((open_qty * avg_price) + (fill.qty * fill.price)) / new_qty;
+                    sqlx::query(
+                        r#"UPDATE position
+                              SET qty = $2,
+                                  avg_price = $3,
+                                  delta_notional = $4,
+                                  premium_at_risk = $5
+                            WHERE position_id = $1"#,
+                    )
+                    .bind(pos_id)
+                    .bind(new_qty)
+                    .bind(new_avg)
+                    .bind(old_delta + exposure.delta_notional)
+                    .bind(old_premium + exposure.premium_at_risk)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        warn!(error = %e, "position resize update failed");
+                        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                    })?;
+                } else {
+                    if fill.qty + f64::EPSILON < open_qty {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            "partial exits are not supported yet; fill qty must close the position"
+                                .into(),
+                        ));
+                    }
+                    let pnl = crate::execution::realized_pnl(
+                        &existing_side,
+                        open_qty,
+                        avg_price,
+                        fill.price,
+                        fees,
+                        crate::execution::contract_multiplier(&existing_instrument),
+                    );
+                    sqlx::query(
+                        r#"UPDATE position
+                              SET closed_at = $2,
+                                  realized_pnl = $3
+                            WHERE position_id = $1"#,
+                    )
+                    .bind(pos_id)
+                    .bind(filled_at)
+                    .bind(pnl)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        warn!(error = %e, "position close update failed");
+                        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                    })?;
+                }
+            }
+            _ => unreachable!("manual fill actions validated above"),
+        }
+
+        let pos_id = position_id.expect("position_id set for manual fill");
+        let inserted_fill: uuid::Uuid = sqlx::query_scalar(
+            r#"INSERT INTO position_fill
+                    (position_id, ticket_id, decision_id, thesis_id, symbol, side,
+                     instrument, qty, price, fees, filled_at, source, notes, raw)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'manual', $12, $13)
+           RETURNING fill_id"#,
+        )
+        .bind(pos_id)
+        .bind(ticket_id)
+        .bind(decision_id)
+        .bind(meta.thesis_id)
+        .bind(&meta.symbol)
+        .bind(fill_side)
+        .bind(&instrument)
+        .bind(fill.qty)
+        .bind(fill.price)
+        .bind(fees)
+        .bind(filled_at)
+        .bind(fill.notes.as_deref())
+        .bind(json!({
+            "delta_notional": exposure.delta_notional,
+            "premium_at_risk": exposure.premium_at_risk,
+            "multiplier": exposure.multiplier,
+        }))
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| {
+            warn!(error = %e, "position_fill insert failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        })?;
+        fill_id = Some(inserted_fill);
+    }
+
+    tx.commit().await.map_err(|e| {
+        warn!(error = %e, "record_decision commit failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
+
     if let Some(tid) = thesis_uuid {
         if let Err(e) = gw
             .store
@@ -1861,8 +2533,8 @@ async fn record_decision(
                 "thesis_actionable",
                 Some(tid),
                 None,
-                &format!("decision_recorded:{}", req.action),
-                serde_json::json!({"action": req.action, "user_choice": req.user_choice}),
+                &format!("decision_recorded:{action}"),
+                json!({"action": action, "user_choice": user_choice}),
             )
             .await
         {
@@ -1870,11 +2542,50 @@ async fn record_decision(
         }
     }
 
+    if action == "enter" && req.manual_fill.is_some() {
+        if let Some(meta) = thesis_meta.as_ref() {
+            if meta.state == ThesisState::Actionable {
+                gw.store
+                    .apply_state_transition(
+                        meta.thesis_id,
+                        ThesisState::Actionable,
+                        ThesisState::PositionOpen,
+                        "manual fill recorded",
+                    )
+                    .await
+                    .map_err(|e| {
+                        warn!(error = %e, "position_open transition failed");
+                        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                    })?;
+                transitioned_to = Some("position_open");
+                let payload = json!({
+                    "thesis_id": meta.thesis_id,
+                    "symbol": meta.symbol.clone(),
+                    "from": "actionable",
+                    "to": "position_open",
+                    "rationale": "manual fill recorded",
+                    "at": chrono::Utc::now(),
+                });
+                if let Err(e) = gw
+                    .bus
+                    .publish(subjects::THESIS_UPDATED, payload.to_string().as_bytes())
+                    .await
+                {
+                    warn!(error = %e, "thesis position_open publish failed (best-effort)");
+                }
+            }
+        }
+    }
+
     let env = json!({
-        "thesis_id": req.thesis_id,
-        "action":    req.action,
-        "user_choice": req.user_choice,
-        "sizing":    req.sizing,
+        "thesis_id": thesis_uuid,
+        "decision_id": decision_id,
+        "ticket_id": ticket_id,
+        "position_id": position_id,
+        "fill_id": fill_id,
+        "action": action,
+        "user_choice": user_choice,
+        "sizing": sizing_value,
     });
     if let Err(e) = gw
         .bus
@@ -1883,7 +2594,14 @@ async fn record_decision(
     {
         warn!(error = %e, "decision publish failed (best-effort)");
     }
-    StatusCode::NO_CONTENT.into_response()
+    Ok(json!({
+        "decision_id": decision_id,
+        "ticket_id": ticket_id,
+        "position_id": position_id,
+        "fill_id": fill_id,
+        "risk_result": risk_result,
+        "transitioned_to": transitioned_to,
+    }))
 }
 
 async fn spa_handler(State(gw): State<Arc<Gateway>>, uri: axum::http::Uri) -> impl IntoResponse {

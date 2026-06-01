@@ -582,10 +582,37 @@ export interface DecisionRow {
   at: string;
 }
 
+export interface PositionRow {
+  position_id: string;
+  thesis_id?: string | null;
+  symbol: string;
+  side: string;
+  instrument: string;
+  qty: number;
+  avg_price: number;
+  delta_notional: number;
+  premium_at_risk: number;
+  opened_at: string;
+  closed_at?: string | null;
+  realized_pnl?: number | null;
+  unrealized_pnl?: number | null;
+  latest_price?: number | null;
+  latest_price_at?: string | null;
+  fill_count: number;
+  thesis_state?: string | null;
+  thesis_direction?: string | null;
+}
+
 export async function fetchDecisions(symbol: string): Promise<DecisionRow[]> {
   const r = await fetch(`/api/decisions?symbol=${encodeURIComponent(symbol)}`);
   if (!r.ok) throw new Error(`decisions ${r.status}`);
   return ((await r.json()) as DecisionRow[] | null) ?? [];
+}
+
+export async function fetchPositions(symbol: string): Promise<PositionRow[]> {
+  const r = await fetch(`/api/positions?symbol=${encodeURIComponent(symbol)}`);
+  if (!r.ok) throw new Error(`positions ${r.status}`);
+  return ((await r.json()) as PositionRow[] | null) ?? [];
 }
 
 export async function postDecision(d: {
@@ -593,11 +620,17 @@ export async function postDecision(d: {
   action: string;
   user_choice: string;
   sizing?: unknown;
-}): Promise<void> {
+  manual_fill?: unknown;
+}): Promise<Record<string, unknown>> {
   const r = await fetch("/api/decisions", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(d),
   });
-  if (!r.ok && r.status !== 204) throw new Error(`decision ${r.status}`);
+  if (!r.ok && r.status !== 204) {
+    const body = await r.text().catch(() => "");
+    throw new Error(`decision ${r.status}${body ? `: ${body}` : ""}`);
+  }
+  if (r.status === 204) return {};
+  return (await r.json()) as Record<string, unknown>;
 }

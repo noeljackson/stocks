@@ -13,6 +13,7 @@
 pub mod platform;
 pub mod consensus;
 pub mod discovery;
+pub mod execution;
 pub mod ingest;
 pub mod llm;
 pub mod regime;

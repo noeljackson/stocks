@@ -959,11 +959,19 @@
                 <li class="disc-card">
                   <div class="disc-hdr">
                     <strong class="link-symbol" onclick={() => selectSymbol(c.symbol)}>{c.symbol}</strong>
+                    {#if c.rank_bucket}
+                      <span class="badge tiny rank-{c.rank_bucket}">
+                        {c.rank_bucket} {Math.round(c.rank_score ?? 0)}
+                      </span>
+                    {/if}
                     <span class="badge tiny">{c.signal_name}</span>
                     {#if c.signal_value !== null}<span class="muted">value {c.signal_value.toFixed(3)}</span>{/if}
                     <span class="muted">{shortTs(c.proposed_at)}</span>
                   </div>
                   {#if c.reasoning}<p class="muted disc-reasoning">{displayReason(c.reasoning)}</p>{/if}
+                  {#if c.rank_reasons?.length}
+                    <p class="muted disc-rank">{c.rank_reasons.join(" · ")}</p>
+                  {/if}
                   {#if c.proposed_lists.length > 0}
                     <div class="disc-lists">
                       {#each c.proposed_lists as p}
@@ -1762,6 +1770,7 @@
   .link-symbol { cursor: pointer; }
   .link-symbol:hover { color: #89b4fa; }
   .disc-reasoning { margin: .3rem 0 .4rem; font-size: .8rem; }
+  .disc-rank { margin: -.2rem 0 .4rem; font-size: .75rem; }
   .disc-lists { display: flex; flex-direction: column; gap: .2rem; margin-bottom: .35rem; }
   .disc-pick {
     display: flex; align-items: baseline; gap: .35rem; flex-wrap: wrap;
@@ -1919,6 +1928,10 @@
   .badge.conf-high { background: rgba(166, 227, 161, .18); color: rgb(166, 227, 161); }
   .badge.conf-medium { background: rgba(249, 226, 175, .15); color: rgb(249, 226, 175); }
   .badge.conf-low { background: rgba(108, 112, 134, .2); color: #9aa3b8; }
+  .badge.rank-highest { background: rgba(166,227,161,.2); color: rgb(166,227,161); }
+  .badge.rank-high { background: rgba(137,180,250,.18); color: rgb(137,180,250); }
+  .badge.rank-medium { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
+  .badge.rank-low { background: rgba(108,112,134,.2); color: #9aa3b8; }
   .badge.sev-blocked  { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
   .badge.sev-decision { background: rgba(137,180,250,.18); color: rgb(137,180,250); }
   .badge.sev-review   { background: rgba(249,226,175,.15); color: rgb(249,226,175); }

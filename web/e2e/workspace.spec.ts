@@ -130,6 +130,9 @@ async function mockApi(page: Page): Promise<Calls> {
         proposed_at: "2026-06-01T00:00:00Z",
         proposed_lists: [{ watchlist_id: "wl-core", watchlist_name: "Core", confidence: "high", rationale: "AI infrastructure fit" }],
         suggested_new_list: null,
+        rank_score: 82,
+        rank_bucket: "highest",
+        rank_reasons: ["volume anomaly", "strong signal value", "high-confidence watchlist fit"],
       }] : []);
       return;
     }
@@ -364,6 +367,18 @@ test("overview explains selected symbol brain status and stale source", async ({
   await expect(brain).toContainText("stale");
 });
 
+test("discovery tab shows candidate ranking reasons", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: /discovery/ }).click();
+
+  const card = page.locator(".disc-card").filter({ hasText: "NVDA" });
+  await expect(card).toContainText("highest 82");
+  await expect(card).toContainText("volume anomaly");
+  await expect(card).toContainText("high-confidence watchlist fit");
+});
+
 test("attention Confirm posts selected watchlist memberships", async ({ page }) => {
   const calls = await mockApi(page);
   await page.goto("/");
@@ -395,7 +410,7 @@ test("watchlist rows show thesis state and direction", async ({ page }) => {
   await page.goto("/");
 
   await page.locator(".wl-row").filter({ hasText: "Core" }).click();
-  const row = page.locator(".wl-mem").filter({ hasText: "OKTA" });
+  const row = page.locator(".wl-mem").filter({ hasText: "OKTA" }).first();
 
   await expect(row).toContainText("forming");
   await expect(row).toContainText("bull");

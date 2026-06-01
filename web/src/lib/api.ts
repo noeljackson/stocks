@@ -328,10 +328,15 @@ export interface PendingCandidate {
   symbol: string;
   signal_name: string;
   signal_value: number | null;
+  domain_fit?: number | null;
+  proposed_tier?: number;
   reasoning: string | null;
   proposed_at: string;
   proposed_lists: ProposedList[];
   suggested_new_list: SuggestedNewList | null;
+  rank_score?: number;
+  rank_bucket?: "highest" | "high" | "medium" | "low";
+  rank_reasons?: string[];
 }
 
 export async function fetchPendingCandidates(): Promise<PendingCandidate[]> {

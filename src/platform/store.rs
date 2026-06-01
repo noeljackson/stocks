@@ -1214,8 +1214,8 @@ impl Store {
         let rows = sqlx::query(
             r#"SELECT * FROM (
                   SELECT DISTINCT ON (dc.symbol, dc.signal_name)
-                         dc.id, dc.symbol, dc.signal_name, dc.signal_value, dc.reasoning,
-                         dc.proposed_at,
+                         dc.id, dc.symbol, dc.signal_name, dc.signal_value, dc.domain_fit,
+                         dc.proposed_tier, dc.reasoning, dc.proposed_at,
                          COALESCE(dcl.proposed_lists, '[]'::jsonb) AS proposed_lists,
                          dcl.suggested_new_list
                     FROM discovery_candidate dc
@@ -1229,23 +1229,50 @@ impl Store {
         .fetch_all(&self.pool)
         .await
         .context("pending_discovery_candidates")?;
-        rows.into_iter()
+        let mut ranked = rows
+            .into_iter()
             .map(|r| {
                 let signal_value: Option<f64> = r.try_get("signal_value").ok();
-                Ok(serde_json::json!({
-                    "id": r.try_get::<i64, _>("id")?,
-                    "symbol": r.try_get::<String, _>("symbol")?,
-                    "signal_name": r.try_get::<String, _>("signal_name")?,
-                    "signal_value": signal_value,
-                    "reasoning": r.try_get::<Option<String>, _>("reasoning").ok(),
-                    "proposed_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("proposed_at")?,
-                    "proposed_lists": r.try_get::<serde_json::Value, _>("proposed_lists")?,
-                    "suggested_new_list": r
-                        .try_get::<Option<serde_json::Value>, _>("suggested_new_list")
-                        .unwrap_or(None),
-                }))
+                let proposed_lists: serde_json::Value = r.try_get("proposed_lists")?;
+                let suggested_new_list = r
+                    .try_get::<Option<serde_json::Value>, _>("suggested_new_list")
+                    .unwrap_or(None);
+                let proposed_at: chrono::DateTime<chrono::Utc> = r.try_get("proposed_at")?;
+                let rank = crate::discovery::ranking::rank_candidate(
+                    &r.try_get::<String, _>("signal_name")?,
+                    signal_value,
+                    r.try_get::<Option<f64>, _>("domain_fit").ok().flatten(),
+                    r.try_get::<i32, _>("proposed_tier").unwrap_or(2),
+                    &proposed_lists,
+                    suggested_new_list.is_some(),
+                );
+                Ok((
+                    rank.score,
+                    proposed_at,
+                    serde_json::json!({
+                        "id": r.try_get::<i64, _>("id")?,
+                        "symbol": r.try_get::<String, _>("symbol")?,
+                        "signal_name": r.try_get::<String, _>("signal_name")?,
+                        "signal_value": signal_value,
+                        "domain_fit": r.try_get::<Option<f64>, _>("domain_fit").ok().flatten(),
+                        "proposed_tier": r.try_get::<i32, _>("proposed_tier").unwrap_or(2),
+                        "reasoning": r.try_get::<Option<String>, _>("reasoning").ok(),
+                        "proposed_at": proposed_at,
+                        "proposed_lists": proposed_lists,
+                        "suggested_new_list": suggested_new_list,
+                        "rank_score": rank.score,
+                        "rank_bucket": rank.bucket,
+                        "rank_reasons": rank.reasons,
+                    }),
+                ))
             })
-            .collect()
+            .collect::<Result<Vec<_>>>()?;
+        ranked.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.1.cmp(&a.1))
+        });
+        Ok(ranked.into_iter().map(|(_, _, value)| value).collect())
     }
 
     /// Confirm a candidate to one or more watchlists. Updates status, adds

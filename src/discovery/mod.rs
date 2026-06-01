@@ -9,6 +9,7 @@
 //!   - filing_news_cluster  STUB (needs #19)
 
 pub mod composer;
+pub mod ranking;
 pub mod service;
 pub mod signals;
 

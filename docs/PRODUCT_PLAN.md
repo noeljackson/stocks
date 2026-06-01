@@ -58,6 +58,10 @@ ticker_context
   maintained memory for one symbol
   structural, narrative, market bands
 
+technical_state
+  current multi-timeframe chart regime and historical analogs
+  examples: 200-day SMA cross history, RSI 14 percentile/duration, extension state
+
 thesis
   one current standing view for a symbol
   monitoring, actionable, position_open, exiting, closed, disqualified
@@ -92,6 +96,7 @@ no operator interruption without a needed judgment
 no trade decision without risk context
 no position_open thesis without an actual fill
 no outcome without preserving what was known at decision time
+no bullish/bearish thesis treated as an entry signal without technical/risk state
 ```
 
 ## Brain Hierarchy
@@ -405,11 +410,25 @@ consumer cycle
 Discovery answers: "What should the brain inspect next?"
 
 ```text
-broad liquid universe
+broad liquid universe / discovery_pool
   -> cheap evidence scan
   -> signal composition
   -> ranking
   -> candidate_review attention only when judgment is useful
+```
+
+The discovery pool is intentionally large. It is the haystack, not the work
+queue. The operator-facing work queue is ranked nominations and attention:
+
+```text
+discovery_pool
+  broad FMP screener inventory; many names are expected
+
+discovery_candidate / nomination
+  ranked reason to inspect a subset
+
+ticker/watchlist universe
+  active operating set with freshness, context, thesis, and decisions
 ```
 
 Signals are facts:
@@ -467,6 +486,52 @@ what confirmation does
 what rejection teaches
 ```
 
+## Technical Analysis Loop
+
+Technical analysis is a separate evidence package, not a replacement for the
+thesis.
+
+```text
+daily + intraday bars
+  -> SMA ribbon and distance by window
+  -> RSI by interval
+  -> extension/base/trend regime
+  -> historical analogs
+       last 200-day SMA crosses
+       prior RSI 14 regimes like today
+       time since RSI entered this zone on 1d/4h/2h/30m
+       forward returns and drawdowns after similar states
+  -> technical_state consumed by thesis, analyst chat, attention, and decisions
+```
+
+This prevents the ENTG failure mode:
+
+```text
+thesis direction: bullish
+technical_state: extended +26% vs 200-day SMA
+decision implication: standing view can remain bullish, but timing quality is poor
+```
+
+Target technical-state fields:
+
+```text
+symbol
+as_of
+intervals: 30m, 2h, 4h, 1d, 1w
+sma: 20/50/100/200-day for daily context
+rsi14 by interval
+distance from 52-week high/low
+extension percentile
+last_crosses: 50-day/200-day SMA up/down
+analog_events: similar RSI/extension regimes with forward paths
+state: constructive | extended | base_building | deteriorating | unknown
+timing_implication
+```
+
+Ticker theses should reference `technical_state`, but they should not bury this
+analysis in prose. A bullish thesis can coexist with an extended chart; an
+actionable decision requires both thesis evidence and acceptable timing/risk.
+
 ## Cognition Loop
 
 Cognition is the symbol brain. It creates and maintains current views.
@@ -513,6 +578,47 @@ open thesis older than freshness target
 The system should never create multiple open theses for MU or any other symbol.
 New facts reconcile into the canonical current thesis and show as a timeline.
 
+## Chat Analyst Loop
+
+The chat analyst is a routed prompt loop over system state. It is not a general
+chatbot and it should not become a second thesis engine.
+
+```text
+operator asks a question
+  -> classify scope: symbol | theme | macro | technical | decision
+  -> load current evidence package
+       parent brain theses
+       ticker context
+       technical_state
+       current thesis + history
+       normalized evidence_items
+       evidence requirements/source tasks
+       decisions/positions when relevant
+  -> answer with citations and uncertainty
+  -> if data is missing, create evidence_requirement/source_task
+  -> if answer changes standing view, route to thesis reconciliation
+  -> if answer implies action, route to attention/review packet
+```
+
+Rules:
+
+```text
+answer from current evidence or say what is missing
+never silently mutate a thesis
+never turn a chat answer into a trade decision
+write audit rows for prompt, context refs, source rows, tokens, and latency
+surface follow-up work as source tasks or attention, not hidden prose
+```
+
+Example questions:
+
+```text
+ENTG: Is the bullish thesis contradicted by extension above the 200-day SMA?
+MU: What changed since the last thesis version?
+Copper: Are proxy prices confirming the parent thesis, or do inventories disagree?
+AMD: Search current public MI325X/MI400 adoption evidence and tell me what is missing.
+```
+
 ## Thesis Model
 
 The thesis is the core product object.
@@ -526,6 +632,7 @@ edge rationale
 bull case
 bear case
 forecast
+technical_state link
 conviction conditions
 trigger conditions
 invalidation conditions
@@ -660,6 +767,9 @@ watchlist dropdown
 
 ticker row
   symbol, name, last price, thesis status, direction, freshness, attention count
+
+filters
+  thesis status, thesis direction, technical state, attention owner, freshness
 
 membership menu
   checkmarked lists
@@ -837,6 +947,9 @@ CRDO
 
 copper / wheat
   appear as parent brain factors with evidence requirements and tradable proxies
+
+ENTG
+  bullish thesis and extended technical state must be shown separately
 ```
 
 ## Implementation Plan
@@ -927,6 +1040,8 @@ targeted web/product/commodity research
 known unknowns
 challenge pass surfaced in UI
 confidence separated from conviction
+technical_state generated independently from thesis prose
+chat analyst prompt loop for operator questions
 ```
 
 Goal: active tickers are never blank and never forced into fake conviction.

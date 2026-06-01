@@ -109,12 +109,17 @@ explicitly contradict the parent theme instead of guessing in isolation.
 These loops feed the brain. They should be broad enough to cover:
 
 ```text
-active discovery_pool
+broad discovery_pool
 UNION
 active ticker/watchlist universe
 UNION
 benchmarks needed for regime/relative context
 ```
+
+The `discovery_pool` is deliberately broad. It is the haystack fed by the
+screener, not the operator work queue. Expensive data acquisition and cognition
+should prioritize active tickers, watchlists, due source tasks, and ranked
+nominations before walking the broad pool.
 
 Current local dev cadence:
 
@@ -205,6 +210,11 @@ edge with sufficient evidence and the operator may dismiss or keep monitoring.
 Product, customer, commodity, benchmark, roadmap, and other theme-specific
 requests map to `product_research`, so a DELL/AMD-style "need public adoption
 evidence" decline creates web-research pressure instead of becoming inert text.
+
+Commodity parent themes can use tradable proxies as the first price-history
+slice. For example, CPER/WEAT/XME price bars can satisfy
+`commodity_price_history`, while inventories, USDA reports, weather, COT, and
+China demand remain separate missing evidence until direct providers exist.
 
 Due `source_task` rows also feed the tiered deep-research universe ahead of
 ordinary active tickers and proposed candidates. This means missing/stale
@@ -358,6 +368,37 @@ Current gaps:
   for commodities, breadth, credit, and earnings.
 - Discovery ranking reads `brain_thesis_ticker` fit today; it still needs
   active parent-thesis direction and contradiction penalties.
+
+## Technical State Loop
+
+The chart state should be computed separately from the thesis. The thesis says
+what the system believes; technical state says what the chart/regime is doing
+and what similar historical states did next.
+
+```text
+daily + intraday bars
+        |
+        v
+technical package
+  SMA 20/50/100/200-day distance
+  RSI 14 by 30m/2h/4h/1d/1w
+  time spent in current RSI/extension zone
+  last 50-day and 200-day SMA crosses
+  analog events with forward return/drawdown paths
+        |
+        v
+technical_state
+  constructive | extended | base_building | deteriorating | unknown
+        |
+        +-> thesis prompt context
+        +-> chat analyst context
+        +-> attention/risk review
+        +-> decision timing quality
+```
+
+This avoids turning `forecast.direction = up` into an implied entry. ENTG can be
+fundamentally bullish while still technically extended above the 200-day SMA.
+The correct product output is both facts at once.
 
 ## Attention Loop
 
@@ -601,14 +642,58 @@ What works now:
   evidence weight and recency.
 - Consensus crossings without a thesis now create `thesis_incomplete`
   attention instead of fake `thesis.updated` events.
+- The draft-thesis prompt now asks for `forecast.technical_state` so fresh
+  thesis runs can separate direction from chart regime.
 
 Current gaps:
 
+- The technical-state package itself is not yet persisted as a first-class
+  table/API with multi-timeframe RSI/SMA analog history.
 - #141: reconciliation history needs a clearer operator-facing timeline.
 - #96: theses should declare known unknowns.
 - #97: stale evidence should reduce confidence, not just show as a warning.
 - #90: separate system confidence from human conviction.
 - #13: challenge pass needs clearer surfaced adversarial flags.
+
+## Chat Analyst Loop
+
+The chat analyst loop is for operator questions over current system state. It
+should not create a competing thesis path.
+
+```text
+operator question
+        |
+        v
+scope router
+  symbol | theme | macro | technical | decision
+        |
+        v
+load evidence package
+  brain_thesis
+  ticker_context
+  technical_state
+  current thesis + version history
+  evidence_items
+  evidence_requirement/source_task
+  decision/position state if relevant
+        |
+        v
+chat-analyst prompt
+        |
+        +-> answer with citations
+        +-> create missing source tasks when evidence is absent
+        +-> route material thesis changes to reconciliation
+        +-> route action implications to attention/review packet
+```
+
+Rules:
+
+```text
+no answer without evidence refs or explicit missing-data statement
+no silent thesis mutation
+no direct trade decision
+all calls through prompt registry with llm_invocation audit
+```
 
 ## Evaluation And Safety Loops
 
@@ -736,6 +821,8 @@ implemented first slice
   first-class brain_thesis records and ticker/watchlist mappings
   parent brain maintainer evaluates source/ticker coverage on cognition sweep
   parent thesis beneficiary/proxy symbols become active ticker mappings
+  commodity proxy roles identify CPER/WEAT/XME as factor-price expressions
+  commodity proxy price bars can satisfy parent commodity_price_history gaps
   ticker thesis prompt receives linked parent theses
   bounded parent-thesis LLM pass rewrites macro/sector/theme claims when due
   selected-symbol brain status and next action
@@ -765,6 +852,8 @@ implemented first slice
 missing
   full producer adoption for attention retry/blocked transitions
   broader macro/factor/commodity data coverage for parent thesis generation
+  first-class technical_state table/API with multi-timeframe analogs
+  chat analyst routed prompt loop
   paid semantic research provider if GDELT recall is insufficient
   real broker/position execution state
   review packets

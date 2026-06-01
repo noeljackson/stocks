@@ -38,6 +38,7 @@
   let forecastDirection = $derived(forecastField("direction"));
   let forecastMagnitude = $derived(forecastField("magnitude_rough"));
   let forecastHorizon = $derived(forecastField("horizon_event"));
+  let forecastTechnicalState = $derived(forecastTechnicalStateFields());
   let linkedEvidence = $derived(thesis.evidence_items ?? []);
 
   // Substance checklist (#10): which structural slots are filled.
@@ -64,6 +65,26 @@
   function forecastField(name: string): string | null {
     const v = thesis.forecast?.[name];
     return typeof v === "string" && v.length > 0 ? v : null;
+  }
+
+  function forecastTechnicalStateFields(): {
+    state: string | null;
+    technicalSummary: string | null;
+    timingImplication: string | null;
+  } | null {
+    const setup = thesis.forecast?.technical_state ?? thesis.forecast?.entry_setup;
+    if (!setup || typeof setup !== "object" || Array.isArray(setup)) return null;
+    const record = setup as Record<string, unknown>;
+    const field = (name: string) => {
+      const value = record[name];
+      return typeof value === "string" && value.length > 0 ? value : null;
+    };
+    const state = field("state");
+    const technicalSummary = field("technical_summary");
+    const timingImplication = field("timing_implication") ?? field("required_trigger");
+    return state || technicalSummary || timingImplication
+      ? { state, technicalSummary, timingImplication }
+      : null;
   }
 
   function shortTs(s: string): string {
@@ -129,6 +150,22 @@
       {#if forecastDirection}<span>{forecastDirection}</span>{/if}
       {#if forecastMagnitude}<span>{forecastMagnitude}</span>{/if}
       {#if forecastHorizon}<span class="muted">{forecastHorizon}</span>{/if}
+      {#if forecastTechnicalState?.state}
+        <span class="setup-badge setup-{forecastTechnicalState.state}">
+          technical {forecastTechnicalState.state.replace(/_/g, " ")}
+        </span>
+      {/if}
+    </div>
+  {/if}
+
+  {#if forecastTechnicalState?.technicalSummary || forecastTechnicalState?.timingImplication}
+    <div class="setup-strip">
+      {#if forecastTechnicalState.technicalSummary}
+        <span>{forecastTechnicalState.technicalSummary}</span>
+      {/if}
+      {#if forecastTechnicalState.timingImplication}
+        <span class="muted">{forecastTechnicalState.timingImplication}</span>
+      {/if}
     </div>
   {/if}
 
@@ -287,6 +324,25 @@
   }
   .forecast-strip.dir-up { border-left: 3px solid rgb(166, 227, 161); }
   .forecast-strip.dir-down { border-left: 3px solid rgb(243, 139, 168); }
+  .setup-badge {
+    padding: 0.1rem 0.45rem; border-radius: 4px;
+    background: rgba(249, 226, 175, 0.14); color: rgb(249, 226, 175);
+    font-size: 0.7rem; text-transform: uppercase;
+  }
+  .setup-badge.setup-constructive {
+    background: rgba(166, 227, 161, 0.14); color: rgb(166, 227, 161);
+  }
+  .setup-badge.setup-deteriorating,
+  .setup-badge.setup-extended {
+    background: rgba(243, 139, 168, 0.14); color: rgb(243, 139, 168);
+  }
+  .setup-strip {
+    display: grid; gap: 0.25rem;
+    border: 1px solid #1f2733; border-left: 3px solid rgb(249, 226, 175);
+    border-radius: 4px; padding: 0.45rem 0.6rem; margin-bottom: 0.75rem;
+    color: #cdd6f4; background: rgba(249, 226, 175, 0.04);
+    font-size: 0.82rem;
+  }
   .meta { font-size: 0.8rem; color: #bac2de; }
   .muted { color: #6c7086; }
   h4 { font-size: 0.85rem; color: #bac2de; margin: 0.75rem 0 0.25rem 0; }

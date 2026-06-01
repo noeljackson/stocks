@@ -200,7 +200,22 @@ async function mockApi(page: Page): Promise<Calls> {
         immutable_original: {},
         created_at: "2026-06-01T00:00:00Z",
         updated_at: "2026-06-01T00:00:00Z",
-        history: [],
+        history: [
+          {
+            version: 1,
+            diff: {},
+            rationale: "smoketest duplicate",
+            weakens_invalidation: false,
+            at: "2026-06-01T00:00:00Z",
+          },
+          {
+            version: 1,
+            diff: {},
+            rationale: "smoketest duplicate",
+            weakens_invalidation: false,
+            at: "2026-06-01T00:00:00Z",
+          },
+        ],
         substance: null,
       }] : []);
       return;
@@ -328,4 +343,17 @@ test("watchlist rows show thesis state and direction", async ({ page }) => {
 
   await expect(row).toContainText("forming");
   await expect(row).toContainText("bull");
+});
+
+test("theses tab renders current thesis despite duplicate history rows", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+
+  await page.locator(".symbol-box input").fill("OKTA");
+  await page.locator(".symbol-box input").press("Enter");
+  await page.getByRole("button", { name: "theses" }).click();
+
+  await expect(page.getByText("Identity platform consolidation can improve growth durability.")).toBeVisible();
+  await expect(page.getByText("Version history")).toBeVisible();
+  await expect(page.getByText("smoketest duplicate")).toHaveCount(2);
 });

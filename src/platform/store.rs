@@ -788,11 +788,25 @@ impl Store {
         payload: &[u8],
     ) -> Result<i64> {
         let payload_str = std::str::from_utf8(payload).context("payload utf-8")?;
+        let payload_json: serde_json::Value = serde_json::from_str(payload_str).unwrap_or_default();
+        let inferred_symbol = symbol.map(str::to_string).or_else(|| {
+            payload_json
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        });
+        let thesis_id = payload_json
+            .get("thesis_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| uuid::Uuid::parse_str(s).ok());
         let row = sqlx::query(
-            "INSERT INTO alert (kind, symbol, payload) VALUES ($1, $2, $3::jsonb) RETURNING id",
+            r#"INSERT INTO alert (kind, symbol, thesis_id, payload)
+               VALUES ($1, $2, $3, $4::jsonb)
+            RETURNING id"#,
         )
         .bind(kind.as_str())
-        .bind(symbol)
+        .bind(inferred_symbol)
+        .bind(thesis_id)
         .bind(payload_str)
         .fetch_one(&self.pool)
         .await

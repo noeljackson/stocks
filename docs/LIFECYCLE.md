@@ -3,6 +3,8 @@
 This is the canonical map for how a ticker moves from broad radar to context,
 thesis, decision, position, and outcome. Update this document when adding a new
 attention kind, state transition, event source, or operator decision surface.
+The scheduler and feedback-loop view lives in
+[`docs/BRAIN_LOOPS.md`](BRAIN_LOOPS.md).
 
 ## Main Flow
 
@@ -50,6 +52,7 @@ discovery_pool                              active ticker/watchlist universe
                         thesis_engine
                         sharpen
                         challenge
+                        scheduled open-thesis re-evaluation
                                   │
               ┌───────────────────┴───────────────────┐
               │                                       │
@@ -85,6 +88,11 @@ as signal candidates. The difference is semantic: a nomination says "this name
 belongs in the monitored universe for explicit theme/business/evidence reasons,"
 while signal candidates say "new market/evidence behavior crossed a threshold."
 Both resolve through confirm/reject.
+
+The thesis object is a state machine, not a draft archive. A symbol may have at
+most one open thesis (`forming` through `exiting`) at a time; new evidence
+refreshes reconcile into that thesis and append version history. Duplicate
+open theses are a data integrity bug, and the database rejects them.
 
 ## Attention Contract
 
@@ -175,6 +183,12 @@ events are classified as `confirmed_existing_view`, `strengthened_view`,
 `weakened_view`, `material_change`, `invalidates_existing_view`, or
 `no_change`.
 
+Consensus threshold crossings are validation and attention signals, not
+automatic thesis lifecycle progress. When a symbol crosses consensus without an
+open thesis, the system records `thesis_incomplete` attention and kicks
+cognition. Only crossings attached to a real open thesis may emit
+`thesis.updated` or `thesis.fulfilled`.
+
 The cognition service also runs a bounded maintenance sweep over active tickers.
 This is what makes the system continuously work instead of depending on manual
 refreshes or UI tab opens:
@@ -191,6 +205,10 @@ active ticker with due missing evidence
   -> refresh context/evidence
   -> retry thesis if evidence is now sufficient
 
+active ticker with no evidence checklist rows
+  -> initialize evidence_requirement state
+  -> refresh context/evidence
+
 active ticker where evidence became satisfied after a decline
   -> retry thesis immediately in the next bounded sweep
 ```
@@ -198,6 +216,7 @@ active ticker where evidence became satisfied after a decline
 Runtime knobs:
 - `COGNITION_SWEEP_SECONDS` (default 900; set 0 to disable)
 - `COGNITION_CONTEXT_MAX_AGE_HOURS` (default 12)
+- `COGNITION_OPEN_THESIS_MAX_AGE_MINUTES` (default 30)
 - `COGNITION_DECLINE_RETRY_HOURS` (default 6)
 - `COGNITION_MAX_SYMBOLS_PER_SWEEP` (default 5)
 

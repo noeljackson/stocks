@@ -18,6 +18,7 @@ Reads:
     DURABLE                 — "cognition-consumer"
     COGNITION_SWEEP_SECONDS — default 900; set 0 to disable maintenance sweep
     COGNITION_CONTEXT_MAX_AGE_HOURS — default 12
+    COGNITION_OPEN_THESIS_MAX_AGE_MINUTES — default 30
     COGNITION_DECLINE_RETRY_HOURS — default 6
     COGNITION_MAX_SYMBOLS_PER_SWEEP — default 5
     COGNITION_ACK_PROGRESS_SECONDS — default 10
@@ -252,6 +253,7 @@ async def _sweep_targets(
     pool: asyncpg.Pool,
     *,
     context_max_age_hours: int,
+    open_thesis_max_age_minutes: int,
     decline_retry_hours: int,
     limit: int,
 ) -> list[asyncpg.Record]:
@@ -265,6 +267,12 @@ async def _sweep_targets(
                  FROM thesis
                 WHERE state NOT IN ('closed', 'disqualified')
              GROUP BY symbol
+           ), latest_open_thesis AS (
+               SELECT DISTINCT ON (symbol)
+                      symbol, thesis_id, state, updated_at
+                 FROM thesis
+                WHERE state NOT IN ('closed', 'disqualified')
+             ORDER BY symbol, updated_at DESC, created_at DESC
            ), latest_decline AS (
                SELECT symbol, max(created_at) AS at
                  FROM attention_item
@@ -281,26 +289,40 @@ async def _sweep_targets(
                  FROM evidence_requirement
                 WHERE satisfied_at IS NOT NULL
              GROUP BY symbol
+           ), evidence_state AS (
+               SELECT symbol, count(*) AS evidence_rows
+                 FROM evidence_requirement
+             GROUP BY symbol
            )
            SELECT t.symbol,
                   lc.version AS context_version,
                   lc.created_at AS context_at,
                   (lc.market IS NOT NULL AND lc.market <> '{}'::jsonb) AS context_has_market,
                   COALESCE(ot.n, 0) AS open_theses,
+                  lot.thesis_id AS thesis_id,
+                  lot.updated_at AS thesis_at,
                   ld.at AS decline_at,
                   de.at AS due_evidence_at,
-                  se.at AS evidence_satisfied_at
+                  se.at AS evidence_satisfied_at,
+                  COALESCE(es.evidence_rows, 0) AS evidence_rows
              FROM ticker t
              LEFT JOIN latest_context lc ON lc.symbol = t.symbol
              LEFT JOIN open_thesis ot ON ot.symbol = t.symbol
+             LEFT JOIN latest_open_thesis lot ON lot.symbol = t.symbol
              LEFT JOIN latest_decline ld ON ld.symbol = t.symbol
              LEFT JOIN due_evidence de ON de.symbol = t.symbol
              LEFT JOIN newly_satisfied_evidence se ON se.symbol = t.symbol
+             LEFT JOIN evidence_state es ON es.symbol = t.symbol
             WHERE t.status = 'active'
               AND (
                     lc.created_at IS NULL
                  OR lc.market = '{}'::jsonb
+                 OR COALESCE(es.evidence_rows, 0) = 0
                  OR lc.created_at < now() - ($1::text || ' hours')::interval
+                 OR (
+                      lot.thesis_id IS NOT NULL
+                      AND lot.updated_at < now() - ($2::text || ' minutes')::interval
+                    )
                  OR (
                       COALESCE(ot.n, 0) = 0
                       AND de.at IS NOT NULL
@@ -314,7 +336,7 @@ async def _sweep_targets(
                       COALESCE(ot.n, 0) = 0
                       AND (
                            ld.at IS NULL
-                        OR ld.at < now() - ($2::text || ' hours')::interval
+                        OR ld.at < now() - ($3::text || ' hours')::interval
                         OR (
                              lc.created_at IS NOT NULL
                          AND ld.at IS NOT NULL
@@ -324,24 +346,43 @@ async def _sweep_targets(
                     )
               )
          ORDER BY
-              CASE WHEN lc.created_at IS NULL THEN 0 ELSE 1 END,
-              lc.created_at ASC NULLS FIRST,
+              CASE
+                WHEN lc.created_at IS NULL THEN 0
+                WHEN COALESCE(es.evidence_rows, 0) = 0 THEN 1
+                WHEN lot.thesis_id IS NOT NULL
+                 AND lot.updated_at < now() - ($2::text || ' minutes')::interval THEN 2
+                WHEN lc.market = '{}'::jsonb THEN 3
+                WHEN lc.created_at < now() - ($1::text || ' hours')::interval THEN 4
+                ELSE 4
+              END,
+              COALESCE(lot.updated_at, lc.created_at) ASC NULLS FIRST,
               t.tier ASC,
               t.added_at ASC
-            LIMIT $3""",
+            LIMIT $4""",
         str(context_max_age_hours),
+        str(open_thesis_max_age_minutes),
         str(decline_retry_hours),
         limit,
     )
 
 
+def _sweep_trigger(evidence_rows: int, thesis_id: object | None) -> str:
+    if evidence_rows == 0:
+        return "evidence_state_bootstrap"
+    if thesis_id:
+        return "open_thesis_update_loop"
+    return "maintenance_sweep"
+
+
 async def _sweep_once(pool: asyncpg.Pool) -> None:
     context_max_age_hours = _env_int("COGNITION_CONTEXT_MAX_AGE_HOURS", 12)
+    open_thesis_max_age_minutes = _env_int("COGNITION_OPEN_THESIS_MAX_AGE_MINUTES", 30)
     decline_retry_hours = _env_int("COGNITION_DECLINE_RETRY_HOURS", 6)
     limit = max(1, _env_int("COGNITION_MAX_SYMBOLS_PER_SWEEP", 5))
     targets = await _sweep_targets(
         pool,
         context_max_age_hours=context_max_age_hours,
+        open_thesis_max_age_minutes=open_thesis_max_age_minutes,
         decline_retry_hours=decline_retry_hours,
         limit=limit,
     )
@@ -352,16 +393,21 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
     for row in targets:
         symbol = row["symbol"]
         open_theses = int(row["open_theses"] or 0)
+        evidence_rows = int(row["evidence_rows"] or 0)
+        thesis_at = row["thesis_at"].isoformat() if row["thesis_at"] else None
+        trigger = _sweep_trigger(evidence_rows, row["thesis_id"])
         await _run_symbol_once(
             symbol,
-            lambda symbol=symbol, row=row: _run_pipeline(
+            lambda symbol=symbol, row=row, thesis_at=thesis_at, trigger=trigger: _run_pipeline(
                 pool,
                 symbol,
                 draft_when_thesis_exists=False,
                 source_ref={
                     "reason": "no_edge",
-                    "trigger": "maintenance_sweep",
+                    "trigger": trigger,
                     "context_version": row["context_version"],
+                    "thesis_id": str(row["thesis_id"]) if row["thesis_id"] else None,
+                    "thesis_at": thesis_at,
                 },
             ),
         )

@@ -87,6 +87,11 @@ The canonical object lifecycle and attention-kind map lives in
 thesis transitions, decisions, positions, or outcomes, update that map in the
 same PR.
 
+The scheduler and feedback-loop map lives in
+[`docs/BRAIN_LOOPS.md`](BRAIN_LOOPS.md). When changing service intervals,
+freshness rules, retry behavior, or queue ownership, update that loop map in
+the same PR.
+
 ## Scan tiers
 
 Scanning should be broad, but not equally expensive for every symbol. The system
@@ -105,6 +110,7 @@ Tier 3 / discovery_pool
 
 Tier 2 / watchlisted or confirmed candidate
   evidence requirement tracking
+  automatic evidence checklist bootstrap if missing
   regular context maintenance
   richer evidence history
   XBRL/company facts where available
@@ -112,6 +118,7 @@ Tier 2 / watchlisted or confirmed candidate
 
 Tier 1 / active thesis or position
   deep context maintenance
+  scheduled thesis re-evaluation
   thesis condition evaluation
   risk checks
   consensus/fulfillment monitoring
@@ -138,6 +145,16 @@ into the tracked universe/watchlists and lets cognition build context and
 attempt a thesis. Confirmed/watchlisted symbols get deeper context and thesis
 workflows.
 
+Open theses are not static notes. The cognition service runs a bounded update
+loop that selects active tickers whose context is stale, whose evidence
+checklist has not been initialized, whose evidence retry is due, or whose open
+thesis has not been re-evaluated within the configured freshness window
+(`COGNITION_OPEN_THESIS_MAX_AGE_MINUTES`, default 30). A fresh draft against an
+existing open thesis reconciles into the canonical thesis and appends
+`thesis_version_history`; it should not create a second open thesis. The
+database enforces this with a partial unique index on open thesis rows per
+symbol.
+
 The scan universe for cheap data should be consistent:
 
 ```text
@@ -158,6 +175,12 @@ active ticker/watchlist universe
 
 When an expected input is absent, the system records an `evidence_requirement`
 instead of treating the absence as an investment conclusion.
+
+Consensus crossings are validation and attention signals, not automatic thesis
+lifecycle events. If a consensus score crosses for a symbol with no open thesis,
+the system records a `thesis_incomplete` attention item and kicks cognition
+instead of emitting `thesis.updated`. `thesis.updated` and `thesis.fulfilled`
+must carry a real `thesis_id`.
 
 ## Core objects
 

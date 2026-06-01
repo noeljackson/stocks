@@ -232,11 +232,20 @@
   let symbolTheses = $state<ThesisDetail[] | null | undefined>(undefined);
   let symbolDeclines = $state<ThesisDecline[] | null | undefined>(undefined);
   let symbolDecisions = $state<DecisionRow[] | null | undefined>(undefined);
+  let openSymbolTheses = $derived.by<ThesisDetail[]>(() =>
+    [...(symbolTheses ?? [])]
+      .filter((t) => !["closed", "disqualified"].includes(t.state))
+      .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)),
+  );
+  let currentSymbolThesis = $derived<ThesisDetail | null>(openSymbolTheses[0] ?? null);
+  let retiredSymbolTheses = $derived.by<ThesisDetail[]>(() =>
+    [...(symbolTheses ?? [])]
+      .filter((t) => ["closed", "disqualified"].includes(t.state))
+      .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)),
+  );
   let activeThesisDirections = $derived.by<string[]>(() => {
-    if (!symbolTheses) return [];
     const dirs = new Set<string>();
-    for (const t of symbolTheses) {
-      if (["closed", "disqualified"].includes(t.state)) continue;
+    for (const t of openSymbolTheses) {
       const dir = forecastDirectionFrom(t.forecast);
       if (dir) dirs.add(dir);
     }
@@ -1279,7 +1288,7 @@
               {#if symbolEvidence === undefined}
                 <p class="muted">Loading…</p>
               {:else if symbolEvidence.length === 0}
-                <p class="muted">No evidence requirements recorded for <strong>{selectedSymbol}</strong> yet.</p>
+                <p class="muted">Evidence checklist pending initialization for <strong>{selectedSymbol}</strong>.</p>
               {:else}
                 <ul class="evidence-list">
                   {#each symbolEvidence as req (req.id)}
@@ -1313,9 +1322,30 @@
                       Do not treat this symbol as a single clean signal until one thesis is selected or retired.
                     </p>
                   {/if}
-                  {#each symbolTheses as t (t.thesis_id)}
-                    <ThesisDetails thesis={t} />
-                  {/each}
+                  {#if currentSymbolThesis}
+                    <ThesisDetails thesis={currentSymbolThesis} />
+                  {:else}
+                    <p class="muted">No open thesis for <strong>{selectedSymbol}</strong>.</p>
+                  {/if}
+                  {#if retiredSymbolTheses.length > 0}
+                    <section class="declines">
+                      <h4>Retired thesis history</h4>
+                      <ul>
+                        {#each retiredSymbolTheses as t (t.thesis_id)}
+                          {@const dir = forecastDirectionFrom(t.forecast)}
+                          <li class="decline-card status-{t.state}">
+                            <div class="decline-hdr">
+                              <span class="badge tiny">{t.state.replace(/_/g, " ")}</span>
+                              {#if dir}<span class={`badge tiny ${thesisDirectionClass(dir)}`}>{thesisDirectionLabel(dir)}</span>{/if}
+                              <span class="muted">v{t.version}</span>
+                              <span class="muted">updated {shortTs(t.updated_at)}</span>
+                            </div>
+                            <p>{t.edge_rationale}</p>
+                          </li>
+                        {/each}
+                      </ul>
+                    </section>
+                  {/if}
                 {/if}
                 {#if symbolDeclines && symbolDeclines.length > 0}
                   <section class="declines">

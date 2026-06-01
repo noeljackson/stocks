@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from stocks.cognition_service import _await_with_ack_progress, _run_symbol_once
+from stocks.cognition_service import _await_with_ack_progress, _run_symbol_once, _sweep_trigger
 
 
 class FakeMsg:
@@ -58,3 +58,15 @@ async def test_run_symbol_once_releases_symbol_after_pipeline() -> None:
 
     assert ran
     assert in_flight == set()
+
+
+def test_sweep_trigger_bootstraps_missing_evidence_state_first() -> None:
+    assert _sweep_trigger(0, "thesis-id") == "evidence_state_bootstrap"
+
+
+def test_sweep_trigger_marks_open_thesis_update_when_evidence_exists() -> None:
+    assert _sweep_trigger(4, "thesis-id") == "open_thesis_update_loop"
+
+
+def test_sweep_trigger_falls_back_to_maintenance_without_open_thesis() -> None:
+    assert _sweep_trigger(4, None) == "maintenance_sweep"

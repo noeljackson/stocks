@@ -20,7 +20,7 @@ from pathlib import Path
 import asyncpg
 
 from . import config
-from .evidence import load_evidence_counts, sync_evidence_requirements
+from .evidence import load_evidence_counts, load_source_health, sync_evidence_requirements
 from .llm import TransportConfig, detect, new_provider
 from .prompts import AsyncpgRecorder, invoke, load
 
@@ -435,7 +435,10 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
         news = await _load_recent_news(pool, symbol, since)
         estimate_revisions = await _load_estimate_revisions(pool, symbol, since)
         evidence_counts = await load_evidence_counts(pool, symbol)
-        missing_evidence = await sync_evidence_requirements(pool, symbol, evidence_counts)
+        source_health = await load_source_health(pool)
+        missing_evidence = await sync_evidence_requirements(
+            pool, symbol, evidence_counts, source_health,
+        )
         log.info(
             "symbol=%s prior=%s events_count=%d facts_count=%d "
             "news_count=%d revisions_count=%d price=%s missing_evidence=%d",

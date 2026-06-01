@@ -200,6 +200,23 @@
       .join(" · ");
   }
 
+  function evidenceHealth(req: EvidenceRequirement): string {
+    const state = req.source_ref?.acquisition_state;
+    const health = req.source_ref?.source_health;
+    const parts: string[] = [];
+    if (typeof state === "string") parts.push(state.replace(/_/g, " "));
+    if (Array.isArray(health)) {
+      for (const h of health) {
+        if (!h || typeof h !== "object" || Array.isArray(h)) continue;
+        const row = h as Record<string, unknown>;
+        const source = typeof row.source === "string" ? row.source.replace(/_/g, " ") : "";
+        const status = typeof row.last_status === "string" ? row.last_status.replace(/_/g, " ") : "";
+        if (source || status) parts.push(`${source} ${status}`.trim());
+      }
+    }
+    return [...new Set(parts)].join(" · ");
+  }
+
   // Group attention items by (kind, symbol). For candidate_review this
   // collapses N candidates on the same ticker into one card; for other
   // kinds it's typically 1 item per group.
@@ -1077,7 +1094,7 @@
             {@const ing = (sysStatus.ingest ?? {}) as Record<string, { last_at: string|null; count_24h: number; symbols_24h?: number }>}
             {@const disc = sysStatus.discovery as { last_pass_at: string|null; open_candidates: number; by_signal: { signal: string; count: number }[]; pool_size: number }}
             {@const cog = sysStatus.cognition as { contexts_24h: number; contexts_total_symbols: number; thesis_by_state: { state: string; count: number }[] }}
-            {@const ev = sysStatus.evidence as { open_requirements: number; by_state: { state: string; count: number }[] }}
+            {@const ev = sysStatus.evidence as { open_requirements: number; by_state: { state: string; count: number }[]; by_reason?: { reason: string; count: number }[] }}
             {@const att = sysStatus.attention as { open_items: number; deferred_items?: number; by_kind: { kind: string; count: number }[]; by_state?: { state: string; count: number }[]; by_owner?: { owner: string; count: number }[] }}
             {@const llm = sysStatus.llm as { calls_24h: number; avg_latency_ms: number|null; by_prompt: { prompt: string; count: number; avg_ms: number|null; last_at: string|null }[] }}
             {@const health = (sysStatus.source_health ?? []) as { source: string; last_status: string; last_started_at: string|null; last_success_at: string|null; last_failure_at: string|null; last_failure_kind?: string|null; last_error?: string|null; retry_after_at?: string|null; rows_seen: number; rows_inserted: number; symbols_attempted: number; symbols_failed: number }[]}
@@ -1170,6 +1187,13 @@
                   <ul class="chips">
                     {#each ev.by_state as s (s.state)}
                       <li class="chip">{s.state}: <strong>{s.count}</strong></li>
+                    {/each}
+                  </ul>
+                {/if}
+                {#if ev.by_reason?.length}
+                  <ul class="chips">
+                    {#each ev.by_reason as s (s.reason)}
+                      <li class="chip">{s.reason.replace(/_/g, " ")}: <strong>{s.count}</strong></li>
                     {/each}
                   </ul>
                 {/if}
@@ -1390,6 +1414,9 @@
                       {/if}
                       {#if evidenceCounts(req)}
                         <p class="muted">{evidenceCounts(req)}</p>
+                      {/if}
+                      {#if evidenceHealth(req)}
+                        <p class="muted">{evidenceHealth(req)}</p>
                       {/if}
                       {#if req.last_error}<p class="error-text">{req.last_error}</p>{/if}
                     </li>

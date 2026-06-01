@@ -254,7 +254,10 @@ select up to COGNITION_MAX_SYMBOLS_PER_SWEEP active tickers where:
   no-thesis decline is older than COGNITION_DECLINE_RETRY_HOURS
         |
         v
-run the same cognition pipeline
+sync open evidence rows from current source_health/counts
+        |
+        v
+run the same cognition pipeline for selected tickers
 ```
 
 Current defaults:
@@ -265,6 +268,7 @@ COGNITION_CONTEXT_MAX_AGE_HOURS        12
 COGNITION_OPEN_THESIS_MAX_AGE_MINUTES  30
 COGNITION_DECLINE_RETRY_HOURS          6
 COGNITION_MAX_SYMBOLS_PER_SWEEP        5
+COGNITION_EVIDENCE_SYNC_LIMIT          200
 ```
 
 What works now:
@@ -276,12 +280,16 @@ What works now:
 - Fresh drafts reconcile into one canonical open thesis per symbol.
 - Dev cognition sweep runs every 5 minutes over up to 20 active symbols by
   default, so a larger universe is not starved behind a five-symbol batch.
+- Each sweep now refreshes open evidence requirements from the latest source
+  health before selecting cognition targets. That lets provider success,
+  failures, no-new-row passes, and newly satisfied rows move tickers forward
+  without waiting for an operator to open the ticker.
 
 Current gaps:
 
 - #128: the sweep is bounded and passive; it is not yet a full freshness SLA.
-- #136: evidence requirements exist, but fetch actions are not a full per-source
-  acquisition FSM yet.
+- #136: evidence requirements are synchronized from source health, but fetch
+  actions are not yet a dedicated per-source task queue.
 - #130: product/theme web retrieval is missing, so the LLM cannot fetch external
   articles when local evidence is thin.
 - #93: normalized evidence items are still missing; context/thesis use raw table
@@ -483,6 +491,7 @@ implemented first slice
   transition history for attention resolutions
   open-thesis last_evaluated_at freshness loop without no-change version churn
   evidence requirements carry source-health acquisition state
+  cognition sweep refreshes open evidence rows before choosing targets
 
 missing
   attention retry/blocked transition helper

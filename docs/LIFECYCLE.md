@@ -228,6 +228,13 @@ the difference between "no data exists" and "the acquisition loop is still
 working." Diagnostics aggregate the same acquisition reasons, so a global
 problem like rate limits is visible without opening each ticker.
 
+The cognition sweep refreshes open evidence requirements before selecting
+context/thesis targets. That refresh is cheap: it re-counts local rows, reads
+`source_health`, updates `blocking_state`/`next_retry_at`/`last_error`, and marks
+requirements satisfied when rows have arrived. It does not call an LLM. If a
+previous no-thesis decline is older than the newly satisfied evidence, the same
+sweep can retry the ticker.
+
 The thesis engine may still decline after evidence is present. A decline is not
 failure when there is no measurable edge. Example: a mega-cap can have fresh
 context and still get no actionable thesis if the facts are already consensus

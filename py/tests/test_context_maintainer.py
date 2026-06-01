@@ -117,6 +117,32 @@ def test_assess_evidence_requirements_marks_running_sources_as_fetching() -> Non
     assert facts["state_reason"] == "fetching_required_sources"
 
 
+def test_assess_evidence_requirements_marks_checked_sources_as_missing() -> None:
+    missing = assess_evidence_requirements(
+        {
+            "price_bars": 12,
+            "company_facts": 0,
+            "recent_news": 1,
+            "estimate_snapshots": 4,
+        },
+        {
+            "xbrl": {
+                "source": "xbrl",
+                "last_status": "no_new_rows",
+                "last_failure_kind": None,
+                "last_error": None,
+                "retry_after_at": None,
+                "rows_seen": 1000,
+                "rows_inserted": 0,
+            },
+        },
+    )
+
+    [facts] = missing
+    assert facts["blocking_state"] == "missing"
+    assert facts["state_reason"] == "source_checked_no_new_rows"
+
+
 def test_assess_evidence_requirements_empty_when_core_inputs_present() -> None:
     assert assess_evidence_requirements({
         "price_bars": 260,

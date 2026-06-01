@@ -221,6 +221,40 @@
     return JSON.stringify(obj);
   }
 
+  function brainMaintainer(sourceRef: Record<string, unknown>): Record<string, unknown> | null {
+    const maintainer = sourceRef?.maintainer;
+    return maintainer && typeof maintainer === "object" && !Array.isArray(maintainer)
+      ? maintainer as Record<string, unknown>
+      : null;
+  }
+
+  function brainCoverageText(sourceRef: Record<string, unknown>): string {
+    const maintainer = brainMaintainer(sourceRef);
+    const coverage = maintainer?.coverage;
+    if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) return "";
+    const c = coverage as Record<string, unknown>;
+    const linked = Number(c.linked ?? 0);
+    if (!linked) return "";
+    return [
+      `${Number(c.contexts ?? 0)}/${linked} context`,
+      `${Number(c.open_theses ?? 0)}/${linked} theses`,
+      `${Number(c.news ?? 0)}/${linked} news`,
+      `${Number(c.estimates ?? 0)}/${linked} estimates`,
+      `${Number(c.analyst_opinion ?? 0)}/${linked} opinion`,
+    ].join(" · ");
+  }
+
+  function brainSourceText(sourceRef: Record<string, unknown>): string {
+    const maintainer = brainMaintainer(sourceRef);
+    const sources = maintainer?.sources;
+    if (!sources || typeof sources !== "object" || Array.isArray(sources)) return "";
+    return Object.values(sources as Record<string, unknown>)
+      .filter((item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item))
+      .map((item) => `${sourceLabel(String(item.source ?? ""))} ${String(item.freshness ?? item.status ?? "")}`)
+      .filter((item) => item.trim() !== "")
+      .join(" · ");
+  }
+
   function evidenceActions(req: EvidenceRequirement): string[] {
     const actions = req.source_ref?.fetch_actions;
     return Array.isArray(actions)
@@ -1117,6 +1151,7 @@
 
               {#if brainOverview.macro}
                 {@const macro = brainOverview.macro}
+                {@const macroSources = brainSourceText(macro.source_ref)}
                 <section class="brain-theme macro-theme freshness-{macro.freshness}">
                   <div class="brain-theme-hdr">
                     <div>
@@ -1131,6 +1166,12 @@
                   </div>
                   <p>{macro.summary}</p>
                   <p class="muted">{macro.core_claim}</p>
+                  {#if macroSources}
+                    <div class="brain-line">
+                      <span class="muted">sources</span>
+                      <span class="brain-token">{macroSources}</span>
+                    </div>
+                  {/if}
                   {#if macro.missing_evidence.length}
                     <div class="brain-line">
                       <span class="muted">missing</span>
@@ -1155,6 +1196,7 @@
 
               <div class="brain-theme-grid">
                 {#each brainOverview.sectors as thesis (thesis.id)}
+                  {@const coverage = brainCoverageText(thesis.source_ref)}
                   <section class="brain-theme freshness-{thesis.freshness}">
                     <div class="brain-theme-hdr">
                       <div>
@@ -1168,6 +1210,12 @@
                     </div>
                     <p>{thesis.summary}</p>
                     <p class="muted">{thesis.core_claim}</p>
+                    {#if coverage}
+                      <div class="brain-line">
+                        <span class="muted">coverage</span>
+                        <span class="brain-token">{coverage}</span>
+                      </div>
+                    {/if}
 
                     {#if thesis.watchlists.length}
                       <div class="brain-line">

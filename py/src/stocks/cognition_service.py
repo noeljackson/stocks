@@ -22,6 +22,7 @@ Reads:
     COGNITION_DECLINE_RETRY_HOURS — default 6
     COGNITION_MAX_SYMBOLS_PER_SWEEP — default 20
     COGNITION_EVIDENCE_SYNC_LIMIT — default 200
+    BRAIN_THESIS_SWEEP_LIMIT — default 50
     COGNITION_ACK_PROGRESS_SECONDS — default 10
     SOURCE_TASK_SWEEP_SECONDS — default 60; set 0 to disable due task worker
     SOURCE_TASK_MAX_SYMBOLS_PER_SWEEP — default 5
@@ -41,6 +42,7 @@ from nats.errors import TimeoutError as NatsTimeout
 from nats.js.errors import NotFoundError
 
 from . import config
+from .brain_maintainer import refresh as refresh_brain_theses
 from .challenge import challenge as challenge_thesis
 from .context_maintainer import BlockingEvidenceMissing
 from .context_maintainer import refresh as refresh_context
@@ -396,6 +398,10 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
     decline_retry_hours = _env_int("COGNITION_DECLINE_RETRY_HOURS", 6)
     limit = max(1, _env_int("COGNITION_MAX_SYMBOLS_PER_SWEEP", 20))
     evidence_sync_limit = max(1, _env_int("COGNITION_EVIDENCE_SYNC_LIMIT", 200))
+    brain_thesis_limit = max(1, _env_int("BRAIN_THESIS_SWEEP_LIMIT", 50))
+    brain_updated = await refresh_brain_theses(pool, limit=brain_thesis_limit)
+    if brain_updated:
+        log.info("cognition sweep: evaluated %d parent brain thesis row(s)", brain_updated)
     evidence_synced = await refresh_open_evidence_requirements(
         pool,
         limit=evidence_sync_limit,

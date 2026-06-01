@@ -314,8 +314,9 @@ What works now:
 
 Current gaps:
 
-- #129: macro and sector theses exist as records, but no cognition service is
-  generating/updating them yet.
+- #129: macro and sector theses exist as records, and the cognition sweep now
+  maintains their coverage/freshness state. They still need an LLM/factor
+  cognition pass that can rewrite parent claims from normalized evidence.
 - Discovery ranking reads watchlist/domain/signal quality today; it still needs
   a theme-fit score from `brain_thesis_ticker` and active parent-thesis
   direction.
@@ -612,8 +613,12 @@ confirm / defer / reject / decide
 Current gaps:
 
 - #143 first slice: Brain tab exists with macro/sector theses, mappings,
-  freshness, nominations, and contradictions. Remaining work is the cognition
-  service that updates those parent theses from live macro/sector evidence.
+  freshness, nominations, contradictions, and maintainer coverage. The
+  cognition sweep evaluates parent rows from linked ticker/source coverage and
+  records material changes in `brain_thesis_version_history`.
+- #129 remaining work: parent theses still need an LLM/factor cognition pass
+  that can rewrite the actual macro/sector claim from normalized evidence,
+  commodity data, and factor breadth instead of only maintaining coverage.
 - #89: review packet pattern for every attention-resolution flow.
 - #126: explicit workflow rail.
 - #82: terminology still needs simplification across UI/docs.
@@ -649,6 +654,8 @@ partially working
 implemented first slice
   Brain tab for macro and sector/theme theses
   first-class brain_thesis records and ticker/watchlist mappings
+  parent brain maintainer evaluates source/ticker coverage on cognition sweep
+  parent thesis beneficiary/proxy symbols become active ticker mappings
   ticker thesis prompt receives linked parent theses
   selected-symbol brain status and next action
   Defer 7d attention snooze/resurface

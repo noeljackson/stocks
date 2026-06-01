@@ -884,6 +884,14 @@ Brain tab as operating map, not static seed data
 Goal: ticker cognition starts from current macro/factor/sector context instead
 of isolated symbol context.
 
+Current implementation note: `brain_thesis` records are now actively maintained
+by the cognition sweep. The maintainer refreshes macro/source and linked ticker
+coverage, turns beneficiary/proxy lists into active ticker mappings, updates
+`last_evaluated_at`, and writes version history when parent coverage materially
+changes. The remaining Phase 3 work is the actual factor/LLM thesis generator:
+rewriting parent claims from normalized macro, commodity, sector breadth, and
+cross-ticker evidence instead of only maintaining coverage state.
+
 ### Phase 4: Improve Discovery Ranking
 
 ```text

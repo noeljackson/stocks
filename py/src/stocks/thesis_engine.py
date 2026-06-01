@@ -366,14 +366,47 @@ async def _resolve_stale_incomplete_attention(
 ) -> None:
     """A successful draft supersedes prior no-thesis attention for the symbol."""
     await pool.execute(
-        """UPDATE attention_item
-              SET status = 'resolved',
-                  resolved_at = now(),
-                  resolution_kind = 'thesis_drafted',
-                  source_ref = source_ref || $2::jsonb
-            WHERE status = 'open'
-              AND kind = 'thesis_incomplete'
-              AND symbol = $1""",
+        """WITH matched AS (
+               SELECT id, fsm_state
+                 FROM attention_item
+                WHERE status = 'open'
+                  AND kind = 'thesis_incomplete'
+                  AND symbol = $1
+                FOR UPDATE
+           ),
+           updated AS (
+               UPDATE attention_item ai
+                  SET status = 'resolved',
+                      fsm_state = 'resolved',
+                      owner = 'cognition',
+                      resolved_at = now(),
+                      resolution_kind = 'thesis_drafted',
+                      resolution_ref = $2::jsonb,
+                      source_ref = source_ref || $2::jsonb,
+                      next_retry_at = NULL,
+                      resurface_at = NULL,
+                      state_reason = 'thesis_drafted'
+                 FROM matched m
+                WHERE ai.id = m.id
+            RETURNING ai.id,
+                      m.fsm_state AS from_state,
+                      ai.fsm_state AS to_state,
+                      ai.owner,
+                      ai.state_reason,
+                      ai.next_retry_at,
+                      ai.resurface_at,
+                      ai.resolution_ref
+           ),
+           inserted AS (
+               INSERT INTO attention_state_history
+                    (attention_id, from_state, to_state, owner, reason,
+                     next_retry_at, resurface_at, source_ref)
+               SELECT id, from_state, to_state, owner, state_reason,
+                      next_retry_at, resurface_at, resolution_ref
+                 FROM updated
+            RETURNING 1
+           )
+           SELECT count(*) FROM updated""",
         symbol,
         json.dumps({"resolved_by_thesis_id": str(thesis_id)}),
     )

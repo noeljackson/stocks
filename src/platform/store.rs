@@ -298,11 +298,12 @@ impl Store {
         source: &str,
         source_ref: serde_json::Value,
     ) -> Result<()> {
+        let (fsm_state, owner) = crate::attention::initial_assignment(kind, severity, source);
         sqlx::query(
             r#"INSERT INTO attention_item
                  (kind, symbol, thesis_id, candidate_id, severity, title,
-                  reason, source, source_ref)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+                  reason, source, source_ref, fsm_state, owner, state_reason)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12)
                ON CONFLICT DO NOTHING"#,
         )
         .bind(kind)
@@ -314,6 +315,9 @@ impl Store {
         .bind(reason)
         .bind(source)
         .bind(source_ref)
+        .bind(fsm_state)
+        .bind(owner)
+        .bind(kind)
         .execute(&self.pool)
         .await
         .context("upsert_attention")?;
@@ -1160,11 +1164,18 @@ impl Store {
                     .fetch_one(&mut *tx)
                     .await
                     .unwrap_or_default();
+            let (fsm_state, owner) = crate::attention::initial_assignment(
+                crate::attention::kind::THESIS_ACTIONABLE,
+                crate::attention::severity::DECISION,
+                crate::attention::source::THESIS,
+            );
             sqlx::query(
                 r#"INSERT INTO attention_item
-                     (kind, symbol, thesis_id, severity, title, reason, source, source_ref)
+                     (kind, symbol, thesis_id, severity, title, reason, source, source_ref,
+                      fsm_state, owner, state_reason)
                    VALUES ('thesis_actionable', $1, $2, 'decision', $3, $4, 'thesis',
-                           jsonb_build_object('from', $5::text, 'to', 'actionable'))
+                           jsonb_build_object('from', $5::text, 'to', 'actionable'),
+                           $6, $7, 'thesis_actionable')
                    ON CONFLICT DO NOTHING"#,
             )
             .bind(&symbol)
@@ -1176,18 +1187,54 @@ impl Store {
                 Some(rationale)
             })
             .bind(from.as_str())
+            .bind(fsm_state)
+            .bind(owner)
             .execute(&mut *tx)
             .await
             .context("attention thesis_actionable")?;
         }
         if matches!(from, ThesisState::Actionable) {
             sqlx::query(
-                r#"UPDATE attention_item
-                      SET status = 'resolved', resolved_at = now(),
-                          resolution_kind = 'thesis_advanced',
-                          resolution_ref = jsonb_build_object('to', $2::text)
-                    WHERE status = 'open' AND kind = 'thesis_actionable'
-                      AND thesis_id = $1"#,
+                r#"WITH matched AS (
+                        SELECT id, fsm_state
+                          FROM attention_item
+                         WHERE status = 'open'
+                           AND kind = 'thesis_actionable'
+                           AND thesis_id = $1
+                         FOR UPDATE
+                     ),
+                     updated AS (
+                        UPDATE attention_item ai
+                           SET status = 'resolved',
+                               fsm_state = 'resolved',
+                               owner = 'system',
+                               resolved_at = now(),
+                               resolution_kind = 'thesis_advanced',
+                               resolution_ref = jsonb_build_object('to', $2::text),
+                               next_retry_at = NULL,
+                               resurface_at = NULL,
+                               state_reason = 'thesis_advanced'
+                          FROM matched m
+                         WHERE ai.id = m.id
+                     RETURNING ai.id,
+                               m.fsm_state AS from_state,
+                               ai.fsm_state AS to_state,
+                               ai.owner,
+                               ai.state_reason,
+                               ai.next_retry_at,
+                               ai.resurface_at,
+                               ai.resolution_ref
+                     ),
+                     inserted AS (
+                        INSERT INTO attention_state_history
+                             (attention_id, from_state, to_state, owner, reason,
+                              next_retry_at, resurface_at, source_ref)
+                        SELECT id, from_state, to_state, owner, state_reason,
+                               next_retry_at, resurface_at, resolution_ref
+                          FROM updated
+                     RETURNING 1
+                     )
+                  SELECT COUNT(*) FROM updated"#,
             )
             .bind(thesis_id)
             .bind(to.as_str())
@@ -1443,13 +1490,46 @@ impl Store {
         // Resolve the matching attention item (#86) inside the same tx so
         // queue + candidate status stay consistent.
         sqlx::query(
-            r#"UPDATE attention_item
-                  SET status = 'resolved', resolved_at = now(),
-                      resolution_kind = 'candidate_confirmed',
-                      resolution_ref = jsonb_build_object('watchlist_ids', $2::text[])
-                WHERE status = 'open'
-                  AND kind = 'candidate_review'
-                  AND candidate_id = $1"#,
+            r#"WITH matched AS (
+                    SELECT id, fsm_state
+                      FROM attention_item
+                     WHERE status = 'open'
+                       AND kind = 'candidate_review'
+                       AND candidate_id = $1
+                     FOR UPDATE
+                 ),
+                 updated AS (
+                    UPDATE attention_item ai
+                       SET status = 'resolved',
+                           fsm_state = 'resolved',
+                           owner = 'system',
+                           resolved_at = now(),
+                           resolution_kind = 'candidate_confirmed',
+                           resolution_ref = jsonb_build_object('watchlist_ids', $2::text[]),
+                           next_retry_at = NULL,
+                           resurface_at = NULL,
+                           state_reason = 'candidate_confirmed'
+                      FROM matched m
+                     WHERE ai.id = m.id
+                 RETURNING ai.id,
+                           m.fsm_state AS from_state,
+                           ai.fsm_state AS to_state,
+                           ai.owner,
+                           ai.state_reason,
+                           ai.next_retry_at,
+                           ai.resurface_at,
+                           ai.resolution_ref
+                 ),
+                 inserted AS (
+                    INSERT INTO attention_state_history
+                         (attention_id, from_state, to_state, owner, reason,
+                          next_retry_at, resurface_at, source_ref)
+                    SELECT id, from_state, to_state, owner, state_reason,
+                           next_retry_at, resurface_at, resolution_ref
+                      FROM updated
+                 RETURNING 1
+                 )
+              SELECT COUNT(*) FROM updated"#,
         )
         .bind(candidate_id)
         .bind(
@@ -1475,12 +1555,46 @@ impl Store {
         .context("reject_discovery_candidate")?;
         // Dismiss the matching attention item.
         sqlx::query(
-            r#"UPDATE attention_item
-                  SET status = 'dismissed', resolved_at = now(),
-                      resolution_kind = 'candidate_rejected'
-                WHERE status = 'open'
-                  AND kind = 'candidate_review'
-                  AND candidate_id = $1"#,
+            r#"WITH matched AS (
+                    SELECT id, fsm_state
+                      FROM attention_item
+                     WHERE status = 'open'
+                       AND kind = 'candidate_review'
+                       AND candidate_id = $1
+                     FOR UPDATE
+                 ),
+                 updated AS (
+                    UPDATE attention_item ai
+                       SET status = 'dismissed',
+                           fsm_state = 'dismissed',
+                           owner = 'operator',
+                           resolved_at = now(),
+                           resolution_kind = 'candidate_rejected',
+                           resolution_ref = jsonb_build_object('reason', 'candidate_rejected'),
+                           next_retry_at = NULL,
+                           resurface_at = NULL,
+                           state_reason = 'candidate_rejected'
+                      FROM matched m
+                     WHERE ai.id = m.id
+                 RETURNING ai.id,
+                           m.fsm_state AS from_state,
+                           ai.fsm_state AS to_state,
+                           ai.owner,
+                           ai.state_reason,
+                           ai.next_retry_at,
+                           ai.resurface_at,
+                           ai.resolution_ref
+                 ),
+                 inserted AS (
+                    INSERT INTO attention_state_history
+                         (attention_id, from_state, to_state, owner, reason,
+                          next_retry_at, resurface_at, source_ref)
+                    SELECT id, from_state, to_state, owner, state_reason,
+                           next_retry_at, resurface_at, resolution_ref
+                      FROM updated
+                 RETURNING 1
+                 )
+              SELECT COUNT(*) FROM updated"#,
         )
         .bind(candidate_id)
         .execute(&mut *tx)

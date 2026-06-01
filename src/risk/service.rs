@@ -9,6 +9,7 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use super::{Config, Intent, Portfolio, derive_portfolio, evaluate};
+use crate::attention::{initial_assignment, kind, severity, source, title_for_risk_review};
 use crate::platform::bus::{Bus, ConsumerHandle};
 use crate::platform::store::Store;
 use crate::platform::subjects;
@@ -120,7 +121,11 @@ async fn on_actionable(store: &Store, bus: &Bus, data: &[u8]) -> Result<()> {
         },
         "at":        Utc::now(),
     });
-    let subject = if decision.veto { subjects::RISK_VETO } else { subjects::RISK_WARNING };
+    let subject = if decision.veto {
+        subjects::RISK_VETO
+    } else {
+        subjects::RISK_WARNING
+    };
     bus.publish(subject, payload.to_string().as_bytes()).await?;
     info!(
         subject = subject,
@@ -131,29 +136,40 @@ async fn on_actionable(store: &Store, bus: &Bus, data: &[u8]) -> Result<()> {
     // Attention item (#86). Vetos are 'blocked' (can't proceed without
     // override); warnings are 'review'.
     let thesis_uuid = uuid::Uuid::parse_str(&a.thesis_id).ok();
-    let sev = if decision.veto { "blocked" } else { "review" };
-    let title = if decision.veto {
-        format!("{} risk veto: {}", a.symbol, decision.reasons.join(", "))
+    let sev = if decision.veto {
+        severity::BLOCKED
     } else {
-        format!("{} risk warning", a.symbol)
+        severity::REVIEW
     };
+    let title = title_for_risk_review(&a.symbol, decision.veto, &decision.reasons);
+    let (fsm_state, owner) = initial_assignment(kind::RISK_REVIEW, sev, source::RISK);
     if let Err(e) = sqlx::query(
         r#"INSERT INTO attention_item
-             (kind, symbol, thesis_id, severity, title, reason, source, source_ref)
-           VALUES ('risk_review', $1, $2, $3, $4, $5, 'risk', $6::jsonb)
+             (kind, symbol, thesis_id, severity, title, reason, source, source_ref,
+              fsm_state, owner, state_reason)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
            ON CONFLICT DO NOTHING"#,
     )
+    .bind(kind::RISK_REVIEW)
     .bind(&a.symbol)
     .bind(thesis_uuid)
     .bind(sev)
     .bind(title)
     .bind(decision.warnings.join("; "))
+    .bind(source::RISK)
     .bind(serde_json::json!({
         "veto": decision.veto,
         "reasons": decision.reasons,
         "warnings": decision.warnings,
         "config_version": cfg_ver,
     }))
+    .bind(fsm_state)
+    .bind(owner)
+    .bind(if decision.veto {
+        "risk_veto"
+    } else {
+        "risk_warning"
+    })
     .execute(&store.pool)
     .await
     {
@@ -161,4 +177,3 @@ async fn on_actionable(store: &Store, bus: &Bus, data: &[u8]) -> Result<()> {
     }
     Ok(())
 }
-

@@ -232,7 +232,7 @@ pub async fn run_once(
 }
 
 async fn queue_research_nominations(pool: &PgPool, limit: i64) -> Result<usize> {
-    use crate::attention::{kind, severity, source, title_for_candidate};
+    use crate::attention::{initial_assignment, kind, severity, source, title_for_candidate};
 
     let rows = sqlx::query(
         r#"WITH eligible AS (
@@ -362,10 +362,13 @@ async fn queue_research_nominations(pool: &PgPool, limit: i64) -> Result<usize> 
                 "fundamentals": has_fundamentals
             }
         });
+        let (fsm_state, owner) =
+            initial_assignment(kind::CANDIDATE_REVIEW, severity::REVIEW, source::DISCOVERY);
         sqlx::query(
             r#"INSERT INTO attention_item
-                 (kind, symbol, candidate_id, severity, title, reason, source, source_ref)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+                 (kind, symbol, candidate_id, severity, title, reason, source, source_ref,
+                  fsm_state, owner, state_reason)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
                ON CONFLICT DO NOTHING"#,
         )
         .bind(kind::CANDIDATE_REVIEW)
@@ -376,6 +379,9 @@ async fn queue_research_nominations(pool: &PgPool, limit: i64) -> Result<usize> 
         .bind(&reasoning)
         .bind(source::DISCOVERY)
         .bind(source_ref)
+        .bind(fsm_state)
+        .bind(owner)
+        .bind(RESEARCH_NOMINATION_SIGNAL)
         .execute(pool)
         .await
         .with_context(|| format!("insert research nomination attention for {symbol}"))?;

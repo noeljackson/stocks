@@ -153,6 +153,12 @@ This makes `Defer 7d` a real snooze instead of a terminal dismissal. Deferred
 items remain auditable in diagnostics and state history while staying out of
 the operator's active queue until they are due.
 
+Producers must set an initial `fsm_state`, `owner`, and `state_reason` when
+creating attention. Resolvers must close attention through a transition path
+that updates the coarse `status`, moves `fsm_state` to `resolved` or
+`dismissed`, and appends `attention_state_history`. Updating `status` alone is
+ambiguous and should be treated as a bug.
+
 ## Discovery Composition
 
 Raw detector firings are facts, not operator interpretations. The scanner first

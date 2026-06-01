@@ -247,6 +247,8 @@ pub struct ThesisDetail {
     pub immutable_original: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_evaluated_at: Option<DateTime<Utc>>,
     pub history: Vec<ThesisVersionEvent>,
     /// Computed at read-time via [`crate::thesis::substance::substance_report`].
     /// Optional so callers that don't care (or older serialized rows) can

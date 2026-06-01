@@ -1106,6 +1106,9 @@ async fn get_brain_status(
                 ORDER BY updated_at DESC LIMIT 1) AS open_thesis_direction,
               (SELECT updated_at FROM thesis
                 WHERE symbol = $1 AND state NOT IN ('closed', 'disqualified')
+                ORDER BY updated_at DESC LIMIT 1) AS open_thesis_updated_at,
+              (SELECT COALESCE(last_evaluated_at, updated_at) FROM thesis
+                WHERE symbol = $1 AND state NOT IN ('closed', 'disqualified')
                 ORDER BY updated_at DESC LIMIT 1) AS open_thesis_at,
               (SELECT count(*) FROM evidence_requirement
                 WHERE symbol = $1) AS evidence_rows,
@@ -1189,6 +1192,8 @@ async fn get_brain_status(
         row.try_get("fundamentals_at").ok();
     let filings_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("filings_at").ok();
     let context_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("context_at").ok();
+    let thesis_updated_at: Option<chrono::DateTime<chrono::Utc>> =
+        row.try_get("open_thesis_updated_at").ok();
     let thesis_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("open_thesis_at").ok();
     let evidence_rows: i64 = row.try_get("evidence_rows").unwrap_or(0);
     let open_evidence: i64 = row.try_get("open_evidence").unwrap_or(0);
@@ -1290,7 +1295,7 @@ async fn get_brain_status(
             json!({
                 "source": "thesis",
                 "status": thesis_freshness.as_str(),
-                "last_changed_at": thesis_at,
+                "last_changed_at": thesis_updated_at,
                 "last_checked_at": thesis_at,
                 "max_age_minutes": 30,
                 "thesis_id": row.try_get::<Option<uuid::Uuid>, _>("open_thesis_id").ok().flatten(),

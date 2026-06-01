@@ -1262,7 +1262,7 @@ impl Store {
                       COALESCE(intended_size, 'null'::jsonb)          AS intended_size,
                       version,
                       COALESCE(immutable_original, '{}'::jsonb)       AS immutable_original,
-                      created_at, updated_at
+                      created_at, updated_at, last_evaluated_at
                  FROM thesis
                 WHERE symbol = $1
              ORDER BY updated_at DESC"#,
@@ -1371,6 +1371,7 @@ impl Store {
                 immutable_original: row.try_get("immutable_original")?,
                 created_at: row.try_get("created_at")?,
                 updated_at: row.try_get("updated_at")?,
+                last_evaluated_at: row.try_get("last_evaluated_at").ok(),
                 history,
                 substance: Some(substance_summary),
             });

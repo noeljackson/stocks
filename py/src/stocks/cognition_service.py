@@ -278,7 +278,7 @@ async def _sweep_targets(
              GROUP BY symbol
            ), latest_open_thesis AS (
                SELECT DISTINCT ON (symbol)
-                      symbol, thesis_id, state, updated_at
+                      symbol, thesis_id, state, updated_at, last_evaluated_at
                  FROM thesis
                 WHERE state NOT IN ('closed', 'disqualified')
              ORDER BY symbol, updated_at DESC, created_at DESC
@@ -310,6 +310,7 @@ async def _sweep_targets(
                   COALESCE(ot.n, 0) AS open_theses,
                   lot.thesis_id AS thesis_id,
                   lot.updated_at AS thesis_at,
+                  COALESCE(lot.last_evaluated_at, lot.updated_at) AS thesis_evaluated_at,
                   ld.at AS decline_at,
                   de.at AS due_evidence_at,
                   se.at AS evidence_satisfied_at,
@@ -330,7 +331,8 @@ async def _sweep_targets(
                  OR lc.created_at < now() - ($1::text || ' hours')::interval
                  OR (
                       lot.thesis_id IS NOT NULL
-                      AND lot.updated_at < now() - ($2::text || ' minutes')::interval
+                      AND COALESCE(lot.last_evaluated_at, lot.updated_at)
+                          < now() - ($2::text || ' minutes')::interval
                     )
                  OR (
                       COALESCE(ot.n, 0) = 0
@@ -359,7 +361,8 @@ async def _sweep_targets(
                 WHEN lc.created_at IS NULL THEN 0
                 WHEN COALESCE(es.evidence_rows, 0) = 0 THEN 1
                 WHEN lot.thesis_id IS NOT NULL
-                 AND lot.updated_at < now() - ($2::text || ' minutes')::interval THEN 2
+                 AND COALESCE(lot.last_evaluated_at, lot.updated_at)
+                     < now() - ($2::text || ' minutes')::interval THEN 2
                 WHEN lc.market = '{}'::jsonb THEN 3
                 WHEN lc.created_at < now() - ($1::text || ' hours')::interval THEN 4
                 ELSE 4
@@ -404,10 +407,19 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
         open_theses = int(row["open_theses"] or 0)
         evidence_rows = int(row["evidence_rows"] or 0)
         thesis_at = row["thesis_at"].isoformat() if row["thesis_at"] else None
+        thesis_evaluated_at = (
+            row["thesis_evaluated_at"].isoformat() if row["thesis_evaluated_at"] else None
+        )
         trigger = _sweep_trigger(evidence_rows, row["thesis_id"])
-        await _run_symbol_once(
-            symbol,
-            lambda symbol=symbol, row=row, thesis_at=thesis_at, trigger=trigger: _run_pipeline(
+
+        async def run_symbol(
+            symbol: str = symbol,
+            row: asyncpg.Record = row,
+            thesis_at: str | None = thesis_at,
+            thesis_evaluated_at: str | None = thesis_evaluated_at,
+            trigger: str = trigger,
+        ) -> None:
+            await _run_pipeline(
                 pool,
                 symbol,
                 draft_when_thesis_exists=False,
@@ -417,8 +429,13 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
                     "context_version": row["context_version"],
                     "thesis_id": str(row["thesis_id"]) if row["thesis_id"] else None,
                     "thesis_at": thesis_at,
+                    "thesis_evaluated_at": thesis_evaluated_at,
                 },
-            ),
+            )
+
+        await _run_symbol_once(
+            symbol,
+            run_symbol,
         )
         if open_theses > 0:
             log.info("cognition sweep: %s refreshed existing thesis context", symbol)

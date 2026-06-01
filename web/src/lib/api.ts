@@ -114,6 +114,7 @@ export interface ThesisDetail {
   };
   created_at: string;
   updated_at: string;
+  last_evaluated_at?: string | null;
   history: ThesisVersionEvent[];
   substance?: ThesisSubstance | null;
 }

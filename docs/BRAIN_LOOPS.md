@@ -481,6 +481,7 @@ implemented first slice
   Defer 7d attention snooze/resurface
   attention producer initial state/owner adoption
   transition history for attention resolutions
+  open-thesis last_evaluated_at freshness loop without no-change version churn
 
 missing
   attention retry/blocked transition helper

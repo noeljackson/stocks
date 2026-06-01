@@ -161,10 +161,11 @@ What works now:
 - Raw signals are composed with price-extension context.
 - Proactive names are queued as reasoned `research_nomination` items, not
   generic inspections.
+- Pending candidates are ranked before review using deterministic signal
+  quality, domain fit, proposed tier, and watchlist-classifier confidence.
 
 Current gaps:
 
-- #148: candidates are reasoned but not ranked.
 - #147: attention status is still too flat for queued/evaluating/deferred/blocked.
 - #143/#129: macro and sector theses do not yet steer discovery ranking.
 
@@ -478,7 +479,6 @@ implemented first slice
 
 missing
   attention FSM
-  ranked discovery review
   macro/sector brain
   external research retrieval
   analyst price targets/recommendations
@@ -491,7 +491,6 @@ missing
 
 1. #128: make freshness orchestration real.
 2. #147: replace flat attention status with an FSM.
-3. #148: rank discovery candidates.
-4. #143/#129: add macro and sector theses.
-5. #130 and #116: improve evidence depth for real forward views.
-6. #131/#25/#5: link decisions to real positions/fills.
+3. #143/#129: add macro and sector theses.
+4. #130 and #116: improve evidence depth for real forward views.
+5. #131/#25/#5: link decisions to real positions/fills.

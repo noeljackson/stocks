@@ -20,7 +20,13 @@ pub fn rank_candidate(
     let mut reasons = vec![signal_reason(signal_name).to_string()];
 
     let strength = signal_strength(signal_name, signal_value);
-    if strength >= 12.0 {
+    if signal_name == "research_nomination" {
+        if strength >= 12.0 {
+            reasons.push("evidence ready".to_string());
+        } else if strength >= 8.0 {
+            reasons.push("evidence mostly ready".to_string());
+        }
+    } else if strength >= 12.0 {
         reasons.push("strong signal value".to_string());
     }
     score += strength;
@@ -29,7 +35,9 @@ pub fn rank_candidate(
         let domain_points = (domain_fit.clamp(0.0, 100.0) / 100.0) * 15.0;
         score += domain_points;
         if domain_fit >= 80.0 {
-            reasons.push(format!("domain fit {}", domain_fit.round() as i64));
+            reasons.push(format!("strong theme fit {}", domain_fit.round() as i64));
+        } else if signal_name == "research_nomination" && domain_fit >= 60.0 {
+            reasons.push(format!("theme fit {}", domain_fit.round() as i64));
         }
     }
 
@@ -102,6 +110,9 @@ fn signal_strength(signal_name: &str, signal_value: Option<f64>) -> f64 {
         };
     };
     match signal_name {
+        // Research nominations use signal_value as available-source count
+        // (price/news/estimates/fundamentals), not a market z-score.
+        "research_nomination" => ((value.clamp(0.0, 4.0) / 4.0) * 14.0).clamp(0.0, 14.0),
         "volume_anomaly" => ((value.abs() / 5.0) * 16.0).clamp(0.0, 16.0),
         "base_breakout" => ((value.abs() / 10.0) * 14.0).clamp(0.0, 14.0),
         "estimate_revision_velocity" => ((value.abs() / 5.0) * 18.0).clamp(0.0, 18.0),
@@ -179,5 +190,30 @@ mod tests {
         assert_eq!(got.bucket, "high");
         assert!(got.reasons.contains(&"research nomination".to_string()));
         assert!(got.reasons.contains(&"suggests new watchlist".to_string()));
+    }
+
+    #[test]
+    fn research_nomination_uses_source_count_and_theme_fit() {
+        let strong = rank_candidate(
+            "research_nomination",
+            Some(4.0),
+            Some(88.0),
+            1,
+            &serde_json::json!([]),
+            false,
+        );
+        let weak = rank_candidate(
+            "research_nomination",
+            Some(2.0),
+            Some(35.0),
+            3,
+            &serde_json::json!([]),
+            false,
+        );
+
+        assert_eq!(strong.bucket, "high");
+        assert!(strong.score > weak.score + 20.0);
+        assert!(strong.reasons.contains(&"evidence ready".to_string()));
+        assert!(strong.reasons.contains(&"strong theme fit 88".to_string()));
     }
 }

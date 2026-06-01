@@ -1,9 +1,12 @@
 # stocks — thesis-driven trading intelligence
 
 An LLM-augmented **investment intelligence amplifier** (Product A): it maintains
-synthesized per-ticker context, discovers emerging tech-infrastructure theses
+synthesized per-ticker context, discovers evidence-backed market inflections
 before consensus, and generates trade ideas for a human to evaluate and execute
-manually. Full design in **[SPEC.md](./SPEC.md)**.
+manually. Tech infrastructure is a current strength, not the product boundary:
+copper, wheat, financials, staples, energy, healthcare, and any liquid market
+can matter when the evidence creates a falsifiable money-making view. Full
+design in **[SPEC.md](./SPEC.md)**.
 
 > Status: active v0. The repo has the event fabric, Postgres schema, Rust
 > service framework, gateway + embedded Svelte SPA, deterministic safety-net
@@ -55,10 +58,13 @@ Important mental models:
 - **Risk is independent:** the thesis engine proposes; the risk overlay
   constrains; the human decides.
 - **Validation is forward:** lead-time-to-consensus, forecast calibration, and
-  decision quality versus QQQ/SMH matter more than historical backtests.
+  decision quality versus the relevant passive benchmark matter more than
+  historical backtests.
 
 See **[docs/SYSTEM.md](./docs/SYSTEM.md)** for the system model, object model,
 service map, UI direction, safety model, and validation loop.
+See **[docs/PRODUCT_PLAN.md](./docs/PRODUCT_PLAN.md)** for the connected brain,
+discovery, cognition, thesis, decision, position, and reflection plan.
 
 ## Architecture (SPEC §3)
 

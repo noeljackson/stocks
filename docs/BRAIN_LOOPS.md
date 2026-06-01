@@ -5,6 +5,9 @@ static dashboard; it is a continuously running research brain that keeps market
 evidence fresh, maintains one current view per ticker, and interrupts the
 operator only when judgment is required.
 
+The higher-level product plan lives in [`docs/PRODUCT_PLAN.md`](PRODUCT_PLAN.md).
+This file remains the lower-level loop map and current implementation status.
+
 ## Top-Level Brain
 
 ```text

@@ -70,12 +70,19 @@ impl Store {
     pub async fn mark_source_started(&self, source: &str, symbols_attempted: i32) -> Result<()> {
         sqlx::query(
             r#"INSERT INTO source_health
-                 (source, last_started_at, last_status, symbols_attempted, updated_at)
-               VALUES ($1, now(), 'running', $2, now())
+                 (source, last_started_at, last_status, symbols_attempted,
+                  symbols_failed, rows_seen, rows_inserted, updated_at)
+               VALUES ($1, now(), 'running', $2, 0, 0, 0, now())
                ON CONFLICT (source) DO UPDATE SET
                    last_started_at = EXCLUDED.last_started_at,
                    last_status = 'running',
                    symbols_attempted = EXCLUDED.symbols_attempted,
+                   symbols_failed = 0,
+                   rows_seen = 0,
+                   rows_inserted = 0,
+                   last_failure_kind = NULL,
+                   last_error = NULL,
+                   retry_after_at = NULL,
                    updated_at = now()"#,
         )
         .bind(source)
@@ -218,9 +225,9 @@ impl Store {
         Ok(())
     }
 
-    /// Union of active tickers + active discovery pool members. Use this
-    /// from any cognition-supporting ingest (news, estimates, XBRL) so the
-    /// data follows the broader pool (#104) — not just the curated universe.
+    /// Union of active tickers + active discovery pool members. This is broad
+    /// discovery scope; expensive source loops should prefer
+    /// `priority_scan_symbols` so the brain refreshes active names first.
     pub async fn scan_pool_symbols(&self) -> Result<Vec<String>> {
         let rows: Vec<(String,)> = sqlx::query_as(
             r#"SELECT symbol FROM (
@@ -233,6 +240,48 @@ impl Store {
         .fetch_all(&self.pool)
         .await
         .context("scan_pool_symbols")?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    /// Tiered deep-research universe. Active tickers come first, then the
+    /// highest-ranked proposed discovery candidates. This keeps expensive
+    /// provider loops inside the freshness SLA instead of re-deep-scanning
+    /// the whole screener pool every pass.
+    pub async fn priority_scan_symbols(&self, limit: i64) -> Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"WITH ranked AS (
+                  SELECT symbol,
+                         0 AS source_rank,
+                         tier AS tier_rank,
+                         COALESCE(domain_fit::double precision, 0.0) AS fit_rank,
+                         added_at AS last_ranked_at
+                    FROM ticker
+                   WHERE status = 'active'
+                  UNION ALL
+                  SELECT symbol,
+                         1 AS source_rank,
+                         COALESCE(proposed_tier, 3) AS tier_rank,
+                         COALESCE(domain_fit, 0.0) AS fit_rank,
+                         proposed_at AS last_ranked_at
+                    FROM discovery_candidate
+                   WHERE status = 'proposed'
+                     AND COALESCE(proposed_tier, 3) <= 2
+               )
+               SELECT symbol
+                 FROM ranked
+             GROUP BY symbol
+             ORDER BY
+                  MIN(source_rank),
+                  MIN(tier_rank),
+                  MAX(fit_rank) DESC,
+                  MAX(last_ranked_at) DESC,
+                  symbol
+                LIMIT $1"#,
+        )
+        .bind(limit.max(1))
+        .fetch_all(&self.pool)
+        .await
+        .context("priority_scan_symbols")?;
         Ok(rows.into_iter().map(|r| r.0).collect())
     }
 

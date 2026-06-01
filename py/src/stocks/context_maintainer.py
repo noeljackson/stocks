@@ -287,6 +287,67 @@ async def _load_estimate_revisions(
     ]
 
 
+async def _load_analyst_opinion(pool: asyncpg.Pool, symbol: str) -> dict:
+    target = await pool.fetchrow(
+        """SELECT target_high, target_low, target_consensus, target_median, snapshot_at
+             FROM analyst_price_target_snapshot
+            WHERE symbol = $1
+         ORDER BY snapshot_at DESC
+            LIMIT 1""",
+        symbol,
+    )
+    recommendation = await pool.fetchrow(
+        """SELECT as_of_date, strong_buy, buy, hold, sell, strong_sell, snapshot_at
+             FROM analyst_recommendation_snapshot
+            WHERE symbol = $1
+         ORDER BY snapshot_at DESC
+            LIMIT 1""",
+        symbol,
+    )
+    event_rows = await pool.fetch(
+        """SELECT published_at, news_title, news_url, analyst_company,
+                  price_target, adj_price_target, price_when_posted, news_publisher
+             FROM analyst_price_target_event
+            WHERE symbol = $1
+         ORDER BY published_at DESC
+            LIMIT 10""",
+        symbol,
+    )
+    return {
+        "price_target_consensus": None if target is None else {
+            "target_high": _f(target["target_high"]),
+            "target_low": _f(target["target_low"]),
+            "target_consensus": _f(target["target_consensus"]),
+            "target_median": _f(target["target_median"]),
+            "snapshot_at": target["snapshot_at"].isoformat(),
+        },
+        "recommendation_mix": None if recommendation is None else {
+            "as_of_date": recommendation["as_of_date"].isoformat()
+            if recommendation["as_of_date"]
+            else None,
+            "strong_buy": recommendation["strong_buy"],
+            "buy": recommendation["buy"],
+            "hold": recommendation["hold"],
+            "sell": recommendation["sell"],
+            "strong_sell": recommendation["strong_sell"],
+            "snapshot_at": recommendation["snapshot_at"].isoformat(),
+        },
+        "recent_price_target_events": [
+            {
+                "published_at": r["published_at"].isoformat(),
+                "title": r["news_title"],
+                "url": r["news_url"],
+                "analyst_company": r["analyst_company"],
+                "price_target": _f(r["price_target"]),
+                "adj_price_target": _f(r["adj_price_target"]),
+                "price_when_posted": _f(r["price_when_posted"]),
+                "publisher": r["news_publisher"],
+            }
+            for r in event_rows
+        ],
+    }
+
+
 async def _load_events(
     pool: asyncpg.Pool, symbol: str, since: dt.datetime | None, limit: int,
 ) -> list[dict]:
@@ -334,8 +395,9 @@ def _build_user_message(
     price_snapshot: dict | None,
     news: list[dict],
     estimate_revisions: list[dict],
+    analyst_opinion: dict,
     research_evidence: list[dict],
-    evidence_counts: dict[str, int],
+    evidence_counts: dict[str, object],
     missing_evidence: list[dict],
     today: str,
 ) -> str:
@@ -351,6 +413,7 @@ def _build_user_message(
             "price_snapshot": price_snapshot,
             "recent_news": news,
             "estimate_revisions": estimate_revisions,
+            "analyst_opinion": analyst_opinion,
             "research_evidence": research_evidence,
             "evidence_counts": evidence_counts,
             "missing_evidence": missing_evidence,
@@ -437,6 +500,7 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
         price_snapshot = await _load_price_snapshot(pool, symbol)
         news = await _load_recent_news(pool, symbol, since)
         estimate_revisions = await _load_estimate_revisions(pool, symbol, since)
+        analyst_opinion = await _load_analyst_opinion(pool, symbol)
         await refresh_research_evidence(
             pool,
             symbol,
@@ -450,7 +514,7 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
         )
         log.info(
             "symbol=%s prior=%s events_count=%d facts_count=%d "
-            "news_count=%d revisions_count=%d research_count=%d "
+            "news_count=%d revisions_count=%d analyst_opinion_events=%d research_count=%d "
             "price=%s missing_evidence=%d",
             symbol,
             f"v{prior['version']}" if prior else "none",
@@ -458,6 +522,7 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
             len(facts),
             len(news),
             len(estimate_revisions),
+            len(analyst_opinion.get("recent_price_target_events", [])),
             len(research_evidence),
             "yes" if price_snapshot else "no",
             len(missing_evidence),
@@ -502,6 +567,7 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
             price_snapshot,
             news,
             estimate_revisions,
+            analyst_opinion,
             research_evidence,
             evidence_counts,
             missing_evidence,

@@ -22,7 +22,7 @@ use tracing::{info, warn};
 
 use super::fmp_news::{FmpNewsAdapter, NewsArticle};
 use super::massive_news::MassiveNewsAdapter;
-use super::{rate_limit, source_health};
+use super::{max_symbols_from_env, rate_limit, source_health};
 use crate::sentiment::SentimentScore;
 
 /// Identifies a Sentiment-scorer callback. Returns the scored result OR
@@ -54,12 +54,16 @@ pub struct NewsIngestService {
 }
 
 impl NewsIngestService {
-    /// One pass over scan_pool ∪ universe (#104). Returns (inserted, scored).
+    /// One pass over the tiered deep-research universe. Returns (inserted, scored).
     pub async fn run_once(&self) -> Result<(usize, usize)> {
         let store = crate::platform::store::Store {
             pool: self.pool.clone(),
         };
-        let universe_owned: Vec<String> = store.scan_pool_symbols().await.unwrap_or_default();
+        let max_symbols = max_symbols_from_env("NEWS_MAX_SYMBOLS_PER_PASS", 100);
+        let universe_owned: Vec<String> = store
+            .priority_scan_symbols(max_symbols)
+            .await
+            .unwrap_or_default();
         let universe: Vec<&str> = universe_owned.iter().map(String::as_str).collect();
         source_health::mark_started(&self.pool, "fmp_news", universe.len() as i32).await?;
         source_health::mark_started(&self.pool, "massive_news", universe.len() as i32).await?;

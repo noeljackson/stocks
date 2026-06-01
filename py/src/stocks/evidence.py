@@ -12,6 +12,7 @@ FRESHNESS_TARGETS_MINUTES = {
     "company_facts": 6 * 60,
     "recent_news": 30,
     "analyst_estimates": 30,
+    "analyst_opinion": 30,
     "product_research": 30,
 }
 
@@ -20,6 +21,7 @@ SOURCE_HEALTH_BY_REQUIREMENT = {
     "company_facts": ["edgar", "xbrl"],
     "recent_news": ["fmp_news", "massive_news"],
     "analyst_estimates": ["fmp_estimates"],
+    "analyst_opinion": ["fmp_analyst_opinion"],
     "product_research": ["web_research"],
 }
 
@@ -49,6 +51,19 @@ EVIDENCE_REQUIREMENTS = {
         "priority": "high",
         "reason": "Need analyst estimate snapshots before evaluating revision/consensus drift.",
         "fetch_actions": ["fmp_analyst_estimates"],
+    },
+    "analyst_opinion": {
+        "source_type": "analyst_opinion",
+        "priority": "medium",
+        "reason": (
+            "Need analyst price targets and recommendation mix before judging whether "
+            "a thesis is outside consensus or already consensus."
+        ),
+        "fetch_actions": [
+            "fmp_price_target_consensus",
+            "fmp_grades_historical",
+            "fmp_price_target_news",
+        ],
     },
     "product_research": {
         "source_type": "web_research",
@@ -143,6 +158,11 @@ def satisfied_source_task_state(
         "company_facts": _parse_dt(evidence_counts.get("company_fact_last_ingested_at")),
         "recent_news": _parse_dt(evidence_counts.get("news_last_ingested_at")),
         "analyst_estimates": _parse_dt(evidence_counts.get("estimate_snapshot_last_at")),
+        "analyst_opinion": _latest_dt([
+            evidence_counts.get("analyst_price_target_snapshot_last_at"),
+            evidence_counts.get("analyst_recommendation_snapshot_last_at"),
+            evidence_counts.get("analyst_price_target_event_last_at"),
+        ]),
         "product_research": _latest_dt([
             evidence_counts.get("research_run_last_at"),
             evidence_counts.get("research_evidence_last_retrieved_at"),
@@ -293,6 +313,25 @@ async def load_evidence_counts(pool: asyncpg.Pool, symbol: str) -> dict[str, obj
               (SELECT count(*) FROM estimate_snapshot WHERE symbol = $1) AS estimate_snapshots,
               (SELECT max(snapshot_at)
                  FROM estimate_snapshot WHERE symbol = $1) AS estimate_snapshot_last_at,
+              (SELECT count(*)
+                 FROM analyst_price_target_snapshot
+                WHERE symbol = $1) AS analyst_price_target_snapshots,
+              (SELECT max(snapshot_at)
+                 FROM analyst_price_target_snapshot
+                WHERE symbol = $1) AS analyst_price_target_snapshot_last_at,
+              (SELECT count(*)
+                 FROM analyst_recommendation_snapshot
+                WHERE symbol = $1) AS analyst_recommendation_snapshots,
+              (SELECT max(snapshot_at)
+                 FROM analyst_recommendation_snapshot
+                WHERE symbol = $1) AS analyst_recommendation_snapshot_last_at,
+              (SELECT count(*)
+                 FROM analyst_price_target_event
+                WHERE symbol = $1
+                  AND published_at > now() - interval '90 days') AS analyst_price_target_events,
+              (SELECT max(ingested_at)
+                 FROM analyst_price_target_event
+                WHERE symbol = $1) AS analyst_price_target_event_last_at,
               (SELECT count(*) FROM research_evidence
                 WHERE symbol = $1
                   AND retrieved_at > now() - interval '30 days') AS research_evidence,
@@ -406,6 +445,10 @@ def assess_evidence_requirements(
         "company_facts": evidence_counts.get("company_facts", 0) > 0,
         "recent_news": evidence_counts.get("recent_news", 0) > 0,
         "analyst_estimates": evidence_counts.get("estimate_snapshots", 0) > 0,
+        "analyst_opinion": (
+            evidence_counts.get("analyst_price_target_snapshots", 0) > 0
+            or evidence_counts.get("analyst_recommendation_snapshots", 0) > 0
+        ),
         "product_research": evidence_counts.get("research_evidence", 0) > 0,
     }
     for key, satisfied in checks.items():

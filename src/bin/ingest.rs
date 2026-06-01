@@ -15,6 +15,8 @@ use stocks::ingest::fmp::FmpPriceAdapter;
 use stocks::ingest::fmp_estimates::FmpEstimatesAdapter;
 use stocks::ingest::fmp_estimates_service;
 use stocks::ingest::fmp_news::FmpNewsAdapter;
+use stocks::ingest::fmp_opinion::FmpOpinionAdapter;
+use stocks::ingest::fmp_opinion_service;
 use stocks::ingest::fred::FredAdapter;
 use stocks::ingest::massive_news::MassiveNewsAdapter;
 use stocks::ingest::news_service::{self, NewsIngestService, ScorerFn};
@@ -37,8 +39,9 @@ async fn main() -> Result<()> {
         .await?;
 
     // FMP price ingest (#60, #88). Per-ticker incremental backfill: 5y on
-    // first sight, 30d on subsequent polls. Pool = discovery_pool ∪ ticker
-    // (so both scan-pool members AND active universe get bars).
+    // first sight, 30d on subsequent polls. This follows the tiered deep
+    // universe so active names refresh first and top proposed candidates get
+    // enough data to graduate into research.
     {
         let store = store.clone();
         let key = cfg.fmp_api_key.clone();
@@ -47,9 +50,11 @@ async fn main() -> Result<()> {
             let adapter = FmpPriceAdapter::new(&key, &base);
             let interval = ingest::interval_secs_from_env("FMP_PRICE_INTERVAL_SECS", 30 * 60);
             loop {
-                // Pool ∪ active tickers ∪ benchmarks
+                // Tiered deep universe ∪ benchmarks.
                 let mut symbols: std::collections::BTreeSet<String> = Default::default();
-                if let Ok(p) = store.discovery_pool_symbols().await {
+                let max_symbols =
+                    ingest::max_symbols_from_env("FMP_PRICE_MAX_SYMBOLS_PER_PASS", 125);
+                if let Ok(p) = store.priority_scan_symbols(max_symbols).await {
                     symbols.extend(p);
                 }
                 for bench in ["SPY", "QQQ", "SMH", "VIXY"] {
@@ -174,6 +179,22 @@ async fn main() -> Result<()> {
         });
     }
 
+    // FMP analyst opinion (#116): price target consensus, recommendation mix,
+    // and recent target events. This is separate from estimate revisions; it
+    // tells cognition what the visible sell-side opinion already says.
+    {
+        let pool = store.pool.clone();
+        let key = cfg.fmp_api_key.clone();
+        let base = cfg.fmp_base_url.clone();
+        tokio::spawn(async move {
+            let adapter = FmpOpinionAdapter::new(&key, &base);
+            let interval = ingest::interval_secs_from_env("FMP_OPINION_INTERVAL_SECS", 30 * 60);
+            if let Err(e) = fmp_opinion_service::run(pool, adapter, interval).await {
+                error!(error = %e, "fmp_analyst_opinion service exited");
+            }
+        });
+    }
+
     // Crowd sentiment (#20): CBOE put/call + VIX daily CSV → crowd_sentiment.
     // Feeds the consensus retail_attention component.
     {
@@ -267,6 +288,8 @@ async fn main() -> Result<()> {
     }
 
     // Spawn the XBRL bulk loop in parallel with the per-event adapter runner.
+    // This is capped to the tiered deep universe; broad pool membership alone
+    // is not enough to spend SEC/XBRL quota every pass.
     {
         let store = store.clone();
         let ua = cfg.sec_user_agent.clone();
@@ -275,7 +298,11 @@ async fn main() -> Result<()> {
             let interval = ingest::interval_secs_from_env("XBRL_INTERVAL_SECS", 6 * 3600);
             // First-run fires immediately so a fresh deploy populates company_fact.
             loop {
-                let symbols = store.scan_pool_symbols().await.unwrap_or_default();
+                let max_symbols = ingest::max_symbols_from_env("XBRL_MAX_SYMBOLS_PER_PASS", 100);
+                let symbols = store
+                    .priority_scan_symbols(max_symbols)
+                    .await
+                    .unwrap_or_default();
                 let attempted = symbols.len() as i32;
                 if let Err(e) = store.mark_source_started("xbrl", attempted).await {
                     error!(error = %e, "xbrl source health start record failed");
@@ -344,9 +371,9 @@ async fn main() -> Result<()> {
         });
     }
 
-    // EDGAR filings must follow the dynamic scan pool, not a hardcoded seed
-    // list. This loop mirrors XBRL's pool-aware behavior and emits ordinary
-    // ingest.filing events for downstream consumers.
+    // EDGAR filings follow the same tiered deep universe as XBRL. The broad
+    // screener pool should nominate first; SEC loops should not spend every
+    // 30-minute pass walking 1,000+ low-rank names.
     {
         let store = store.clone();
         let bus = bus.clone();
@@ -355,7 +382,11 @@ async fn main() -> Result<()> {
             let adapter = EdgarAdapter::new(&ua);
             let interval = ingest::interval_secs_from_env("EDGAR_INTERVAL_SECS", 30 * 60);
             loop {
-                let symbols = store.scan_pool_symbols().await.unwrap_or_default();
+                let max_symbols = ingest::max_symbols_from_env("EDGAR_MAX_SYMBOLS_PER_PASS", 100);
+                let symbols = store
+                    .priority_scan_symbols(max_symbols)
+                    .await
+                    .unwrap_or_default();
                 let attempted = symbols.len() as i32;
                 if let Err(e) = store.mark_source_started("edgar", attempted).await {
                     error!(error = %e, "edgar source health start record failed");

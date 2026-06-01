@@ -61,6 +61,7 @@ def test_assess_evidence_requirements_reports_missing_inputs() -> None:
         "company_facts": 0,
         "recent_news": 0,
         "estimate_snapshots": 4,
+        "analyst_price_target_snapshots": 1,
         "research_evidence": 1,
     })
 
@@ -75,6 +76,7 @@ def test_assess_evidence_requirements_attaches_source_health_state() -> None:
             "company_facts": 0,
             "recent_news": 1,
             "estimate_snapshots": 4,
+            "analyst_price_target_snapshots": 1,
             "research_evidence": 1,
         },
         {
@@ -105,6 +107,7 @@ def test_assess_evidence_requirements_marks_running_sources_as_fetching() -> Non
             "company_facts": 0,
             "recent_news": 1,
             "estimate_snapshots": 4,
+            "analyst_price_target_snapshots": 1,
             "research_evidence": 1,
         },
         {
@@ -132,6 +135,7 @@ def test_assess_evidence_requirements_marks_checked_sources_as_missing() -> None
             "company_facts": 0,
             "recent_news": 1,
             "estimate_snapshots": 4,
+            "analyst_price_target_snapshots": 1,
             "research_evidence": 1,
         },
         {
@@ -159,6 +163,7 @@ def test_assess_evidence_requirements_tracks_product_research() -> None:
             "company_facts": 2,
             "recent_news": 1,
             "estimate_snapshots": 4,
+            "analyst_price_target_snapshots": 1,
             "research_evidence": 0,
         },
         {
@@ -180,6 +185,40 @@ def test_assess_evidence_requirements_tracks_product_research() -> None:
     assert research["state_reason"] == "source_checked_no_new_rows"
 
 
+def test_assess_evidence_requirements_tracks_analyst_opinion() -> None:
+    missing = assess_evidence_requirements(
+        {
+            "price_bars": 12,
+            "company_facts": 2,
+            "recent_news": 1,
+            "estimate_snapshots": 4,
+            "analyst_price_target_snapshots": 0,
+            "analyst_recommendation_snapshots": 0,
+            "research_evidence": 1,
+        },
+        {
+            "fmp_analyst_opinion": {
+                "source": "fmp_analyst_opinion",
+                "last_status": "no_new_rows",
+                "last_failure_kind": None,
+                "last_error": None,
+                "retry_after_at": None,
+                "rows_seen": 0,
+                "rows_inserted": 0,
+            },
+        },
+    )
+
+    [opinion] = missing
+    assert opinion["requirement_key"] == "analyst_opinion"
+    assert opinion["source_type"] == "analyst_opinion"
+    assert opinion["fetch_actions"] == [
+        "fmp_price_target_consensus",
+        "fmp_grades_historical",
+        "fmp_price_target_news",
+    ]
+
+
 def test_build_source_tasks_maps_missing_requirement_to_fetch_work() -> None:
     [news] = assess_evidence_requirements(
         {
@@ -187,6 +226,7 @@ def test_build_source_tasks_maps_missing_requirement_to_fetch_work() -> None:
             "company_facts": 2,
             "recent_news": 0,
             "estimate_snapshots": 4,
+            "analyst_price_target_snapshots": 1,
             "research_evidence": 1,
         },
         {
@@ -220,6 +260,7 @@ def test_build_source_tasks_maps_rate_limit_to_provider_pause() -> None:
             "company_facts": 2,
             "recent_news": 1,
             "estimate_snapshots": 0,
+            "analyst_price_target_snapshots": 1,
             "research_evidence": 1,
         },
         {
@@ -249,6 +290,7 @@ def test_assess_evidence_requirements_empty_when_core_inputs_present() -> None:
         "company_facts": 20,
         "recent_news": 5,
         "estimate_snapshots": 10,
+        "analyst_price_target_snapshots": 1,
         "research_evidence": 3,
     }) == []
 

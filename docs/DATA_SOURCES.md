@@ -31,7 +31,7 @@ file an issue and link it from the relevant row's "status" column.
 
 | Data | Why | Vendor | Tier / cost | Endpoint | Status |
 |---|---|---|---|---|---|
-| Daily OHLCV bars | Discovery signals (volume_anomaly, base_breakout), evaluator (`SYMBOL.close`), consensus price_extension component | **FMP** (primary) | Starter $22/mo | `/stable/historical-price-eod/full?symbol=&from=&to=` returns OHLCV + change + vwap. 5+ yrs adjusted history. | wired — `src/ingest/fmp_price.rs` |
+| Daily OHLCV bars | Discovery signals (volume_anomaly, base_breakout), evaluator (`SYMBOL.close`), consensus price_extension component | **FMP** (primary) | Starter $22/mo | `/stable/historical-price-eod/full?symbol=&from=&to=` returns OHLCV + change + vwap. 5+ yrs adjusted history. | wired — `src/ingest/fmp.rs`; tiered deep universe plus benchmarks |
 | Intraday bars (1m/5m/15m/30m/1h/4h) | TradingView-style chart intervals; 3m/2h are aggregated from native bars | FMP | Same plan | `/stable/historical-chart/{interval}` | wired — `src/ingest/fmp_intraday.rs` |
 | Company screener / discovery pool | Broad radar for liquid equities across technology, financials, staples/agriculture, energy, materials/metals, healthcare, industrials, real estate, utilities, consumer, and communications | FMP | Starter | `/stable/company-screener` by sector slice | wired — `src/ingest/fmp_screener.rs`; creates `research_nomination` candidates with explicit sector/theme/business/evidence reasons for unreviewed pool names |
 | Options chains | LEAPS thesis instrument selection (#5 epic) | Massive Options Starter $29/mo extra (or FMP has thin coverage — verify before swap) | `/v3/snapshot/options/{underlying}` (Massive) | not wired |
@@ -60,11 +60,18 @@ Override with `FMP_MIN_REQUEST_INTERVAL_MS`, `FMP_RATE_LIMIT_BACKOFF_MS`,
 `FMP_MAX_RATE_LIMIT_BACKOFF_MS`, `FRED_MIN_REQUEST_INTERVAL_MS`,
 `FRED_RATE_LIMIT_BACKOFF_MS`, and `FRED_MAX_RATE_LIMIT_BACKOFF_MS`.
 
+Expensive per-symbol loops do not scan the entire screener pool every pass.
+They use `Store::priority_scan_symbols()`: active tickers first, then Tier 1/2
+proposed discovery candidates, capped per provider loop. Dev defaults are
+`FMP_PRICE_MAX_SYMBOLS_PER_PASS=125`, `FMP_ESTIMATES_MAX_SYMBOLS_PER_PASS=100`,
+`FMP_OPINION_MAX_SYMBOLS_PER_PASS=75`, `NEWS_MAX_SYMBOLS_PER_PASS=100`,
+`EDGAR_MAX_SYMBOLS_PER_PASS=100`, and `XBRL_MAX_SYMBOLS_PER_PASS=100`.
+
 ## 2. Fundamentals
 
 | Data | Why | Vendor | Tier / cost | Endpoint | Status |
 |---|---|---|---|---|---|
-| Company facts (XBRL) | Evaluator metrics (`SYMBOL.gross_margin_pct`, etc.), context maintainer fundamentals block | **SEC EDGAR** | free, public | `/api/xbrl/companyfacts/CIK<N>.json` | wired — `src/ingest/xbrl.rs`; follows `scan_pool_symbols()` so active tickers and discovery-pool names can acquire facts |
+| Company facts (XBRL) | Evaluator metrics (`SYMBOL.gross_margin_pct`, etc.), context maintainer fundamentals block | **SEC EDGAR** | free, public | `/api/xbrl/companyfacts/CIK<N>.json` | wired — `src/ingest/xbrl.rs`; tiered deep universe so active tickers and top candidates acquire facts without starving the freshness loop |
 | CIK lookup | Resolving ticker → CIK before XBRL pull | SEC EDGAR | free | `/files/company_tickers.json` | wired — `src/ingest/sec.rs`; fetched dynamically with seeded fallback for known ADRs |
 | Earnings calendar (upcoming + history) | Goalpost dates, horizon_at validation, beat/miss pattern | **FMP** | Starter | `/stable/earnings?symbol=` returns `epsActual/epsEstimated/revenueActual/revenueEstimated/lastUpdated`. `/stable/earnings-calendar?from=&to=` for global upcoming | not wired |
 | Company profile | Cluster classification context, market cap | FMP | Starter | `/stable/profile?symbol=` | not wired |
@@ -81,8 +88,9 @@ This is the SPEC §4 "#1 leading signal for the edge" gap (#18).
 | **Estimate revision time-series** (the actual signal) | "Earlier than the crowd" detection — when consensus is being revised up/down before retail sees it | FMP via daily snapshot + diff against prior snapshot (we build this layer) | Starter | snapshot `/stable/analyst-estimates` daily → `estimate_snapshot` table → diff → `estimate_revision` events | wired — `src/ingest/fmp_estimates_service.rs` |
 | Per-firm rating events (upgrade/downgrade with `gradingCompany`, `newGrade`, `previousGrade`, `priceWhenPosted`) | Discrete catalyst events for discovery + thesis flags. The actual "revisions" data Bloomberg/Refinitiv charge 5-figures/yr for, here for free. | **FMP** | Starter | `/stable/grades-latest-news?limit=` returns global event feed; filter to our universe client-side | not wired (#18) |
 | Aggregate buy/hold/sell counts (monthly buckets per symbol) | Lower-resolution drift sanity check | FMP | Starter | `/stable/grades-historical?symbol=` returns monthly StrongBuy/Buy/Hold/Sell counts | not wired |
-| Analyst price target consensus | Consensus artifact: target high/low/median/consensus helps separate "outside consensus" from "already accepted" | FMP | Starter — verify live key | `/stable/price-target-consensus?symbol=` | not wired (#116) |
-| Analyst recommendations / opinion mix | Buy/hold/sell mix for "what does sell-side already believe?" context | FMP | Starter — verify live key | recommendation endpoints / stock recommendations | not wired (#116) |
+| Analyst price target consensus | Consensus artifact: target high/low/median/consensus helps separate "outside consensus" from "already accepted" | FMP | Starter | `/stable/price-target-consensus?symbol=` | wired — `src/ingest/fmp_opinion.rs`, active tickers + Tier 1/2 proposed candidates, persisted to `analyst_price_target_snapshot` |
+| Analyst recommendations / opinion mix | Buy/hold/sell mix for "what does sell-side already believe?" context | FMP | Starter | `/stable/grades-historical?symbol=&limit=1` | wired — `src/ingest/fmp_opinion.rs`, active tickers + Tier 1/2 proposed candidates, persisted to `analyst_recommendation_snapshot` |
+| Analyst price target events | Recent firm-level target changes for catalysts and consensus drift narrative | FMP | Starter | `/stable/price-target-news?symbol=&limit=10` | wired — `src/ingest/fmp_opinion.rs`, active tickers + Tier 1/2 proposed candidates, persisted to `analyst_price_target_event` |
 
 ## 4. News + per-article sentiment
 

@@ -13,6 +13,8 @@ pub mod fmp_estimates;
 pub mod fmp_estimates_service;
 pub mod fmp_intraday;
 pub mod fmp_news;
+pub mod fmp_opinion;
+pub mod fmp_opinion_service;
 pub mod fmp_screener;
 pub mod fred;
 pub mod massive;
@@ -47,6 +49,15 @@ pub fn interval_secs_from_env(name: &str, default_secs: u64) -> Duration {
 }
 
 #[must_use]
+pub fn max_symbols_from_env(name: &str, default_symbols: i64) -> i64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| parse_positive_i64(&v))
+        .unwrap_or(default_symbols)
+        .max(1)
+}
+
+#[must_use]
 pub fn parse_interval_secs(raw: &str, default_secs: u64) -> Option<u64> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -56,6 +67,18 @@ pub fn parse_interval_secs(raw: &str, default_secs: u64) -> Option<u64> {
         Ok(0) => Some(default_secs),
         Ok(v) => Some(v),
         Err(_) => None,
+    }
+}
+
+#[must_use]
+pub fn parse_positive_i64(raw: &str) -> Option<i64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.parse::<i64>() {
+        Ok(v) if v > 0 => Some(v),
+        _ => None,
     }
 }
 
@@ -269,5 +292,15 @@ mod tests {
         assert_eq!(parse_interval_secs("0", 60), Some(60));
         assert_eq!(parse_interval_secs("", 60), None);
         assert_eq!(parse_interval_secs("nope", 60), None);
+    }
+
+    #[test]
+    fn parse_positive_i64_tolerates_bad_inputs() {
+        assert_eq!(parse_positive_i64("75"), Some(75));
+        assert_eq!(parse_positive_i64(" 12 "), Some(12));
+        assert_eq!(parse_positive_i64("0"), None);
+        assert_eq!(parse_positive_i64("-1"), None);
+        assert_eq!(parse_positive_i64(""), None);
+        assert_eq!(parse_positive_i64("nope"), None);
     }
 }

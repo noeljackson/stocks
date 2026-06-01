@@ -38,6 +38,7 @@
     type BrainOverview,
     type BrainSourceStatus,
     type BrainStatus,
+    type BrainThesis,
     type Calibration,
     type DecisionRow,
     type EvidenceRequirement,
@@ -619,6 +620,11 @@
     if (!bottomOpen) bottomPane?.expand();
   }
 
+  function openBrainDrawer() {
+    bottomMode = "brain";
+    if (!bottomOpen) bottomPane?.expand();
+  }
+
   function forecastDirectionFrom(forecast: Record<string, unknown> | null | undefined): string | null {
     const dir = forecast?.direction;
     return typeof dir === "string" && dir.length > 0 ? dir : null;
@@ -1025,6 +1031,11 @@
   });
 
   let selectedTicker = $derived(tickerFor(selectedSymbol));
+  let selectedParentTheses = $derived<BrainThesis[]>(
+    brainOverview?.sectors.filter((thesis) =>
+      selectedSymbol ? thesis.tickers.some((t) => t.symbol === selectedSymbol) : false,
+    ) ?? [],
+  );
 
   // ---------- panel sizing + resize ----------
   // paneforge bottom-pane API ref so the "hide" button can collapse it
@@ -1935,6 +1946,39 @@
               {:else}
                 <p class="muted">Brain status unavailable.</p>
               {/if}
+              {#if selectedParentTheses.length}
+                <section class="brain-card parent-brain-card">
+                  <div class="brain-hdr">
+                    <span class="brain-title">Parent Brain</span>
+                    <span class="badge tiny">{selectedParentTheses.length}</span>
+                    <button type="button" class="text-action" onclick={openBrainDrawer}>open brain</button>
+                  </div>
+                  <ul class="parent-brain-list">
+                    {#each selectedParentTheses as parent (parent.id)}
+                      {@const linked = parent.tickers.find((t) => t.symbol === selectedSymbol)}
+                      <li>
+                        <div class="parent-brain-hdr">
+                          <strong>{parent.name}</strong>
+                          <span class="badge tiny brain-dir-{parent.direction}">{brainDirectionLabel(parent.direction)}</span>
+                          <span class="badge tiny brain-fresh-{parent.freshness}">{parent.freshness}</span>
+                          {#if linked?.role}<span class="muted">{linked.role}</span>{/if}
+                        </div>
+                        <p>{parent.summary}</p>
+                        {#if linked?.rationale}
+                          <p class="muted">{linked.rationale}</p>
+                        {/if}
+                        {#if parent.open_questions.length}
+                          <div class="parent-brain-questions">
+                            {#each parent.open_questions.slice(0, 2) as question}
+                              <span>{brainThingText(question)}</span>
+                            {/each}
+                          </div>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ul>
+                </section>
+              {/if}
             {:else if rightTab === "context"}
               {#if symbolContext === undefined}
                 <p class="muted">Loading…</p>
@@ -2655,6 +2699,41 @@
     align-items: baseline;
     gap: .35rem;
     flex-wrap: wrap;
+  }
+  .text-action {
+    background: transparent;
+    border: none;
+    color: #89b4fa;
+    padding: 0;
+    font: inherit;
+    cursor: pointer;
+  }
+  .parent-brain-list {
+    list-style: none;
+    padding: 0;
+    margin: .45rem 0 0;
+    display: flex;
+    flex-direction: column;
+    gap: .55rem;
+  }
+  .parent-brain-list li {
+    border-top: 1px solid #1f2733;
+    padding-top: .45rem;
+  }
+  .parent-brain-list li:first-child {
+    border-top: none;
+    padding-top: 0;
+  }
+  .parent-brain-hdr,
+  .parent-brain-questions {
+    display: flex;
+    align-items: baseline;
+    gap: .35rem;
+    flex-wrap: wrap;
+  }
+  .parent-brain-questions span {
+    color: #9aa3b8;
+    font-size: .72rem;
   }
   .evidence-list {
     list-style: none; padding: 0; margin: 0;

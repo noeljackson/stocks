@@ -616,6 +616,20 @@ test("brain tab shows macro and theme theses with linked tickers", async ({ page
   await expect(theme.getByRole("button", { name: /OKTA/ })).toContainText("forming");
 });
 
+test("overview shows selected ticker parent brain context", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/symbol/OKTA");
+
+  const parentBrain = page.locator(".parent-brain-card");
+  await expect(parentBrain).toContainText("AI Compute Infrastructure");
+  await expect(parentBrain).toContainText("candidate");
+  await expect(parentBrain).toContainText("Mock linked row.");
+  await expect(parentBrain).toContainText("Which challengers have real customer traction?");
+
+  await parentBrain.getByRole("button", { name: "open brain" }).click();
+  await expect(page.getByRole("button", { name: "brain", exact: true })).toHaveClass(/active/);
+});
+
 test("symbol routes deep-link selected ticker and keep navigation state", async ({ page }) => {
   await mockApi(page);
   await page.goto("/symbol/NVDA");

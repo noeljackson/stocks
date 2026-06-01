@@ -63,6 +63,49 @@ pub mod owner {
     pub const RISK: &str = "risk";
 }
 
+#[must_use]
+pub fn is_valid_fsm_state(state: &str) -> bool {
+    matches!(
+        state,
+        fsm::QUEUED
+            | fsm::EVALUATING
+            | fsm::WAITING_ON_DATA
+            | fsm::READY_FOR_REVIEW
+            | fsm::OPERATOR_DEFERRED
+            | fsm::ACTIONABLE
+            | fsm::RESOLVED
+            | fsm::DISMISSED
+            | fsm::BLOCKED
+    )
+}
+
+#[must_use]
+pub fn is_valid_owner(value: &str) -> bool {
+    matches!(
+        value,
+        owner::SYSTEM | owner::OPERATOR | owner::SOURCE | owner::COGNITION | owner::RISK
+    )
+}
+
+#[must_use]
+pub fn status_for_state(state: &str) -> &'static str {
+    match state {
+        fsm::RESOLVED => "resolved",
+        fsm::DISMISSED => "dismissed",
+        _ => "open",
+    }
+}
+
+#[must_use]
+pub fn default_owner_for_state(state: &str) -> &'static str {
+    match state {
+        fsm::QUEUED | fsm::EVALUATING => owner::SYSTEM,
+        fsm::WAITING_ON_DATA | fsm::BLOCKED => owner::SOURCE,
+        fsm::RESOLVED => owner::SYSTEM,
+        _ => owner::OPERATOR,
+    }
+}
+
 /// Source labels (where the item came from in our pipeline).
 pub mod source {
     pub const DISCOVERY: &str = "discovery";
@@ -125,6 +168,59 @@ pub fn title_for_risk_review(symbol: &str, veto: bool, reasons: &[String]) -> St
         format!("{symbol} risk {head}")
     } else {
         format!("{symbol} risk {head}: {}", reasons.join(", "))
+    }
+}
+
+#[cfg(test)]
+mod fsm_tests {
+    use super::{
+        default_owner_for_state, fsm, is_valid_fsm_state, is_valid_owner, owner, status_for_state,
+    };
+
+    #[test]
+    fn attention_state_validation_matches_schema_values() {
+        for state in [
+            fsm::QUEUED,
+            fsm::EVALUATING,
+            fsm::WAITING_ON_DATA,
+            fsm::READY_FOR_REVIEW,
+            fsm::OPERATOR_DEFERRED,
+            fsm::ACTIONABLE,
+            fsm::RESOLVED,
+            fsm::DISMISSED,
+            fsm::BLOCKED,
+        ] {
+            assert!(is_valid_fsm_state(state));
+        }
+        assert!(!is_valid_fsm_state("paused"));
+    }
+
+    #[test]
+    fn attention_owner_validation_matches_schema_values() {
+        for value in [
+            owner::SYSTEM,
+            owner::OPERATOR,
+            owner::SOURCE,
+            owner::COGNITION,
+            owner::RISK,
+        ] {
+            assert!(is_valid_owner(value));
+        }
+        assert!(!is_valid_owner("analyst"));
+    }
+
+    #[test]
+    fn terminal_states_drive_coarse_status() {
+        assert_eq!(status_for_state(fsm::RESOLVED), "resolved");
+        assert_eq!(status_for_state(fsm::DISMISSED), "dismissed");
+        assert_eq!(status_for_state(fsm::ACTIONABLE), "open");
+    }
+
+    #[test]
+    fn default_owner_names_work_owner() {
+        assert_eq!(default_owner_for_state(fsm::WAITING_ON_DATA), owner::SOURCE);
+        assert_eq!(default_owner_for_state(fsm::EVALUATING), owner::SYSTEM);
+        assert_eq!(default_owner_for_state(fsm::ACTIONABLE), owner::OPERATOR);
     }
 }
 

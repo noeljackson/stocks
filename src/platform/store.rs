@@ -486,8 +486,124 @@ impl Store {
         Ok(rows > 0)
     }
 
+    pub async fn transition_attention(
+        &self,
+        id: i64,
+        to_state: &str,
+        owner: &str,
+        reason: &str,
+        next_retry_at: Option<DateTime<Utc>>,
+        resurface_at: Option<DateTime<Utc>>,
+        source_ref: serde_json::Value,
+    ) -> Result<bool> {
+        let status = crate::attention::status_for_state(to_state);
+        let rows: i64 = sqlx::query_scalar(
+            r#"WITH matched AS (
+                    SELECT id, fsm_state
+                      FROM attention_item
+                     WHERE id = $1 AND status = 'open'
+                     FOR UPDATE
+                 ),
+                 updated AS (
+                    UPDATE attention_item ai
+                       SET status = $2,
+                           fsm_state = $3,
+                           owner = $4,
+                           resolved_at = CASE WHEN $2 <> 'open' THEN now() ELSE NULL END,
+                           resolution_kind = CASE WHEN $2 <> 'open' THEN $5 ELSE NULL END,
+                           resolution_ref = CASE WHEN $2 <> 'open' THEN $8::jsonb ELSE resolution_ref END,
+                           next_retry_at = $6,
+                           resurface_at = $7,
+                           state_reason = $5,
+                           source_ref = ai.source_ref || $8::jsonb
+                      FROM matched m
+                     WHERE ai.id = m.id
+                 RETURNING ai.id,
+                           m.fsm_state AS from_state,
+                           ai.fsm_state AS to_state,
+                           ai.owner,
+                           ai.state_reason,
+                           ai.next_retry_at,
+                           ai.resurface_at,
+                           $8::jsonb AS transition_ref
+                 ),
+                 inserted AS (
+                    INSERT INTO attention_state_history
+                         (attention_id, from_state, to_state, owner, reason,
+                          next_retry_at, resurface_at, source_ref)
+                    SELECT id, from_state, to_state, owner, state_reason,
+                           next_retry_at, resurface_at, transition_ref
+                      FROM updated
+                 RETURNING 1
+                 )
+              SELECT COUNT(*) FROM updated"#,
+        )
+        .bind(id)
+        .bind(status)
+        .bind(to_state)
+        .bind(owner)
+        .bind(reason)
+        .bind(next_retry_at)
+        .bind(resurface_at)
+        .bind(source_ref)
+        .fetch_one(&self.pool)
+        .await
+        .context("transition_attention")?;
+        Ok(rows > 0)
+    }
+
+    async fn resurface_due_attention(&self) -> Result<u64> {
+        let rows: i64 = sqlx::query_scalar(
+            r#"WITH matched AS (
+                    SELECT id, fsm_state
+                      FROM attention_item
+                     WHERE status = 'open'
+                       AND fsm_state = 'operator_deferred'
+                       AND resurface_at IS NOT NULL
+                       AND resurface_at <= now()
+                     FOR UPDATE
+                 ),
+                 updated AS (
+                    UPDATE attention_item ai
+                       SET fsm_state = 'ready_for_review',
+                           owner = 'operator',
+                           resolution_kind = NULL,
+                           resolution_ref = NULL,
+                           resurface_at = NULL,
+                           state_reason = 'resurfaced'
+                      FROM matched m
+                     WHERE ai.id = m.id
+                 RETURNING ai.id,
+                           m.fsm_state AS from_state,
+                           ai.fsm_state AS to_state,
+                           ai.owner,
+                           ai.state_reason,
+                           ai.next_retry_at,
+                           ai.resurface_at,
+                           jsonb_build_object('reason', 'resurfaced') AS transition_ref
+                 ),
+                 inserted AS (
+                    INSERT INTO attention_state_history
+                         (attention_id, from_state, to_state, owner, reason,
+                          next_retry_at, resurface_at, source_ref)
+                    SELECT id, from_state, to_state, owner, state_reason,
+                           next_retry_at, resurface_at, transition_ref
+                      FROM updated
+                 RETURNING 1
+                 )
+              SELECT COUNT(*) FROM updated"#,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .context("resurface_due_attention")?;
+        Ok(rows as u64)
+    }
+
     /// Open attention items, severity-then-recency ordering.
     pub async fn list_attention(&self, status: &str, limit: i64) -> Result<Vec<serde_json::Value>> {
+        if status == "open" {
+            self.resurface_due_attention().await?;
+        }
         let rows = sqlx::query(
             r#"SELECT id, kind, symbol, thesis_id, candidate_id, severity,
                       status, fsm_state, owner, title, reason, source, source_ref,

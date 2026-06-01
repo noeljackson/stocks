@@ -149,6 +149,8 @@ async function mockApi(page: Page): Promise<Calls> {
         candidate_id: 44,
         severity: "review",
         status: "open",
+        fsm_state: "ready_for_review",
+        owner: "operator",
         title: "NVDA via volume_anomaly",
         reason: "2.4x volume vs SMA",
         source: "discovery",
@@ -156,6 +158,9 @@ async function mockApi(page: Page): Promise<Calls> {
         created_at: "2026-06-01T00:00:00Z",
         resolved_at: null,
         resolution_kind: null,
+        next_retry_at: null,
+        resurface_at: null,
+        state_reason: "candidate_review",
       }] : []);
       return;
     }
@@ -455,6 +460,7 @@ test("attention Confirm posts selected watchlist memberships", async ({ page }) 
   const card = page.locator(".att-card").filter({ hasText: "NVDA" }).first();
   await expect(card).toBeVisible();
   await expect(card).toContainText("2.4x volume vs 200-day SMA");
+  await expect(page.locator(".att-section-head").filter({ hasText: "ready for review" })).toContainText("operator owns next step");
 
   await card.getByRole("button", { name: "Confirm" }).click();
 

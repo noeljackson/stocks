@@ -452,6 +452,27 @@ export async function dismissAttention(id: number, reason?: string): Promise<voi
   if (!r.ok && r.status !== 204) throw new Error(`dismiss ${r.status}`);
 }
 
+export interface AttentionTransitionRequest {
+  to_state: string;
+  owner?: string;
+  reason?: string;
+  next_retry_at?: string | null;
+  resurface_at?: string | null;
+  source_ref?: Record<string, unknown>;
+}
+
+export async function transitionAttention(
+  id: number,
+  body: AttentionTransitionRequest,
+): Promise<void> {
+  const r = await fetch(`/api/attention/${id}/transition`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok && r.status !== 204) throw new Error(`attention transition ${r.status}`);
+}
+
 export interface DecisionRow {
   decision_id: string;
   thesis_id?: string | null;

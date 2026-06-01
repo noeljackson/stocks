@@ -30,6 +30,7 @@
     rejectCandidate,
     removeFromWatchlist,
     subscribe,
+    transitionAttention,
     type Alert,
     type AttentionItem,
     type BrainSourceStatus,
@@ -90,6 +91,19 @@
   async function dismissOne(id: number, reason?: string) {
     try {
       await dismissAttention(id, reason);
+      await refreshAttention();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+  async function deferOne(id: number) {
+    try {
+      await transitionAttention(id, {
+        to_state: "operator_deferred",
+        owner: "operator",
+        reason: "defer",
+        source_ref: { source: "operator" },
+      });
       await refreshAttention();
     } catch (e) {
       error = String(e);
@@ -227,16 +241,37 @@
     kind: string;
     symbol: string | null;
     severity: string;
+    fsmState: string;
+    owner: string;
+    stateReason: string | null;
+    nextRetryAt: string | null;
+    resurfaceAt: string | null;
     items: AttentionItem[];
     candidateIds: number[];     // for candidate_review groups
     latestAt: string;
   };
+  type AttSection = {
+    key: string;
+    fsmState: string;
+    owner: string;
+    groups: AttGroup[];
+  };
   let groupedAttention = $derived.by<AttGroup[]>(() => {
     const map = new Map<string, AttGroup>();
     for (const a of attention) {
-      const key = `${a.kind}::${a.symbol ?? ""}::${a.thesis_id ?? ""}`;
+      const fsmState = a.fsm_state ?? "ready_for_review";
+      const owner = a.owner ?? "operator";
+      const key = `${fsmState}::${owner}::${a.kind}::${a.symbol ?? ""}::${a.thesis_id ?? ""}`;
       const g = map.get(key) ?? {
-        key, kind: a.kind, symbol: a.symbol ?? null, severity: a.severity,
+        key,
+        kind: a.kind,
+        symbol: a.symbol ?? null,
+        severity: a.severity,
+        fsmState,
+        owner,
+        stateReason: a.state_reason ?? null,
+        nextRetryAt: a.next_retry_at ?? null,
+        resurfaceAt: a.resurface_at ?? null,
         items: [], candidateIds: [], latestAt: a.created_at,
       };
       g.items.push(a);
@@ -254,6 +289,55 @@
       return r !== 0 ? r : (b.latestAt > a.latestAt ? 1 : -1);
     });
   });
+
+  function attentionStateRank(state: string): number {
+    return {
+      actionable: 0,
+      ready_for_review: 1,
+      blocked: 2,
+      waiting_on_data: 3,
+      evaluating: 4,
+      queued: 5,
+      operator_deferred: 6,
+      resolved: 7,
+      dismissed: 8,
+    }[state] ?? 9;
+  }
+
+  function attentionStateLabel(state: string): string {
+    return state.replace(/_/g, " ");
+  }
+
+  function attentionOwnerLabel(owner: string): string {
+    const labels: Record<string, string> = {
+      operator: "operator owns next step",
+      source: "waiting on data source",
+      cognition: "cognition owns next step",
+      risk: "risk owns next step",
+      system: "system owns next step",
+    };
+    return labels[owner] ?? `${owner} owns next step`;
+  }
+
+  function attentionSections(groups: AttGroup[]): AttSection[] {
+    const map = new Map<string, AttSection>();
+    for (const group of groups) {
+      const key = `${group.fsmState}::${group.owner}`;
+      const section = map.get(key) ?? {
+        key,
+        fsmState: group.fsmState,
+        owner: group.owner,
+        groups: [],
+      };
+      section.groups.push(group);
+      map.set(key, section);
+    }
+    return [...map.values()].sort((a, b) => {
+      const r = attentionStateRank(a.fsmState) - attentionStateRank(b.fsmState);
+      if (r !== 0) return r;
+      return a.owner.localeCompare(b.owner);
+    });
+  }
 
   // Reject reasons (#95 disagreement_reason vocabulary).
   const REJECT_REASONS = [
@@ -860,8 +944,18 @@
             <p class="muted">No open attention. The system is quiet.</p>
           {:else}
             {@const groups = groupedAttention.filter((g) => attentionFilter === "all" || g.kind === attentionFilter)}
-            <ul class="att-list">
-              {#each groups as g (g.key)}
+            {#if groups.length === 0}
+              <p class="muted">No attention matches this filter.</p>
+            {:else}
+              {#each attentionSections(groups) as section (section.key)}
+                <section class="att-section">
+                  <div class="att-section-head">
+                    <strong>{attentionStateLabel(section.fsmState)}</strong>
+                    <span class="muted">{attentionOwnerLabel(section.owner)}</span>
+                    <span class="badge tiny">{section.groups.length}</span>
+                  </div>
+                  <ul class="att-list">
+              {#each section.groups as g (g.key)}
                 {@const ticker = g.symbol ? tickers.find((t) => t.symbol === g.symbol) : undefined}
                 {@const poolMeta = g.symbol ? pool.find((p) => p.symbol === g.symbol) : undefined}
                 {@const tierLabel = ticker ? `T${ticker.tier}` : (poolMeta ? "pool" : "")}
@@ -899,6 +993,8 @@
                       >{g.symbol}</strong>
                       <span class="att-tier muted">{tierLabel}</span>
                     {/if}
+                    <span class="badge tiny state-{g.fsmState}">{attentionStateLabel(g.fsmState)}</span>
+                    <span class="badge tiny owner-{g.owner}">{g.owner}</span>
                     <span class="att-time muted">{relativeTime(g.latestAt)}</span>
                   </div>
                   <div class="att-status muted">
@@ -918,6 +1014,15 @@
                     {/if}
                     {#if deferred?.resurface_at}
                       · resurfaced {relativeTime(deferred.resurface_at)}
+                    {/if}
+                    {#if g.nextRetryAt}
+                      · retry {relativeTime(g.nextRetryAt)}
+                    {/if}
+                    {#if g.resurfaceAt}
+                      · resurface {relativeTime(g.resurfaceAt)}
+                    {/if}
+                    {#if g.stateReason}
+                      · {g.stateReason.replace(/_/g, " ")}
                     {/if}
                   </div>
 
@@ -973,7 +1078,7 @@
                         const tid = g.items[0]?.thesis_id;
                         if (tid) { decThesisId = tid; bottomMode = "decisions"; }
                       }}>Enter ▾</button>
-                      <button class="reject" onclick={() => g.items.forEach((it) => dismissOne(it.id, "defer"))}>Defer 7d</button>
+                      <button class="reject" onclick={() => g.items.forEach((it) => deferOne(it.id))}>Defer 7d</button>
                       <button class="reject" onclick={() => g.items.forEach((it) => dismissOne(it.id, "skip"))}>Skip</button>
                     {:else if g.kind === "risk_review"}
                       <button class="confirm" onclick={() => g.items.forEach((it) => dismissOne(it.id, "ack"))}>Acknowledge</button>
@@ -995,7 +1100,10 @@
                   {/if}
                 </li>
               {/each}
-            </ul>
+                  </ul>
+                </section>
+              {/each}
+            {/if}
           {/if}
         {:else if bottomMode === "events"}
           {#if live.length === 0}
@@ -2045,6 +2153,20 @@
   .badge.rank-high { background: rgba(137,180,250,.18); color: rgb(137,180,250); }
   .badge.rank-medium { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
   .badge.rank-low { background: rgba(108,112,134,.2); color: #9aa3b8; }
+  .badge.state-actionable,
+  .badge.state-ready_for_review { background: rgba(166,227,161,.18); color: rgb(166,227,161); }
+  .badge.state-waiting_on_data,
+  .badge.state-evaluating,
+  .badge.state-queued { background: rgba(137,180,250,.16); color: rgb(137,180,250); }
+  .badge.state-blocked { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
+  .badge.state-operator_deferred,
+  .badge.state-dismissed,
+  .badge.state-resolved { background: rgba(108,112,134,.2); color: #9aa3b8; }
+  .badge.owner-operator { background: rgba(166,227,161,.12); color: rgb(166,227,161); }
+  .badge.owner-source,
+  .badge.owner-cognition,
+  .badge.owner-system { background: rgba(137,180,250,.12); color: rgb(137,180,250); }
+  .badge.owner-risk { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
   .badge.sev-blocked  { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
   .badge.sev-decision { background: rgba(137,180,250,.18); color: rgb(137,180,250); }
   .badge.sev-review   { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
@@ -2081,6 +2203,17 @@
     cursor: pointer; padding: 0 .35rem; font: inherit; font-size: .8rem;
   }
   .att-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .5rem; }
+  .att-section { margin-top: .55rem; }
+  .att-section:first-of-type { margin-top: 0; }
+  .att-section-head {
+    display: flex;
+    gap: .45rem;
+    align-items: center;
+    margin: 0 0 .35rem;
+    font-size: .75rem;
+    text-transform: lowercase;
+  }
+  .att-section-head strong { color: #cdd6f4; }
   .att-card {
     background: #0a0d14; border: 1px solid #1f2733; border-radius: 4px;
     padding: .55rem .7rem;

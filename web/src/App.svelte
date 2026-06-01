@@ -142,6 +142,9 @@
   function relativeTime(iso: string): string {
     const t = new Date(iso).getTime();
     const dt = Date.now() - t;
+    if (dt < -86_400_000) return new Date(t).toLocaleDateString();
+    if (dt < -3_600_000) return `in ${Math.ceil(Math.abs(dt) / 3_600_000)}h`;
+    if (dt < -60_000) return `in ${Math.ceil(Math.abs(dt) / 60_000)}m`;
     if (dt < 60_000) return "just now";
     if (dt < 3_600_000) return `${Math.floor(dt / 60_000)}m ago`;
     if (dt < 86_400_000) return new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -979,6 +982,8 @@
             {@const cog = sysStatus.cognition as { contexts_24h: number; contexts_total_symbols: number; thesis_by_state: { state: string; count: number }[] }}
             {@const att = sysStatus.attention as { open_items: number; by_kind: { kind: string; count: number }[] }}
             {@const llm = sysStatus.llm as { calls_24h: number; avg_latency_ms: number|null; by_prompt: { prompt: string; count: number; avg_ms: number|null; last_at: string|null }[] }}
+            {@const health = (sysStatus.source_health ?? []) as { source: string; last_status: string; last_started_at: string|null; last_success_at: string|null; last_failure_at: string|null; last_failure_kind?: string|null; last_error?: string|null; retry_after_at?: string|null; rows_seen: number; rows_inserted: number; symbols_attempted: number; symbols_failed: number }[]}
+            {@const priceFresh = sysStatus.price_freshness as { expected_latest_session?: string|null; actual_latest_session?: string|null; symbols_total?: number; symbols_fresh?: number; status?: string }}
             <div class="diag-grid">
               <section class="diag">
                 <h5>Ingest <span class="muted">— last 24h</span></h5>
@@ -995,6 +1000,35 @@
                     {/each}
                   </tbody>
                 </table>
+              </section>
+
+              <section class="diag wide">
+                <h5>Source health</h5>
+                <table class="diag-tbl">
+                  <thead><tr><th>source</th><th>status</th><th>last ok</th><th>rows</th><th>symbols</th><th>retry</th></tr></thead>
+                  <tbody>
+                    {#each health as h (h.source)}
+                      <tr title={h.last_error ?? ""}>
+                        <td><strong>{h.source}</strong></td>
+                        <td><span class={`badge tiny health-${h.last_status}`}>{h.last_failure_kind ?? h.last_status}</span></td>
+                        <td class="muted">{h.last_success_at ? relativeTime(h.last_success_at) : "—"}</td>
+                        <td>{h.rows_inserted}/{h.rows_seen}</td>
+                        <td>{h.symbols_attempted - h.symbols_failed}/{h.symbols_attempted}</td>
+                        <td class="muted">{h.retry_after_at ? relativeTime(h.retry_after_at) : "—"}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </section>
+
+              <section class="diag">
+                <h5>Price freshness</h5>
+                <dl class="meta-list inline">
+                  <dt>expected</dt><dd>{priceFresh?.expected_latest_session ?? "—"}</dd>
+                  <dt>latest</dt><dd>{priceFresh?.actual_latest_session ?? "—"}</dd>
+                  <dt>symbols fresh</dt><dd>{priceFresh?.symbols_fresh ?? 0}/{priceFresh?.symbols_total ?? 0}</dd>
+                  <dt>status</dt><dd>{priceFresh?.status ?? "—"}</dd>
+                </dl>
               </section>
 
               <section class="diag">
@@ -1623,6 +1657,10 @@
   .badge.sev-decision { background: rgba(137,180,250,.18); color: rgb(137,180,250); }
   .badge.sev-review   { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
   .badge.sev-info     { background: rgba(108,112,134,.2);  color: #9aa3b8; }
+  .badge.health-ok { background: rgba(166,227,161,.18); color: rgb(166,227,161); }
+  .badge.health-no_new_rows { background: rgba(137,180,250,.16); color: rgb(137,180,250); }
+  .badge.health-running { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
+  .badge.health-failed { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
 
   /* Attention queue (#86) — grouped card design */
   .att-toolbar { display: flex; gap: .5rem; align-items: baseline; margin-bottom: .5rem; flex-wrap: wrap; }

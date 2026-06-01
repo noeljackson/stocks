@@ -5,5 +5,6 @@ pub mod bus;
 pub mod config;
 pub mod domain;
 pub mod logging;
+pub mod market_calendar;
 pub mod store;
 pub mod subjects;

@@ -11,9 +11,11 @@ use sqlx::postgres::PgPool;
 use tracing::{info, warn};
 
 use super::cboe::{CboeAdapter, CrowdRow};
+use super::source_health;
 
 /// One pass: fetch all configured sources, upsert. Returns total rows inserted.
 pub async fn run_once(pool: &PgPool, adapter: &CboeAdapter) -> Result<usize> {
+    source_health::mark_started(pool, "cboe", 0).await?;
     let mut inserted = 0;
     match adapter.fetch_pcr().await {
         Ok(rows) => inserted += upsert_many(pool, &rows).await?,
@@ -23,6 +25,7 @@ pub async fn run_once(pool: &PgPool, adapter: &CboeAdapter) -> Result<usize> {
         Ok(rows) => inserted += upsert_many(pool, &rows).await?,
         Err(e) => warn!(error = %e, "cboe vix fetch failed"),
     }
+    source_health::record_success(pool, "cboe", inserted as i64, inserted as i64, 0, 0).await?;
     Ok(inserted)
 }
 
@@ -52,7 +55,10 @@ async fn upsert_many(pool: &PgPool, rows: &[CrowdRow]) -> Result<usize> {
 }
 
 pub async fn run(pool: PgPool, adapter: CboeAdapter, interval: Duration) -> Result<()> {
-    info!(interval_secs = interval.as_secs(), "crowd_sentiment service started");
+    info!(
+        interval_secs = interval.as_secs(),
+        "crowd_sentiment service started"
+    );
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -60,7 +66,21 @@ pub async fn run(pool: PgPool, adapter: CboeAdapter, interval: Duration) -> Resu
         match run_once(&pool, &adapter).await {
             Ok(n) if n > 0 => info!(inserted = n, "crowd_sentiment pass complete"),
             Ok(_) => {}
-            Err(e) => warn!(error = %e, "crowd_sentiment pass failed"),
+            Err(e) => {
+                let message = e.to_string();
+                if let Err(record_err) = source_health::record_failure(
+                    &pool,
+                    "cboe",
+                    source_health::failure_kind(&message),
+                    &message,
+                    None,
+                )
+                .await
+                {
+                    warn!(error = %record_err, "cboe source health failure record failed");
+                }
+                warn!(error = %e, "crowd_sentiment pass failed");
+            }
         }
     }
 }

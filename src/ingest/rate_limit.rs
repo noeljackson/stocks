@@ -7,6 +7,7 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
@@ -16,6 +17,7 @@ use tracing::warn;
 struct State {
     next_allowed: Instant,
     backoff: Duration,
+    retry_after_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug)]
@@ -42,6 +44,7 @@ impl ProviderLimiter {
             state: Mutex::new(State {
                 next_allowed: Instant::now(),
                 backoff: Duration::ZERO,
+                retry_after_at: None,
             }),
         }
     }
@@ -69,6 +72,7 @@ impl ProviderLimiter {
         } else if status.is_success() {
             let mut state = self.state.lock().await;
             state.backoff = Duration::ZERO;
+            state.retry_after_at = None;
         }
     }
 
@@ -81,12 +85,19 @@ impl ProviderLimiter {
         };
         let wait = retry_after.unwrap_or(computed).min(self.max_backoff);
         state.backoff = wait;
+        state.retry_after_at = chrono::Duration::from_std(wait)
+            .ok()
+            .map(|d| Utc::now() + d);
         state.next_allowed = state.next_allowed.max(Instant::now() + wait);
         warn!(
             provider = self.name,
             backoff_secs = wait.as_secs_f32(),
             "provider rate limited; backing off"
         );
+    }
+
+    pub async fn retry_after_at(&self) -> Option<DateTime<Utc>> {
+        self.state.lock().await.retry_after_at
     }
 }
 
@@ -174,6 +185,7 @@ mod tests {
 
         limiter.observe_status(StatusCode::OK, None).await;
         assert_eq!(limiter.state.lock().await.backoff, Duration::ZERO);
+        assert_eq!(limiter.retry_after_at().await, None);
     }
 
     #[tokio::test]
@@ -193,5 +205,6 @@ mod tests {
             .await;
 
         assert_eq!(limiter.state.lock().await.backoff, Duration::from_secs(40));
+        assert!(limiter.retry_after_at().await.is_some());
     }
 }

@@ -9,23 +9,23 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use stocks::ingest;
+use std::sync::Arc;
+use stocks::ingest::cboe::CboeAdapter;
+use stocks::ingest::crowd_sentiment_service;
 use stocks::ingest::edgar::EdgarAdapter;
-use stocks::ingest::fred::FredAdapter;
 use stocks::ingest::fmp::FmpPriceAdapter;
 use stocks::ingest::fmp_estimates::FmpEstimatesAdapter;
 use stocks::ingest::fmp_estimates_service;
-use stocks::ingest::cboe::CboeAdapter;
-use stocks::ingest::crowd_sentiment_service;
 use stocks::ingest::fmp_news::FmpNewsAdapter;
+use stocks::ingest::fred::FredAdapter;
 use stocks::ingest::massive_news::MassiveNewsAdapter;
 use stocks::ingest::news_service::{self, NewsIngestService, ScorerFn};
 use stocks::ingest::xbrl::XbrlAdapter;
+use stocks::ingest::{self, rate_limit, source_health};
 use stocks::llm::prompts::load;
 use stocks::llm::{self};
-use stocks::sentiment;
-use std::sync::Arc;
 use stocks::platform::{bus::Bus, config::Config, logging, store::Store, subjects};
+use stocks::sentiment;
 use tracing::{error, info};
 
 #[tokio::main]
@@ -35,7 +35,8 @@ async fn main() -> Result<()> {
 
     let store = Store::connect(&cfg.database_url).await?;
     let bus = Bus::connect(&cfg.nats_url).await?;
-    bus.ensure_stream(subjects::STREAM_INGEST, &["ingest.*"]).await?;
+    bus.ensure_stream(subjects::STREAM_INGEST, &["ingest.*"])
+        .await?;
 
     // FMP price ingest (#60, #88). Per-ticker incremental backfill: 5y on
     // first sight, 30d on subsequent polls. Pool = discovery_pool ∪ ticker
@@ -58,14 +59,83 @@ async fn main() -> Result<()> {
                 }
                 let symbols: Vec<String> = symbols.into_iter().collect();
                 if !symbols.is_empty() {
-                    let oldest = store.oldest_bar_per_symbol(&symbols).await.unwrap_or_default();
+                    if let Err(e) = store
+                        .mark_source_started("fmp_price", symbols.len() as i32)
+                        .await
+                    {
+                        error!(error = %e, "fmp_price source health start record failed");
+                    }
+                    let oldest = store
+                        .oldest_bar_per_symbol(&symbols)
+                        .await
+                        .unwrap_or_default();
                     match adapter.poll_symbols(&symbols, &oldest).await {
-                        Ok(rows) if rows.is_empty() => {}
+                        Ok(rows) if rows.is_empty() => {
+                            if let Err(e) = store
+                                .record_source_success("fmp_price", 0, 0, symbols.len() as i32, 0)
+                                .await
+                            {
+                                error!(error = %e, "fmp_price source health success record failed");
+                            }
+                        }
                         Ok(rows) => match store.upsert_price_bars(&rows).await {
-                            Ok(inserted) => info!(symbols = symbols.len(), rows = rows.len(), inserted, "fmp price pass complete"),
-                            Err(e) => error!(error = %e, "fmp price persist failed"),
+                            Ok(inserted) => {
+                                if let Err(e) = store
+                                    .record_source_success(
+                                        "fmp_price",
+                                        rows.len() as i64,
+                                        inserted as i64,
+                                        symbols.len() as i32,
+                                        0,
+                                    )
+                                    .await
+                                {
+                                    error!(error = %e, "fmp_price source health success record failed");
+                                }
+                                info!(
+                                    symbols = symbols.len(),
+                                    rows = rows.len(),
+                                    inserted,
+                                    "fmp price pass complete"
+                                )
+                            }
+                            Err(e) => {
+                                let message = e.to_string();
+                                if let Err(record_err) = store
+                                    .record_source_failure(
+                                        "fmp_price",
+                                        source_health::failure_kind(&message),
+                                        &message,
+                                        None,
+                                    )
+                                    .await
+                                {
+                                    error!(error = %record_err, "fmp_price source health failure record failed");
+                                }
+                                error!(error = %e, "fmp price persist failed")
+                            }
                         },
-                        Err(e) => error!(error = %e, "fmp price poll failed"),
+                        Err(e) => {
+                            let message = e.to_string();
+                            let retry_after_at =
+                                if source_health::failure_kind(&message) == "rate_limited" {
+                                    rate_limit::fmp().retry_after_at().await
+                                } else {
+                                    None
+                                };
+                            if let Err(record_err) = store
+                                .record_source_failure(
+                                    "fmp_price",
+                                    source_health::failure_kind(&message),
+                                    &message,
+                                    retry_after_at,
+                                )
+                                .await
+                            {
+                                error!(error = %record_err, "fmp_price source health failure record failed");
+                            }
+                            error!(error = %e, "fmp price poll failed")
+                        }
                     }
                 }
                 tokio::time::sleep(interval).await;
@@ -82,7 +152,9 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             let adapter = stocks::ingest::fmp_screener::FmpScreenerAdapter::new(&key, &base);
             let interval = Duration::from_secs(24 * 3600);
-            if let Err(e) = stocks::ingest::discovery_pool_service::run(pool, adapter, interval).await {
+            if let Err(e) =
+                stocks::ingest::discovery_pool_service::run(pool, adapter, interval).await
+            {
                 error!(error = %e, "discovery_pool service exited");
             }
         });
@@ -139,7 +211,9 @@ async fn main() -> Result<()> {
                 }
             };
             let Some(prompt) = registry.get("score-sentiment").cloned() else {
-                error!("news_service: prompts/score-sentiment.md missing; sentiment scoring disabled");
+                error!(
+                    "news_service: prompts/score-sentiment.md missing; sentiment scoring disabled"
+                );
                 return;
             };
             let provider: Arc<dyn llm::Provider> = Arc::from(llm::new(&llm_cfg));
@@ -203,12 +277,57 @@ async fn main() -> Result<()> {
             let interval = Duration::from_secs(6 * 3600);
             // First-run fires immediately so a fresh deploy populates company_fact.
             loop {
+                if let Err(e) = store.mark_source_started("xbrl", 0).await {
+                    error!(error = %e, "xbrl source health start record failed");
+                }
                 match adapter.poll_all().await {
                     Ok(rows) => match store.upsert_company_facts(&rows).await {
-                        Ok(inserted) => info!(rows = rows.len(), inserted, "xbrl pass complete"),
-                        Err(e) => error!(error = %e, "xbrl persist failed"),
+                        Ok(inserted) => {
+                            if let Err(e) = store
+                                .record_source_success(
+                                    "xbrl",
+                                    rows.len() as i64,
+                                    inserted as i64,
+                                    0,
+                                    0,
+                                )
+                                .await
+                            {
+                                error!(error = %e, "xbrl source health success record failed");
+                            }
+                            info!(rows = rows.len(), inserted, "xbrl pass complete")
+                        }
+                        Err(e) => {
+                            let message = e.to_string();
+                            if let Err(record_err) = store
+                                .record_source_failure(
+                                    "xbrl",
+                                    source_health::failure_kind(&message),
+                                    &message,
+                                    None,
+                                )
+                                .await
+                            {
+                                error!(error = %record_err, "xbrl source health failure record failed");
+                            }
+                            error!(error = %e, "xbrl persist failed")
+                        }
                     },
-                    Err(e) => error!(error = %e, "xbrl poll failed"),
+                    Err(e) => {
+                        let message = e.to_string();
+                        if let Err(record_err) = store
+                            .record_source_failure(
+                                "xbrl",
+                                source_health::failure_kind(&message),
+                                &message,
+                                None,
+                            )
+                            .await
+                        {
+                            error!(error = %record_err, "xbrl source health failure record failed");
+                        }
+                        error!(error = %e, "xbrl poll failed")
+                    }
                 }
                 tokio::time::sleep(interval).await;
             }

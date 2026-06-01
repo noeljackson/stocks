@@ -13,12 +13,18 @@ use sqlx::postgres::PgPool;
 use tracing::{info, warn};
 
 use super::fmp_screener::FmpScreenerAdapter;
+use super::{rate_limit, source_health};
 
 const MIN_MARKET_CAP: i64 = 5_000_000_000; // $5B floor
 
-pub async fn run_once(pool: &PgPool, adapter: &FmpScreenerAdapter) -> Result<(usize, usize, usize)> {
+pub async fn run_once(
+    pool: &PgPool,
+    adapter: &FmpScreenerAdapter,
+) -> Result<(usize, usize, usize)> {
+    source_health::mark_started(pool, "fmp_screener", 0).await?;
     let rows = adapter.fetch_pool(MIN_MARKET_CAP).await?;
     if rows.is_empty() {
+        source_health::record_success(pool, "fmp_screener", 0, 0, 0, 0).await?;
         return Ok((0, 0, 0));
     }
     let now_seen = chrono::Utc::now();
@@ -65,11 +71,23 @@ pub async fn run_once(pool: &PgPool, adapter: &FmpScreenerAdapter) -> Result<(us
     .context("mark drops")?
     .rows_affected() as usize;
     tx.commit().await.context("commit tx")?;
+    source_health::record_success(
+        pool,
+        "fmp_screener",
+        rows.len() as i64,
+        refreshed as i64,
+        0,
+        0,
+    )
+    .await?;
     Ok((inserted, refreshed, dropped))
 }
 
 pub async fn run(pool: PgPool, adapter: FmpScreenerAdapter, interval: Duration) -> Result<()> {
-    info!(interval_secs = interval.as_secs(), "discovery_pool service started");
+    info!(
+        interval_secs = interval.as_secs(),
+        "discovery_pool service started"
+    );
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -79,7 +97,26 @@ pub async fn run(pool: PgPool, adapter: FmpScreenerAdapter, interval: Duration) 
                 info!(seen, refreshed, dropped, "discovery_pool pass complete");
             }
             Ok(_) => {}
-            Err(e) => warn!(error = %e, "discovery_pool pass failed"),
+            Err(e) => {
+                let message = e.to_string();
+                let retry_after_at = if source_health::failure_kind(&message) == "rate_limited" {
+                    rate_limit::fmp().retry_after_at().await
+                } else {
+                    None
+                };
+                if let Err(record_err) = source_health::record_failure(
+                    &pool,
+                    "fmp_screener",
+                    source_health::failure_kind(&message),
+                    &message,
+                    retry_after_at,
+                )
+                .await
+                {
+                    warn!(error = %record_err, "fmp_screener source health failure record failed");
+                }
+                warn!(error = %e, "discovery_pool pass failed");
+            }
         }
     }
 }

@@ -171,6 +171,12 @@ impl FmpPriceAdapter {
                     all.extend(rows);
                 }
                 Err(e) => {
+                    let message = e.to_string();
+                    if message.contains("429")
+                        || message.to_ascii_lowercase().contains("rate limit")
+                    {
+                        return Err(e);
+                    }
                     tracing::warn!(symbol = %sym, error = %e, "fmp fetch failed; continuing");
                 }
             }

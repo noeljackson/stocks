@@ -684,6 +684,87 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
         );
     }
 
+    // Explicit pass-level source health (#132). This is authoritative for
+    // "checked but no new rows" vs "source failed"; the table may be absent
+    // briefly before migrations run, so diagnostics degrade gracefully.
+    let source_health: Vec<serde_json::Value> = sqlx::query(
+        r#"SELECT source, last_status, last_started_at, last_success_at,
+                  last_failure_at, last_failure_kind, last_error, retry_after_at,
+                  rows_seen, rows_inserted, symbols_attempted, symbols_failed,
+                  updated_at
+             FROM source_health
+         ORDER BY source"#,
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|r| {
+        let last_started_at: Option<chrono::DateTime<chrono::Utc>> =
+            r.try_get("last_started_at").ok();
+        let last_success_at: Option<chrono::DateTime<chrono::Utc>> =
+            r.try_get("last_success_at").ok();
+        let last_failure_at: Option<chrono::DateTime<chrono::Utc>> =
+            r.try_get("last_failure_at").ok();
+        let retry_after_at: Option<chrono::DateTime<chrono::Utc>> =
+            r.try_get("retry_after_at").ok();
+        let updated_at: Option<chrono::DateTime<chrono::Utc>> = r.try_get("updated_at").ok();
+        json!({
+            "source": r.try_get::<String, _>("source").unwrap_or_default(),
+            "last_status": r.try_get::<String, _>("last_status").unwrap_or_default(),
+            "last_started_at": last_started_at,
+            "last_success_at": last_success_at,
+            "last_failure_at": last_failure_at,
+            "last_failure_kind": r.try_get::<Option<String>, _>("last_failure_kind").ok().flatten(),
+            "last_error": r.try_get::<Option<String>, _>("last_error").ok().flatten(),
+            "retry_after_at": retry_after_at,
+            "rows_seen": r.try_get::<i64, _>("rows_seen").unwrap_or(0),
+            "rows_inserted": r.try_get::<i64, _>("rows_inserted").unwrap_or(0),
+            "symbols_attempted": r.try_get::<i32, _>("symbols_attempted").unwrap_or(0),
+            "symbols_failed": r.try_get::<i32, _>("symbols_failed").unwrap_or(0),
+            "updated_at": updated_at,
+        })
+    })
+    .collect();
+
+    let price_freshness = {
+        let expected =
+            crate::platform::market_calendar::expected_latest_us_equity_session(chrono::Utc::now());
+        let row = sqlx::query(
+            r#"WITH latest AS (
+                   SELECT symbol, MAX(ts)::date AS latest_session
+                     FROM price_bar
+                 GROUP BY symbol
+               )
+               SELECT MAX(latest_session) AS latest_session,
+                      COUNT(*) AS symbols_total,
+                      COUNT(*) FILTER (WHERE latest_session >= $1) AS symbols_fresh
+                 FROM latest"#,
+        )
+        .bind(expected)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+        let latest: Option<chrono::NaiveDate> =
+            row.as_ref().and_then(|r| r.try_get("latest_session").ok());
+        let total: i64 = row
+            .as_ref()
+            .and_then(|r| r.try_get("symbols_total").ok())
+            .unwrap_or(0);
+        let fresh: i64 = row
+            .as_ref()
+            .and_then(|r| r.try_get("symbols_fresh").ok())
+            .unwrap_or(0);
+        json!({
+            "expected_latest_session": expected,
+            "actual_latest_session": latest,
+            "symbols_total": total,
+            "symbols_fresh": fresh,
+            "status": if latest.is_some_and(|d| d >= expected) { "ok" } else { "stale" },
+        })
+    };
+
     // ---- discovery ----
     let discovery = {
         let last_at: Option<chrono::DateTime<chrono::Utc>> =
@@ -838,6 +919,8 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
     let body = json!({
         "as_of": chrono::Utc::now(),
         "ingest": serde_json::Value::Object(ingest),
+        "source_health": source_health,
+        "price_freshness": price_freshness,
         "discovery": discovery,
         "cognition": cognition,
         "attention": attention,

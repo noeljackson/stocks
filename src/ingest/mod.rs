@@ -20,6 +20,7 @@ pub mod massive_news;
 pub mod news_service;
 pub mod rate_limit;
 pub mod sec;
+pub mod source_health;
 pub mod xbrl;
 
 use std::sync::Arc;
@@ -119,13 +120,39 @@ async fn adapter_loop(
 }
 
 async fn run_once(adapter: &dyn Adapter, store: &Store, bus: &Bus, name: &str) {
+    if let Err(e) = store.mark_source_started(name, 0).await {
+        error!(adapter = name, error = %e, "source health start record failed");
+    }
     let events = match adapter.poll().await {
         Ok(e) => e,
         Err(e) => {
+            let message = e.to_string();
+            let retry_after_at = if name == "fred" && is_rate_limit_error(&message) {
+                rate_limit::fred().retry_after_at().await
+            } else {
+                None
+            };
+            let failure_kind = if is_rate_limit_error(&message) {
+                "rate_limited"
+            } else {
+                "error"
+            };
+            if let Err(record_err) = store
+                .record_source_failure(name, failure_kind, &message, retry_after_at)
+                .await
+            {
+                error!(adapter = name, error = %record_err, "source health failure record failed");
+            }
             error!(adapter = name, error = %e, "poll failed");
             return;
         }
     };
+    let rows_seen = events.len() as i64;
+    let symbols_attempted = events
+        .iter()
+        .filter_map(|ev| (!ev.symbol.is_empty()).then_some(ev.symbol.as_str()))
+        .collect::<std::collections::BTreeSet<_>>()
+        .len() as i32;
     let mut stored = 0u32;
     let mut published = 0u32;
     for ev in events {
@@ -166,6 +193,17 @@ async fn run_once(adapter: &dyn Adapter, store: &Store, bus: &Bus, name: &str) {
     if stored > 0 {
         info!(adapter = name, new = stored, published, "ingested");
     }
+    if let Err(e) = store
+        .record_source_success(name, rows_seen, stored as i64, symbols_attempted, 0)
+        .await
+    {
+        error!(adapter = name, error = %e, "source health success record failed");
+    }
+}
+
+fn is_rate_limit_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("429") || lower.contains("rate limit")
 }
 
 #[cfg(test)]

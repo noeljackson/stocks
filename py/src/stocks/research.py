@@ -460,6 +460,7 @@ async def refresh_research_evidence(
     *,
     context: dict | None = None,
     force: bool = False,
+    disabled_providers: set[str] | None = None,
 ) -> int:
     provider_setting = os.getenv("RESEARCH_PROVIDER", "gdelt,bing_news").lower()
     if provider_setting in {"", "off", "none"}:
@@ -482,7 +483,7 @@ async def refresh_research_evidence(
     if not providers:
         providers = [BingNewsProvider()]
 
-    disabled_providers: set[str] = set()
+    disabled_providers = set(disabled_providers or set())
     rows_seen = 0
     rows_inserted = 0
     provider_failures = 0

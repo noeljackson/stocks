@@ -62,6 +62,7 @@ pub fn title_for_candidate(symbol: &str, signal_name: &str) -> String {
         "consensus_arrival" => "consensus arrival review",
         "possible_exhaustion" => "possible exhaustion review",
         "existing_thesis_trigger" => "existing thesis trigger",
+        "pool_inspection" => "research inspection",
         _ => return format!("{symbol} candidate via {signal_name}"),
     };
     format!("{symbol}: {label}")
@@ -95,6 +96,10 @@ mod tests {
         assert_eq!(
             title_for_candidate("MU", "extended_momentum"),
             "MU: extended momentum review"
+        );
+        assert_eq!(
+            title_for_candidate("CRWV", "pool_inspection"),
+            "CRWV: research inspection"
         );
         assert_eq!(
             title_for_thesis_actionable("NVDA"),

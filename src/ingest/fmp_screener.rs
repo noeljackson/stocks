@@ -35,6 +35,86 @@ pub struct FmpScreenerAdapter {
     client: Client,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScreenerSlice {
+    sector: &'static str,
+    industry: Option<&'static str>,
+}
+
+fn screener_slices() -> &'static [ScreenerSlice] {
+    &[
+        // Core compute/software infrastructure.
+        ScreenerSlice {
+            sector: "Technology",
+            industry: Some("Semiconductors"),
+        },
+        ScreenerSlice {
+            sector: "Technology",
+            industry: Some("Semiconductor Equipment & Materials"),
+        },
+        ScreenerSlice {
+            sector: "Technology",
+            industry: Some("Communication Equipment"),
+        },
+        ScreenerSlice {
+            sector: "Technology",
+            industry: Some("Information Technology Services"),
+        },
+        ScreenerSlice {
+            sector: "Technology",
+            industry: Some("Software - Infrastructure"),
+        },
+        ScreenerSlice {
+            sector: "Technology",
+            industry: Some("Computer Hardware"),
+        },
+        // Power, cooling, grid, and construction bottlenecks around AI buildout.
+        ScreenerSlice {
+            sector: "Industrials",
+            industry: Some("Electrical Equipment & Parts"),
+        },
+        ScreenerSlice {
+            sector: "Industrials",
+            industry: Some("Specialty Industrial Machinery"),
+        },
+        ScreenerSlice {
+            sector: "Industrials",
+            industry: Some("Engineering & Construction"),
+        },
+        ScreenerSlice {
+            sector: "Industrials",
+            industry: Some("Building Products & Equipment"),
+        },
+        ScreenerSlice {
+            sector: "Utilities",
+            industry: Some("Utilities - Renewable"),
+        },
+        ScreenerSlice {
+            sector: "Utilities",
+            industry: Some("Utilities - Independent Power Producers"),
+        },
+        ScreenerSlice {
+            sector: "Utilities",
+            industry: Some("Utilities - Regulated Electric"),
+        },
+        // Materials exposure matters when power/data-center buildout pulls
+        // copper, electrical steel, and other upstream constraints into scope.
+        ScreenerSlice {
+            sector: "Basic Materials",
+            industry: None,
+        },
+        // Data-center landlords and physical infrastructure owners.
+        ScreenerSlice {
+            sector: "Real Estate",
+            industry: Some("REIT - Specialty"),
+        },
+        ScreenerSlice {
+            sector: "Real Estate",
+            industry: Some("REIT - Industrial"),
+        },
+    ]
+}
+
 impl FmpScreenerAdapter {
     pub fn new(api_key: &str, base_url: &str) -> Self {
         Self {
@@ -56,21 +136,12 @@ impl FmpScreenerAdapter {
             return Ok(Vec::new());
         }
         let mut all = Vec::new();
-        // SPEC §0 scope: tech infrastructure → semis + datacenter + power. Pull
-        // each sector/industry slice; dedup at the end by symbol.
+        // SPEC §0 scope: tech infrastructure and adjacent physical bottlenecks.
+        // Pull each sector/industry slice; dedup at the end by symbol.
         // FMP's screener returns ~250 per call max; we paginate by sector.
-        let slices: &[(&str, Option<&str>)] = &[
-            ("Technology", Some("Semiconductors")),
-            ("Technology", Some("Semiconductor Equipment & Materials")),
-            ("Technology", Some("Communication Equipment")),
-            ("Technology", Some("Information Technology Services")),
-            ("Technology", Some("Software - Infrastructure")),
-            ("Technology", Some("Computer Hardware")),
-            ("Industrials", Some("Electrical Equipment & Parts")),
-            ("Utilities", Some("Utilities - Renewable")),
-            ("Utilities", Some("Utilities - Independent Power Producers")),
-        ];
-        for (sector, industry) in slices {
+        for slice in screener_slices() {
+            let sector = slice.sector;
+            let industry = slice.industry;
             let mut url = format!(
                 "{}/stable/company-screener?marketCapMoreThan={}&sector={}&isEtf=false&isFund=false&isActivelyTrading=true&country=US&limit=250&apikey={}",
                 self.base_url,
@@ -144,5 +215,27 @@ mod tests {
         assert_eq!(rows[0].sector.as_deref(), Some("Technology"));
         assert_eq!(rows[0].industry.as_deref(), Some("Semiconductors"));
         assert!(rows[0].is_actively_trading);
+    }
+
+    #[test]
+    fn screener_scope_covers_adjacent_ai_infra_themes() {
+        let slices = screener_slices();
+        assert!(
+            slices
+                .iter()
+                .any(|s| s.sector == "Basic Materials" && s.industry.is_none()),
+            "copper/materials exposure should be in the discovery pool"
+        );
+        assert!(
+            slices.iter().any(|s| s.sector == "Industrials"
+                && s.industry == Some("Specialty Industrial Machinery")),
+            "power/cooling equipment should be in the discovery pool"
+        );
+        assert!(
+            slices
+                .iter()
+                .any(|s| s.sector == "Real Estate" && s.industry == Some("REIT - Specialty")),
+            "data-center REIT exposure should be in the discovery pool"
+        );
     }
 }

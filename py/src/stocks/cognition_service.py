@@ -20,6 +20,7 @@ Reads:
     COGNITION_CONTEXT_MAX_AGE_HOURS — default 12
     COGNITION_DECLINE_RETRY_HOURS — default 6
     COGNITION_MAX_SYMBOLS_PER_SWEEP — default 5
+    COGNITION_ACK_PROGRESS_SECONDS — default 10
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Awaitable, Callable
 
 import asyncpg
 import nats
@@ -45,6 +47,7 @@ log = logging.getLogger("cognition")
 STREAM = "MARKET"
 SUBJECT = "discovery.confirmed"
 DURABLE = "cognition-consumer"
+_IN_FLIGHT_SYMBOLS: set[str] = set()
 
 
 def _env_int(name: str, default: int) -> int:
@@ -141,6 +144,24 @@ async def _run_pipeline(
             log.exception("cognition: challenge failed for %s", symbol)
 
 
+async def _run_symbol_once(
+    symbol: str,
+    run: Callable[[], Awaitable[None]],
+    in_flight_symbols: set[str] | None = None,
+) -> bool:
+    in_flight = _IN_FLIGHT_SYMBOLS if in_flight_symbols is None else in_flight_symbols
+    normalized = symbol.upper()
+    if normalized in in_flight:
+        log.info("cognition: %s already in flight; skipping duplicate kickoff", normalized)
+        return False
+    in_flight.add(normalized)
+    try:
+        await run()
+        return True
+    finally:
+        in_flight.discard(normalized)
+
+
 async def _on_confirmed(pool: asyncpg.Pool, msg) -> None:
     try:
         env = json.loads(msg.data.decode("utf-8"))
@@ -155,14 +176,38 @@ async def _on_confirmed(pool: asyncpg.Pool, msg) -> None:
         await msg.ack()
         return
 
-    await _run_pipeline(
-        pool,
-        symbol,
-        candidate_id=candidate_id,
-        draft_when_thesis_exists=True,
-        source_ref={"reason": "no_edge", "trigger": "discovery.confirmed"},
+    await _await_with_ack_progress(
+        msg,
+        _run_symbol_once(
+            symbol,
+            lambda: _run_pipeline(
+                pool,
+                symbol,
+                candidate_id=candidate_id,
+                draft_when_thesis_exists=True,
+                source_ref={"reason": "no_edge", "trigger": "discovery.confirmed"},
+            ),
+        ),
+        progress_interval_seconds=max(1, _env_int("COGNITION_ACK_PROGRESS_SECONDS", 10)),
     )
     await msg.ack()
+
+
+async def _await_with_ack_progress(
+    msg,
+    awaitable,
+    *,
+    progress_interval_seconds: float,
+):
+    task = asyncio.create_task(awaitable)
+    while True:
+        done, _ = await asyncio.wait({task}, timeout=progress_interval_seconds)
+        if done:
+            return await task
+        try:
+            await msg.in_progress()
+        except Exception:  # noqa: BLE001
+            log.warning("cognition: failed to send JetStream in-progress ack", exc_info=True)
 
 
 async def _sweep_targets(
@@ -245,15 +290,18 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
     for row in targets:
         symbol = row["symbol"]
         open_theses = int(row["open_theses"] or 0)
-        await _run_pipeline(
-            pool,
+        await _run_symbol_once(
             symbol,
-            draft_when_thesis_exists=False,
-            source_ref={
-                "reason": "no_edge",
-                "trigger": "maintenance_sweep",
-                "context_version": row["context_version"],
-            },
+            lambda symbol=symbol, row=row: _run_pipeline(
+                pool,
+                symbol,
+                draft_when_thesis_exists=False,
+                source_ref={
+                    "reason": "no_edge",
+                    "trigger": "maintenance_sweep",
+                    "context_version": row["context_version"],
+                },
+            ),
         )
         if open_theses > 0:
             log.info("cognition sweep: %s refreshed existing thesis context", symbol)

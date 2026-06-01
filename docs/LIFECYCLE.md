@@ -16,61 +16,69 @@ discovery_pool                              active ticker/watchlist universe
               cheap raw detectors
               volume, breakout, news, estimates
                       │
+          ┌───────────┴───────────┐
+          │                       │
+          ▼                       ▼
+  proactive pool inspection       composed interpretation
+  unreviewed relevant names       raw facts + extension + thesis/watchlist state
+          │                       │
+          └───────────┬───────────┘
                       ▼
-              composed interpretation
-              raw facts + extension + thesis/watchlist state
+              discovery_candidate
+              candidate_review attention
+                      │
+                      ▼
+              operator confirm/reject
                       │
           ┌───────────┴───────────┐
           │                       │
           ▼                       ▼
- discovery_candidate        thesis/risk/consensus review
- candidate_review           existing thesis trigger,
- attention                  consensus arrival, exhaustion
-          │
-          ▼
- operator confirm/reject
-          │
-          ├── reject -> candidate closed, feedback retained
-          │
-          └── confirm -> watchlist membership / ticker promotion
-                                │
-                                ▼
-                         discovery.confirmed
-                                │
-                                ▼
-                      cognition pipeline
-                      context_maintainer
-                      thesis_engine
-                      sharpen
-                      challenge
-                                │
-            ┌───────────────────┴───────────────────┐
-            │                                       │
-            ▼                                       ▼
-   ticker_context version                 honest no-edge decline
-   structural/narrative/market            thesis_incomplete attention
-            │
-            ▼
-        thesis state machine
-        forming -> building_conviction -> armed -> actionable
-            │
-            ▼
-      thesis_actionable attention
-            │
-            ▼
-       operator decision
-       enter/exit/skip/resize + side/instrument
-            │
-            ▼
-         position
-            │
-            ▼
-         outcome
-            │
-            ▼
-      reflection/calibration
-      lead time, Brier, prompt/signal learning
+    reject -> candidate      confirm -> watchlist
+    closed, feedback         membership / ticker
+    retained                 promotion
+                                  │
+                                  ▼
+                           discovery.confirmed
+                                  │
+                                  ▼
+                        cognition pipeline
+                        context_maintainer
+                        thesis_engine
+                        sharpen
+                        challenge
+                                  │
+              ┌───────────────────┴───────────────────┐
+              │                                       │
+              ▼                                       ▼
+     ticker_context version                 honest no-edge decline
+     structural/narrative/market            thesis_incomplete attention
+              │
+              ▼
+          thesis state machine
+          forming -> building_conviction -> armed -> actionable
+              │
+              ▼
+        thesis_actionable attention
+              │
+              ▼
+         operator decision
+         enter/exit/skip/resize + side/instrument
+              │
+              ▼
+           position
+              │
+              ▼
+           outcome
+              │
+              ▼
+        reflection/calibration
+        lead time, Brier, prompt/signal learning
 ```
+
+`pool_inspection` candidates use the same `candidate_review` attention kind as
+signal candidates. The difference is semantic: inspection says "this name is in
+scope and unreviewed," while signal candidates say "new market/evidence behavior
+crossed a threshold." Both resolve through confirm/reject.
 
 ## Attention Contract
 
@@ -80,7 +88,7 @@ attention.
 
 | Kind | Source | Meaning | Resolver |
 | --- | --- | --- | --- |
-| `candidate_review` | discovery | A composed discovery interpretation deserves confirm/reject. | confirm or reject candidate |
+| `candidate_review` | discovery | A composed discovery interpretation or proactive pool inspection deserves confirm/reject. | confirm or reject candidate |
 | `thesis_incomplete` | cognition | Context was refreshed but thesis engine declined to invent an edge. | dismiss |
 | `thesis_actionable` | thesis transition | A thesis reached actionable and needs a human decision. | record decision |
 | `risk_review` | risk | Proposed/recorded intent hit risk warnings or vetoes. | acknowledge / adjust |

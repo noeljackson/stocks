@@ -30,6 +30,10 @@ RESEARCH_PROVIDER_ACTION = {
     "gdelt_doc": "gdelt_doc_search",
     "bing_news_rss": "bing_news_rss_search",
 }
+RESEARCH_PROVIDER_NAME_BY_TASK_PROVIDER = {
+    "gdelt": "gdelt_doc",
+    "bing": "bing_news_rss",
+}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -63,7 +67,14 @@ async def claim_due_web_research_symbols(
     actions: Sequence[str] = WEB_RESEARCH_ACTIONS,
 ) -> list[str]:
     rows = await pool.fetch(
-        """WITH due_symbols AS (
+        """WITH provider_pauses AS (
+               SELECT provider, max(next_retry_at) AS paused_until
+                 FROM source_task
+                WHERE state = 'rate_limited'
+                  AND next_retry_at > now()
+             GROUP BY provider
+           ),
+           due_symbols AS (
                SELECT target_id,
                       min(CASE priority
                             WHEN 'blocking' THEN 0
@@ -77,6 +88,11 @@ async def claim_due_web_research_symbols(
                   AND action = ANY($1::text[])
                   AND state = ANY($2::text[])
                   AND due_at <= now()
+                  AND NOT EXISTS (
+                      SELECT 1
+                        FROM provider_pauses pp
+                       WHERE pp.provider = source_task.provider
+                  )
              GROUP BY target_id
              ORDER BY priority_rank, first_due_at
                 LIMIT $3
@@ -97,6 +113,11 @@ async def claim_due_web_research_symbols(
                   AND st.action = ANY($1::text[])
                   AND st.state = ANY($2::text[])
                   AND st.due_at <= now()
+                  AND NOT EXISTS (
+                      SELECT 1
+                        FROM provider_pauses pp
+                       WHERE pp.provider = st.provider
+                  )
              RETURNING st.target_id
            )
            SELECT DISTINCT target_id
@@ -205,8 +226,31 @@ async def apply_recent_provider_failures(pool: asyncpg.Pool, symbol: str) -> int
     return updated
 
 
+async def paused_research_providers(pool: asyncpg.Pool) -> set[str]:
+    rows = await pool.fetch(
+        """SELECT DISTINCT provider
+             FROM source_task
+            WHERE scope = 'symbol'
+              AND action = ANY($1::text[])
+              AND state = 'rate_limited'
+              AND next_retry_at > now()""",
+        list(WEB_RESEARCH_ACTIONS),
+    )
+    return {
+        RESEARCH_PROVIDER_NAME_BY_TASK_PROVIDER[row["provider"]]
+        for row in rows
+        if row["provider"] in RESEARCH_PROVIDER_NAME_BY_TASK_PROVIDER
+    }
+
+
 async def process_web_research_symbol(pool: asyncpg.Pool, symbol: str) -> int:
-    inserted = await refresh_research_evidence(pool, symbol, force=True)
+    disabled_providers = await paused_research_providers(pool)
+    inserted = await refresh_research_evidence(
+        pool,
+        symbol,
+        force=True,
+        disabled_providers=disabled_providers,
+    )
     evidence_counts = await load_evidence_counts(pool, symbol)
     source_health = await load_source_health(pool)
     await sync_evidence_requirements(pool, symbol, evidence_counts, source_health)

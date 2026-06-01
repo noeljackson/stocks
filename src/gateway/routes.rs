@@ -38,6 +38,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
             "/api/evidence-requirements",
             get(list_evidence_requirements),
         )
+        .route("/api/evidence-items", get(list_evidence_items))
         .route("/api/research-evidence", get(list_research_evidence))
         .route(
             "/api/theses/{thesis_id}/transition",
@@ -158,6 +159,22 @@ async fn list_research_evidence(
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),
         Err(e) => {
             warn!(symbol = %sym, error = %e, "list_research_evidence failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn list_evidence_items(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<ThesesQuery>,
+) -> impl IntoResponse {
+    let Some(sym) = q.symbol else {
+        return (StatusCode::BAD_REQUEST, "symbol query param required").into_response();
+    };
+    match gw.store.evidence_items_for_symbol(&sym).await {
+        Ok(v) => (StatusCode::OK, Json(v)).into_response(),
+        Err(e) => {
+            warn!(symbol = %sym, error = %e, "list_evidence_items failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }

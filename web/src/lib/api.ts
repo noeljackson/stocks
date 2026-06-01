@@ -202,6 +202,27 @@ export async function fetchResearchEvidence(symbol: string): Promise<ResearchEvi
   return ((await r.json()) as ResearchEvidence[] | null) ?? [];
 }
 
+export interface EvidenceItem {
+  id: number;
+  symbol: string;
+  kind: string;
+  observed_at: string;
+  source: string;
+  source_id: string;
+  source_ref: Record<string, unknown>;
+  summary: string;
+  strength?: number | null;
+  polarity?: number | null;
+  url?: string | null;
+  created_at: string;
+}
+
+export async function fetchEvidenceItems(symbol: string): Promise<EvidenceItem[]> {
+  const r = await fetch(`/api/evidence-items?symbol=${encodeURIComponent(symbol)}`);
+  if (!r.ok) throw new Error(`evidence items ${r.status}`);
+  return ((await r.json()) as EvidenceItem[] | null) ?? [];
+}
+
 export interface BrainSourceStatus {
   source: string;
   status: "fresh" | "stale" | "missing" | "running" | "failed" | "rate_limited";

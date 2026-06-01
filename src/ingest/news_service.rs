@@ -392,6 +392,17 @@ impl NewsIngestService {
                 }
             };
             if res.rows_affected() > 0 {
+                if let Err(e) = update_news_evidence_sentiment(
+                    &self.pool,
+                    id,
+                    score.polarity,
+                    &score.confidence,
+                    &score.sentiment,
+                )
+                .await
+                {
+                    warn!(id, error = %e, "patch news evidence_item sentiment failed");
+                }
                 stats.scored_articles += 1;
                 stats.scored_symbols.insert(symbol);
             }
@@ -485,12 +496,13 @@ async fn upsert_article(
         _ => 0.0,
     });
     let sentiment_source: Option<&str> = upstream_sentiment.map(|_| "upstream");
-    let res = sqlx::query(
+    let row = sqlx::query(
         r#"INSERT INTO news_article
              (symbol, title, body, url, publisher, published_at, source,
               sentiment, sentiment_polarity, sentiment_source, sentiment_rationale)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-           ON CONFLICT DO NOTHING"#,
+           ON CONFLICT DO NOTHING
+           RETURNING id"#,
     )
     .bind(&a.symbol)
     .bind(&a.title)
@@ -503,10 +515,99 @@ async fn upsert_article(
     .bind(polarity)
     .bind(sentiment_source)
     .bind(upstream_rationale)
-    .execute(pool)
+    .fetch_optional(pool)
     .await
     .context("insert news_article")?;
-    Ok(res.rows_affected() > 0)
+    if let Some(row) = row {
+        let id: i64 = row.try_get("id")?;
+        upsert_news_evidence_item(pool, id, a, upstream_sentiment, polarity).await?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+async fn upsert_news_evidence_item(
+    pool: &PgPool,
+    news_id: i64,
+    a: &NewsArticle,
+    sentiment: Option<&str>,
+    polarity: Option<f64>,
+) -> Result<()> {
+    let strength = match sentiment {
+        Some("positive" | "negative") => 0.65,
+        Some("neutral") => 0.45,
+        _ => 0.35,
+    };
+    sqlx::query(
+        r#"INSERT INTO evidence_item
+             (symbol, kind, observed_at, source, source_id, source_ref,
+              summary, strength, polarity, url)
+           VALUES (
+             $1, 'news', $2, $3, $4,
+             jsonb_build_object(
+                'table', 'news_article',
+                'id', $5::bigint,
+                'publisher', $6::text,
+                'sentiment', $7::text
+             ),
+             left($8, 500), $9, $10, $11
+           )
+           ON CONFLICT (source, source_id) DO UPDATE SET
+             strength = COALESCE(EXCLUDED.strength, evidence_item.strength),
+             polarity = COALESCE(EXCLUDED.polarity, evidence_item.polarity),
+             source_ref = evidence_item.source_ref || EXCLUDED.source_ref"#,
+    )
+    .bind(&a.symbol)
+    .bind(a.published_at)
+    .bind(a.source)
+    .bind(format!("news_article:{news_id}"))
+    .bind(news_id)
+    .bind(&a.publisher)
+    .bind(sentiment)
+    .bind(&a.title)
+    .bind(strength)
+    .bind(polarity)
+    .bind(&a.url)
+    .execute(pool)
+    .await
+    .context("insert news evidence_item")?;
+    Ok(())
+}
+
+async fn update_news_evidence_sentiment(
+    pool: &PgPool,
+    news_id: i64,
+    polarity: f64,
+    confidence: &str,
+    sentiment: &str,
+) -> Result<()> {
+    let strength = match confidence {
+        "high" => 0.9,
+        "medium" => 0.65,
+        "low" => 0.4,
+        _ => 0.35,
+    };
+    sqlx::query(
+        r#"UPDATE evidence_item
+              SET strength = $2,
+                  polarity = $3,
+                  source_ref = source_ref || jsonb_build_object(
+                    'sentiment', $4::text,
+                    'sentiment_confidence', $5::text,
+                    'sentiment_source', 'llm'
+                  )
+            WHERE source_id = $1
+              AND kind = 'news'"#,
+    )
+    .bind(format!("news_article:{news_id}"))
+    .bind(strength)
+    .bind(polarity)
+    .bind(sentiment)
+    .bind(confidence)
+    .execute(pool)
+    .await
+    .context("update news evidence_item sentiment")?;
+    Ok(())
 }
 
 /// Long-running service loop.

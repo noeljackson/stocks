@@ -419,7 +419,8 @@ active ticker with no open thesis
 
 active ticker with an open thesis
   -> refresh context
-  -> append/reconcile against the existing thesis timeline
+  -> update the canonical thesis row when the view changes
+  -> append a thesis_version_history reconciliation event
   -> do not create a second active thesis
 
 active ticker with due missing evidence

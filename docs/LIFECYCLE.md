@@ -167,9 +167,12 @@ failure when there is no measurable edge. Example: a mega-cap can have fresh
 context and still get no actionable thesis if the facts are already consensus
 and there is no undiffused edge. If the context is substantial but no entry edge
 exists, the intended behavior is a monitoring thesis: one current standing view,
-not a blank symbol. If an active thesis already exists, context refresh should
-feed that thesis's timeline/reconciliation path instead of creating a second
-active thesis.
+not a blank symbol. If an active thesis already exists, fresh draft output
+updates that canonical row and appends a `thesis_version_history`
+reconciliation event instead of creating a second active thesis. Reconciliation
+events are classified as `confirmed_existing_view`, `strengthened_view`,
+`weakened_view`, `material_change`, `invalidates_existing_view`, or
+`no_change`.
 
 The cognition service also runs a bounded maintenance sweep over active tickers.
 This is what makes the system continuously work instead of depending on manual

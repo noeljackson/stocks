@@ -158,6 +158,207 @@ async def _persist_thesis(
     return thesis_id
 
 
+def _maybe_json(v):
+    if isinstance(v, (str, bytes)):
+        try:
+            return json.loads(v)
+        except Exception:  # noqa: BLE001
+            return v
+    return v
+
+
+def _condition_names(value) -> set[str]:
+    out = set()
+    decoded = _maybe_json(value) or []
+    if not isinstance(decoded, list):
+        return out
+    for item in decoded:
+        if isinstance(item, dict) and item.get("name"):
+            out.add(str(item["name"]))
+    return out
+
+
+def _forecast_direction(value) -> str | None:
+    decoded = _maybe_json(value) or {}
+    if isinstance(decoded, dict):
+        direction = decoded.get("direction")
+        return direction if isinstance(direction, str) else None
+    return None
+
+
+def _tier_rank(value: str | None) -> int:
+    return {"low": 0, "medium": 1, "high": 2}.get(value or "", -1)
+
+
+def classify_reconciliation(prior: dict, draft: dict) -> tuple[str, bool]:
+    prior_inv = _condition_names(prior.get("invalidation_conditions"))
+    draft_inv = _condition_names(draft.get("invalidation_conditions"))
+    dropped_invalidation = bool(prior_inv - draft_inv)
+    if dropped_invalidation:
+        return "weakened_view", True
+
+    prior_direction = _forecast_direction(prior.get("forecast"))
+    draft_direction = _forecast_direction(draft.get("forecast"))
+    if prior_direction and draft_direction and prior_direction != draft_direction:
+        return "material_change", False
+
+    prior_edge = (prior.get("edge_rationale") or "").strip()
+    draft_edge = (draft.get("edge_rationale") or "").strip()
+    if prior_edge == draft_edge and prior_direction == draft_direction:
+        return "no_change", False
+
+    prior_rank = _tier_rank(prior.get("conviction_tier"))
+    draft_rank = _tier_rank(draft.get("conviction_tier"))
+    if draft_rank > prior_rank:
+        return "strengthened_view", False
+    if draft_rank < prior_rank:
+        return "weakened_view", False
+    return "confirmed_existing_view", False
+
+
+def _draft_snapshot(draft: dict) -> dict:
+    return {
+        "thesis_kind": draft.get("thesis_kind"),
+        "edge_present": draft.get("edge_present"),
+        "edge_rationale": draft.get("edge_rationale"),
+        "bull_case": draft.get("bull_case"),
+        "bear_case": draft.get("bear_case"),
+        "forecast": draft.get("forecast") or {},
+        "conviction_conditions": draft.get("conviction_conditions") or [],
+        "trigger_conditions": draft.get("trigger_conditions") or [],
+        "invalidation_conditions": draft.get("invalidation_conditions") or [],
+        "fulfillment_conditions": draft.get("fulfillment_conditions") or [],
+        "conviction_tier": draft.get("conviction_tier"),
+        "instrument": draft.get("instrument"),
+        "missing_evidence": draft.get("missing_evidence") or [],
+    }
+
+
+def _prior_snapshot(prior: dict) -> dict:
+    return {
+        "thesis_id": str(prior["thesis_id"]),
+        "state": prior["state"],
+        "version": prior["version"],
+        "edge_rationale": prior.get("edge_rationale"),
+        "bull_case": prior.get("bull_case"),
+        "bear_case": prior.get("bear_case"),
+        "forecast": _maybe_json(prior.get("forecast")) or {},
+        "conviction_conditions": _maybe_json(prior.get("conviction_conditions")) or [],
+        "trigger_conditions": _maybe_json(prior.get("trigger_conditions")) or [],
+        "invalidation_conditions": _maybe_json(prior.get("invalidation_conditions")) or [],
+        "fulfillment_conditions": _maybe_json(prior.get("fulfillment_conditions")) or [],
+        "conviction_tier": prior.get("conviction_tier"),
+        "instrument": prior.get("instrument"),
+    }
+
+
+async def _reconcile_existing_thesis(
+    pool: asyncpg.Pool,
+    prior: dict,
+    draft: dict,
+    context: dict | None,
+) -> uuid.UUID:
+    classification, weakens = classify_reconciliation(prior, draft)
+    thesis_id = prior["thesis_id"]
+    next_version = int(prior["version"] or 1) + 1
+    intended_size = (
+        {"pct": draft["intended_size_pct"]}
+        if draft.get("intended_size_pct") is not None
+        else None
+    )
+    diff = {
+        "event": "thesis_reconciliation",
+        "classification": classification,
+        "operator_action_required": classification
+        in {"weakened_view", "material_change", "invalidates_existing_view"},
+        "prior": _prior_snapshot(prior),
+        "draft": _draft_snapshot(draft),
+        "context": {
+            "version": context.get("version") if context else None,
+            "as_of": context.get("as_of") if context else None,
+        },
+    }
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                """UPDATE thesis
+                      SET cluster_thesis = $2,
+                          bull_case = $3,
+                          bear_case = $4,
+                          edge_rationale = $5,
+                          forecast = $6::jsonb,
+                          conviction_conditions = $7::jsonb,
+                          trigger_conditions = $8::jsonb,
+                          invalidation_conditions = $9::jsonb,
+                          fulfillment_conditions = $10::jsonb,
+                          conviction_tier = $11,
+                          instrument = $12,
+                          intended_size = $13::jsonb,
+                          version = $14,
+                          updated_at = now()
+                    WHERE thesis_id = $1""",
+                thesis_id,
+                draft.get("cluster_thesis"),
+                draft.get("bull_case"),
+                draft.get("bear_case"),
+                draft.get("edge_rationale") or "(LLM declined to draft an edge rationale)",
+                json.dumps(draft.get("forecast") or {}),
+                json.dumps(draft.get("conviction_conditions") or []),
+                json.dumps(draft.get("trigger_conditions") or []),
+                json.dumps(draft.get("invalidation_conditions") or []),
+                json.dumps(draft.get("fulfillment_conditions") or []),
+                draft.get("conviction_tier"),
+                draft.get("instrument"),
+                json.dumps(intended_size) if intended_size else None,
+                next_version,
+            )
+            await conn.execute(
+                """INSERT INTO thesis_version_history
+                     (thesis_id, version, diff, rationale, weakens_invalidation)
+                   VALUES ($1, $2, $3::jsonb, $4, $5)""",
+                thesis_id,
+                next_version,
+                json.dumps(diff, default=str),
+                f"Reconciled fresh draft against active thesis: {classification}",
+                weakens,
+            )
+    return thesis_id
+
+
+async def _record_decline_reconciliation(
+    pool: asyncpg.Pool,
+    prior: dict,
+    parsed: dict,
+    context: dict | None,
+) -> None:
+    thesis_id = prior["thesis_id"]
+    next_version = int(prior["version"] or 1) + 1
+    diff = {
+        "event": "thesis_reconciliation",
+        "classification": "invalidates_existing_view",
+        "operator_action_required": True,
+        "prior": _prior_snapshot(prior),
+        "decline": {
+            "no_edge_reason": parsed.get("no_edge_reason"),
+            "missing_evidence": parsed.get("missing_evidence") or [],
+        },
+        "context": {
+            "version": context.get("version") if context else None,
+            "as_of": context.get("as_of") if context else None,
+        },
+    }
+    await pool.execute(
+        """INSERT INTO thesis_version_history
+             (thesis_id, version, diff, rationale, weakens_invalidation)
+           VALUES ($1, $2, $3::jsonb, $4, true)""",
+        thesis_id,
+        next_version,
+        json.dumps(diff, default=str),
+        "Fresh draft declined against active thesis: invalidates_existing_view",
+    )
+
+
 async def _resolve_stale_incomplete_attention(
     pool: asyncpg.Pool,
     symbol: str,
@@ -270,8 +471,7 @@ async def draft(symbol: str) -> dict:
         missing_evidence = await load_open_evidence_requirements(pool, symbol)
         if prior is not None:
             log.info(
-                "found prior thesis %s v%d state=%s — drafting fresh anyway "
-                "(version policy in #15)",
+                "found prior thesis %s v%d state=%s — drafting reconciliation",
                 prior["thesis_id"], prior["version"], prior["state"],
             )
 
@@ -321,12 +521,22 @@ async def draft(symbol: str) -> dict:
                 "LLM declined to draft (edge_present=false): %s",
                 parsed.get("no_edge_reason", "(no reason given)"),
             )
+            if prior is not None:
+                await _record_decline_reconciliation(pool, prior, parsed, context)
+                parsed["_reconciled_existing_thesis"] = True
+                parsed["_reconciliation_classification"] = "invalidates_existing_view"
             return parsed
 
-        thesis_id = await _persist_thesis(pool, symbol, parsed)
-        await _resolve_stale_incomplete_attention(pool, symbol, thesis_id)
+        if prior is not None:
+            thesis_id = await _reconcile_existing_thesis(pool, prior, parsed, context)
+            parsed["_reconciled_existing_thesis"] = True
+            parsed["_reconciliation_classification"] = classify_reconciliation(prior, parsed)[0]
+            await _resolve_stale_incomplete_attention(pool, symbol, thesis_id)
+        else:
+            thesis_id = await _persist_thesis(pool, symbol, parsed)
+            await _resolve_stale_incomplete_attention(pool, symbol, thesis_id)
         log.info(
-            "persisted thesis %s for %s at state=forming (input=%d output=%d)",
+            "persisted/reconciled thesis %s for %s (input=%d output=%d)",
             thesis_id, symbol, resp.usage.input_tokens, resp.usage.output_tokens,
         )
         parsed["_thesis_id"] = str(thesis_id)
@@ -344,15 +554,6 @@ def _summarize_prior(prior: dict) -> dict:
         "edge_rationale": prior["edge_rationale"],
         "invalidation_conditions": _maybe_json(prior["invalidation_conditions"]),
     }
-
-
-def _maybe_json(v):
-    if isinstance(v, (str, bytes)):
-        try:
-            return json.loads(v)
-        except Exception:  # noqa: BLE001
-            return v
-    return v
 
 
 def _cli() -> None:

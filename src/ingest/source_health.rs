@@ -13,8 +13,6 @@ pub async fn mark_started(pool: &PgPool, source: &str, symbols_attempted: i32) -
                last_status = 'running',
                symbols_attempted = EXCLUDED.symbols_attempted,
                symbols_failed = 0,
-               rows_seen = 0,
-               rows_inserted = 0,
                last_failure_kind = NULL,
                last_error = NULL,
                retry_after_at = NULL,

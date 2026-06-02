@@ -739,10 +739,10 @@ test("overview shows selected ticker parent brain context", async ({ page }) => 
 
 test("symbol routes deep-link selected ticker and keep navigation state", async ({ page }) => {
   await mockApi(page);
-  await page.goto("/symbol/NVDA");
+  await page.goto("/symbol/2454.TW");
 
-  await expect(page.locator(".symbol-box input")).toHaveValue("NVDA");
-  await expect(page).toHaveURL(/\/symbol\/NVDA$/);
+  await expect(page.locator(".symbol-box input")).toHaveValue("2454.TW");
+  await expect(page).toHaveURL(/\/symbol\/2454\.TW$/);
 
   await page.locator(".wl-row").filter({ hasText: "Core" }).click();
   await page.locator(".wl-mem").filter({ hasText: "OKTA" }).getByRole("button", { name: "OKTA" }).click();
@@ -752,8 +752,8 @@ test("symbol routes deep-link selected ticker and keep navigation state", async 
 
   await page.goBack();
 
-  await expect(page.locator(".symbol-box input")).toHaveValue("NVDA");
-  await expect(page).toHaveURL(/\/symbol\/NVDA$/);
+  await expect(page.locator(".symbol-box input")).toHaveValue("2454.TW");
+  await expect(page).toHaveURL(/\/symbol\/2454\.TW$/);
 });
 
 test("event stream surfaces connection events in the drawer", async ({ page }) => {
@@ -838,11 +838,11 @@ test("watchlist add form posts ticker and refreshes members", async ({ page }) =
   await page.goto("/");
 
   await page.locator(".wl-row").filter({ hasText: "Core" }).click();
-  await page.locator(".wl-add-sym input").fill("NVDA");
+  await page.locator(".wl-add-sym input").fill("2454.tw");
   await page.locator(".wl-add-sym input").press("Enter");
 
-  await expect.poll(() => calls.addedSymbols).toContainEqual("NVDA");
-  await expect(page.locator(".wl-mem").filter({ hasText: "NVDA" }).first()).toBeVisible();
+  await expect.poll(() => calls.addedSymbols).toContainEqual("2454.TW");
+  await expect(page.locator(".wl-mem").filter({ hasText: "2454.TW" }).first()).toBeVisible();
 });
 
 test("watchlist rows show thesis state and direction", async ({ page }) => {

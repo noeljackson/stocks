@@ -36,7 +36,8 @@ pub const STREAM_CONTEXT: &str = "CONTEXT"; // context.*
 pub const STREAM_THESIS: &str = "THESIS"; // thesis.*
 pub const STREAM_MARKET: &str = "MARKET"; // regime.*, discovery.*
 pub const STREAM_DECISIONS: &str = "DECISIONS"; // risk.*, decision.*
-pub const STREAM_TICKER: &str = "TICKER"; // route.ticker.*
+pub const STREAM_TICKER: &str = "TICKER"; // route.ticker.>
+pub const TICKER_ROUTE_FILTER: &str = "route.ticker.>";
 
 /// Per-ticker routed subject (event router → context maintainer).
 #[must_use]
@@ -51,5 +52,7 @@ mod tests {
     #[test]
     fn ticker_route_format() {
         assert_eq!(ticker_route("NVDA"), "route.ticker.NVDA");
+        assert_eq!(ticker_route("2454.TW"), "route.ticker.2454.TW");
+        assert_eq!(TICKER_ROUTE_FILTER, "route.ticker.>");
     }
 }

@@ -1777,11 +1777,63 @@ struct DecisionReq {
     #[serde(default)]
     user_choice: String,
     #[serde(default)]
+    disagreement_reason: String,
+    #[serde(default)]
+    disagreement_detail: String,
+    #[serde(default)]
     sizing: Option<serde_json::Value>,
     #[serde(default)]
     manual_fill: Option<ManualFillReq>,
     #[serde(default)]
     chart_range_seen: Option<String>,
+}
+
+const DISAGREEMENT_REASONS: &[&str] = &[
+    "wrong_cluster",
+    "not_my_edge",
+    "signal_too_weak",
+    "valuation_priced",
+    "data_stale",
+    "llm_overreached",
+    "risk_too_high",
+    "other",
+];
+
+fn normalize_disagreement(
+    action: &str,
+    user_choice: &str,
+    raw_reason: &str,
+    raw_detail: &str,
+) -> Result<(Option<String>, Option<String>), String> {
+    let reason = raw_reason.trim().to_ascii_lowercase();
+    let detail = raw_detail.trim().to_string();
+    let required = action == "skip" || user_choice == "rejected";
+
+    if reason.is_empty() {
+        if required {
+            return Err("disagreement_reason required for skip/rejected decisions".into());
+        }
+        if !detail.is_empty() {
+            return Err("disagreement_reason required when disagreement_detail is provided".into());
+        }
+        return Ok((None, None));
+    }
+
+    if !DISAGREEMENT_REASONS.contains(&reason.as_str()) {
+        return Err(format!("invalid disagreement_reason: {reason}"));
+    }
+    if reason == "other" && detail.is_empty() {
+        return Err("disagreement_detail required when disagreement_reason is other".into());
+    }
+
+    Ok((
+        Some(reason),
+        if detail.is_empty() {
+            None
+        } else {
+            Some(detail)
+        },
+    ))
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -3847,12 +3899,19 @@ async fn record_decision_inner(
     } else {
         serde_json::Value::Object(sizing_map.clone())
     };
-    let user_choice = req.user_choice.trim().to_string();
+    let user_choice = req.user_choice.trim().to_ascii_lowercase();
     let user_choice_db = if user_choice.is_empty() {
         None
     } else {
         Some(user_choice.as_str())
     };
+    let (disagreement_reason, disagreement_detail) = normalize_disagreement(
+        &action,
+        &user_choice,
+        &req.disagreement_reason,
+        &req.disagreement_detail,
+    )
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     let mut tx = gw.store.pool.begin().await.map_err(|e| {
         warn!(error = %e, "record_decision begin failed");
@@ -3860,14 +3919,18 @@ async fn record_decision_inner(
     })?;
 
     let decision_id: uuid::Uuid = sqlx::query_scalar(
-        r#"INSERT INTO decision (thesis_id, action, user_choice, sizing)
-           VALUES ($1, $2, $3, $4)
+        r#"INSERT INTO decision
+                (thesis_id, action, user_choice, sizing,
+                 disagreement_reason, disagreement_detail)
+           VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING decision_id"#,
     )
     .bind(thesis_uuid)
     .bind(&action)
     .bind(user_choice_db)
     .bind(&sizing_value)
+    .bind(disagreement_reason.as_deref())
+    .bind(disagreement_detail.as_deref())
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| {
@@ -4141,7 +4204,11 @@ async fn record_decision_inner(
                 Some(tid),
                 None,
                 &format!("decision_recorded:{action}"),
-                json!({"action": action, "user_choice": user_choice}),
+                json!({
+                    "action": action,
+                    "user_choice": user_choice,
+                    "disagreement_reason": disagreement_reason,
+                }),
             )
             .await
         {
@@ -4192,6 +4259,8 @@ async fn record_decision_inner(
         "fill_id": fill_id,
         "action": action,
         "user_choice": user_choice,
+        "disagreement_reason": disagreement_reason.clone(),
+        "disagreement_detail": disagreement_detail.clone(),
         "sizing": sizing_value,
     });
     if let Err(e) = gw
@@ -4208,6 +4277,8 @@ async fn record_decision_inner(
         "fill_id": fill_id,
         "risk_result": risk_result,
         "transitioned_to": transitioned_to,
+        "disagreement_reason": disagreement_reason,
+        "disagreement_detail": disagreement_detail,
     }))
 }
 
@@ -4597,6 +4668,39 @@ mod tests {
             evidence_items: vec![],
             substance: None,
         }
+    }
+
+    #[test]
+    fn disagreement_reason_is_required_for_skip_or_reject() {
+        let skip = normalize_disagreement("skip", "deferred", "", "");
+        assert!(skip.is_err());
+
+        let rejected = normalize_disagreement("enter", "rejected", "", "");
+        assert!(rejected.is_err());
+
+        let accepted = normalize_disagreement("enter", "confirmed", "", "").unwrap();
+        assert_eq!(accepted, (None, None));
+    }
+
+    #[test]
+    fn disagreement_reason_validates_reason_and_other_detail() {
+        let ok = normalize_disagreement(
+            "skip",
+            "deferred",
+            "valuation_priced",
+            "story is true but already reflected",
+        )
+        .unwrap();
+        assert_eq!(
+            ok,
+            (
+                Some("valuation_priced".to_string()),
+                Some("story is true but already reflected".to_string())
+            )
+        );
+
+        assert!(normalize_disagreement("skip", "deferred", "other", "").is_err());
+        assert!(normalize_disagreement("skip", "deferred", "not_a_reason", "").is_err());
     }
 
     #[test]

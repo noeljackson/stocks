@@ -85,6 +85,16 @@
     thesis: string;
     decision: string;
   };
+  const DISAGREEMENT_REASONS = [
+    { value: "wrong_cluster", label: "wrong cluster" },
+    { value: "not_my_edge", label: "not my edge" },
+    { value: "signal_too_weak", label: "signal too weak" },
+    { value: "valuation_priced", label: "valuation priced" },
+    { value: "data_stale", label: "data stale" },
+    { value: "llm_overreached", label: "LLM overreached" },
+    { value: "risk_too_high", label: "risk too high" },
+    { value: "other", label: "other" },
+  ];
 
   let selectedSymbol = $state<string | null>(null);
   let rightTab = $state<RightTab>("overview");
@@ -670,6 +680,8 @@
   let decSide = $state("none");
   let decInstrument = $state("equity");
   let decChoice = $state("deferred");
+  let decDisagreementReason = $state("");
+  let decDisagreementDetail = $state("");
   let decStatus = $state<string | null>(null);
   let replay = $state<DecisionReplay | null>(null);
   let replayStatus = $state<string | null>(null);
@@ -683,6 +695,7 @@
   let decFillNotes = $state("");
   let decThesis = $derived(symbolTheses?.find((t) => t.thesis_id === decThesisId) ?? null);
   let decThesisDirection = $derived(forecastDirectionFrom(decThesis?.forecast));
+  let decNeedsDisagreement = $derived(decAction === "skip" || decChoice === "rejected");
 
   // Synthetic "Universe" pseudo-list — all active tickers. Computed on the
   // fly from /api/tickers so we don't need a DB-side system list.
@@ -850,6 +863,7 @@
     if (currentSymbolThesis) decThesisId = currentSymbolThesis.thesis_id;
     decAction = action;
     if (action === "enter") decChoice = "confirmed";
+    if (action === "skip") decChoice = "deferred";
     bottomMode = "decisions";
     if (!bottomOpen) bottomPane?.expand();
   }
@@ -1184,6 +1198,11 @@
     return d.action;
   }
 
+  function disagreementLabel(value: string | null | undefined): string {
+    if (!value) return "";
+    return DISAGREEMENT_REASONS.find((r) => r.value === value)?.label ?? value.replace(/_/g, " ");
+  }
+
   function visibleSizing(d: DecisionRow): Record<string, unknown> | null {
     const entries = Object.entries(d.sizing ?? {}).filter(
       ([k]) => !["side", "instrument", "thesis_direction"].includes(k),
@@ -1221,6 +1240,11 @@
     const warnings = Array.isArray(risk.warnings) ? risk.warnings.filter((x): x is string => typeof x === "string") : [];
     const detail = [...reasons, ...warnings].slice(0, 2).join(" · ");
     return detail ? `${status}: ${detail}` : status;
+  }
+
+  function replaySnapshotString(r: DecisionReplay | null, key: string): string {
+    const value = r?.decision_snapshot?.[key];
+    return typeof value === "string" ? value : "";
   }
 
   function tickerFor(symbol: string | null): Ticker | undefined {
@@ -1488,6 +1512,14 @@
       decStatus = "pick a trade side before entering";
       return;
     }
+    if (decNeedsDisagreement && !decDisagreementReason) {
+      decStatus = "choose why you disagree";
+      return;
+    }
+    if (decDisagreementReason === "other" && !decDisagreementDetail.trim()) {
+      decStatus = "describe the disagreement";
+      return;
+    }
     const qty = parseOptionalNumber(decQty);
     const fillPrice = parseOptionalNumber(decPrice);
     const fees = parseOptionalNumber(decFees) ?? 0;
@@ -1524,6 +1556,8 @@
         thesis_id: decThesisId || undefined,
         action: decAction,
         user_choice: decChoice,
+        disagreement_reason: decDisagreementReason || undefined,
+        disagreement_detail: decDisagreementDetail.trim() || undefined,
         sizing: Object.keys(sizing).length > 0 ? sizing : undefined,
         manual_fill,
         chart_range_seen: `${chartState.range} ${chartState.interval}`,
@@ -1614,6 +1648,13 @@
     if (decAction === "enter" && decSide === "none") {
       if (decThesisDirection === "up") decSide = "long";
       if (decThesisDirection === "down") decSide = "short";
+    }
+  });
+
+  $effect(() => {
+    if (!decNeedsDisagreement) {
+      decDisagreementReason = "";
+      decDisagreementDetail = "";
     }
   });
 
@@ -2259,6 +2300,25 @@
                 <option>confirmed</option><option>rejected</option><option>deferred</option>
               </select>
             </label>
+            {#if decNeedsDisagreement}
+              <label>
+                Why
+                <select bind:value={decDisagreementReason}>
+                  <option value="">choose reason…</option>
+                  {#each DISAGREEMENT_REASONS as reason (reason.value)}
+                    <option value={reason.value}>{reason.label}</option>
+                  {/each}
+                </select>
+              </label>
+              <label class="wide">
+                Detail
+                <textarea
+                  bind:value={decDisagreementDetail}
+                  rows="2"
+                  placeholder={decDisagreementReason === "other" ? "required for other" : "optional"}
+                ></textarea>
+              </label>
+            {/if}
             <label class="checkline">
               <input type="checkbox" bind:checked={decRecordFill} />
               <span>record manual fill</span>
@@ -3085,6 +3145,9 @@
                         {#if d.thesis_direction}<span class="muted">thesis {d.thesis_direction}</span>{/if}
                         {#if d.instrument}<span class="muted">{d.instrument}</span>{/if}
                         {#if d.user_choice}<span class="muted">{d.user_choice}</span>{/if}
+                        {#if d.disagreement_reason}
+                          <span class="badge tiny reason">{disagreementLabel(d.disagreement_reason)}</span>
+                        {/if}
                         <span class="muted">{shortTs(d.at)}</span>
                         {#if d.thesis_id}
                           <button
@@ -3102,6 +3165,9 @@
                         {/if}
                         {#if extraSizing}
                           <pre class="dec-sizing">{JSON.stringify(extraSizing)}</pre>
+                        {/if}
+                        {#if d.disagreement_detail}
+                          <p class="decision-detail">{d.disagreement_detail}</p>
                         {/if}
                       </li>
                     {/each}
@@ -3136,6 +3202,14 @@
                         </div>
                       </div>
                       <p class="replay-risk">{replayRiskText(replay)}</p>
+                      {#if replaySnapshotString(replay, "disagreement_reason")}
+                        <p class="replay-risk">
+                          disagreement: {disagreementLabel(replaySnapshotString(replay, "disagreement_reason"))}
+                          {#if replaySnapshotString(replay, "disagreement_detail")}
+                            · {replaySnapshotString(replay, "disagreement_detail")}
+                          {/if}
+                        </p>
+                      {/if}
                       {#if replay.system_confidence}
                         <span class="badge tiny">confidence {replay.system_confidence}</span>
                       {/if}
@@ -3730,10 +3804,11 @@
     font-size: .85rem;
   }
   .decform label { display: flex; flex-direction: column; gap: .15rem; }
-  .decform input, .decform select {
+  .decform input, .decform select, .decform textarea {
     background: #0a0d14; color: #cdd6f4; border: 1px solid #2a3548; border-radius: 4px;
     padding: .25rem .4rem; font: inherit;
   }
+  .decform textarea { resize: vertical; min-height: 3rem; }
   .decform .checkline {
     flex-direction: row; align-items: center; gap: .4rem; grid-column: 1 / -1;
   }
@@ -4140,6 +4215,13 @@
   .decisions li {
     display: flex; align-items: baseline; gap: .35rem; flex-wrap: wrap;
     padding: .25rem .4rem; border: 1px solid #1f2733; border-radius: 3px;
+    font-size: .8rem;
+  }
+  .badge.reason { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
+  .decision-detail {
+    flex-basis: 100%;
+    margin: 0;
+    color: #9aa3b8;
     font-size: .8rem;
   }
   .decision-replay {

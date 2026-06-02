@@ -308,6 +308,9 @@ export interface BrainStatus {
     open: number;
     blocking: number;
     due: number;
+    items?: number;
+    latest_item_at?: string | null;
+    delta?: boolean;
   };
   attention: {
     open: number;

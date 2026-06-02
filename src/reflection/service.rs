@@ -9,10 +9,11 @@ use anyhow::{Context, Result};
 use async_nats::jetstream;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use serde_json::{Value, json};
 use sqlx::{Row, postgres::PgPool};
 use tracing::{info, warn};
 
-use super::scoring::{self, CalibrationSummary};
+use super::scoring::{self, CalibrationSummary, ParentThemeCalibration};
 use crate::platform::bus::{Bus, ConsumerHandle};
 use crate::platform::subjects;
 
@@ -60,37 +61,46 @@ impl Service {
             .await?;
 
         let pool_a = self.pool.clone();
-        let h_actionable = self.bus.consume(
-            subjects::STREAM_THESIS,
-            "reflection-actionable",
-            subjects::THESIS_ACTIONABLE,
-            move |msg| {
-                let pool = pool_a.clone();
-                async move { record_prediction(&pool, msg).await }
-            },
-        ).await?;
+        let h_actionable = self
+            .bus
+            .consume(
+                subjects::STREAM_THESIS,
+                "reflection-actionable",
+                subjects::THESIS_ACTIONABLE,
+                move |msg| {
+                    let pool = pool_a.clone();
+                    async move { record_prediction(&pool, msg).await }
+                },
+            )
+            .await?;
 
         let pool_f = self.pool.clone();
-        let h_fulfilled = self.bus.consume(
-            subjects::STREAM_THESIS,
-            "reflection-fulfilled",
-            subjects::THESIS_FULFILLED,
-            move |msg| {
-                let pool = pool_f.clone();
-                async move { record_outcome(&pool, msg, true).await }
-            },
-        ).await?;
+        let h_fulfilled = self
+            .bus
+            .consume(
+                subjects::STREAM_THESIS,
+                "reflection-fulfilled",
+                subjects::THESIS_FULFILLED,
+                move |msg| {
+                    let pool = pool_f.clone();
+                    async move { record_outcome(&pool, msg, true).await }
+                },
+            )
+            .await?;
 
         let pool_i = self.pool.clone();
-        let h_invalidated = self.bus.consume(
-            subjects::STREAM_THESIS,
-            "reflection-invalidated",
-            subjects::THESIS_INVALIDATED,
-            move |msg| {
-                let pool = pool_i.clone();
-                async move { record_outcome(&pool, msg, false).await }
-            },
-        ).await?;
+        let h_invalidated = self
+            .bus
+            .consume(
+                subjects::STREAM_THESIS,
+                "reflection-invalidated",
+                subjects::THESIS_INVALIDATED,
+                move |msg| {
+                    let pool = pool_i.clone();
+                    async move { record_outcome(&pool, msg, false).await }
+                },
+            )
+            .await?;
 
         info!("reflection: 3 durable consumers bound");
         Ok(vec![h_actionable, h_fulfilled, h_invalidated])
@@ -102,7 +112,10 @@ async fn record_prediction(pool: &PgPool, msg: jetstream::Message) -> Result<()>
         warn!("dropping malformed thesis.actionable");
         return Ok(());
     };
-    let parsed_uuid = event.thesis_id.as_deref().and_then(|s| uuid::Uuid::parse_str(s).ok());
+    let parsed_uuid = event
+        .thesis_id
+        .as_deref()
+        .and_then(|s| uuid::Uuid::parse_str(s).ok());
     // Look up the thesis row when we have a parseable id. Source-of-truth for
     // forecast + horizon is the thesis, not the actionable payload (which
     // historically didn't carry forecast at all).
@@ -115,7 +128,8 @@ async fn record_prediction(pool: &PgPool, msg: jetstream::Message) -> Result<()>
                 .unwrap_or(None);
             match row {
                 Some(r) => {
-                    let f: serde_json::Value = r.try_get("forecast").unwrap_or(serde_json::Value::Null);
+                    let f: serde_json::Value =
+                        r.try_get("forecast").unwrap_or(serde_json::Value::Null);
                     let days = f.get("horizon_days").and_then(|v| v.as_i64());
                     (Some(u), Some(f), days)
                 }
@@ -129,6 +143,13 @@ async fn record_prediction(pool: &PgPool, msg: jetstream::Message) -> Result<()>
     let forecast = forecast_from_db
         .or(event.forecast)
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+    let parent_brain_links = match event.symbol.as_deref() {
+        Some(symbol) => load_parent_brain_links(pool, symbol)
+            .await
+            .context("load parent brain links")?,
+        None => Vec::new(),
+    };
+    let claim = claim_with_parent_brain_links(forecast, parent_brain_links);
     let horizon_at = horizon_days.map(|d| Utc::now() + chrono::Duration::days(d));
     if let Err(e) = sqlx::query(
         r#"INSERT INTO prediction (thesis_id, symbol, kind, claim, horizon_at)
@@ -136,7 +157,7 @@ async fn record_prediction(pool: &PgPool, msg: jetstream::Message) -> Result<()>
     )
     .bind(thesis_uuid)
     .bind(event.symbol.as_deref())
-    .bind(&forecast)
+    .bind(&claim)
     .bind(horizon_at)
     .execute(pool)
     .await
@@ -148,6 +169,75 @@ async fn record_prediction(pool: &PgPool, msg: jetstream::Message) -> Result<()>
     Ok(())
 }
 
+fn claim_with_parent_brain_links(mut claim: Value, parent_brain_links: Vec<Value>) -> Value {
+    if parent_brain_links.is_empty() {
+        return claim;
+    }
+    if let Some(obj) = claim.as_object_mut() {
+        obj.insert(
+            "parent_brain_theses".to_string(),
+            Value::Array(parent_brain_links),
+        );
+        return claim;
+    }
+    json!({
+        "forecast": claim,
+        "parent_brain_theses": parent_brain_links,
+    })
+}
+
+async fn load_parent_brain_links(pool: &PgPool, symbol: &str) -> Result<Vec<Value>> {
+    let rows = sqlx::query(
+        r#"SELECT bt.id, bt.scope, bt.key, bt.name, bt.state, bt.direction,
+                  bt.version, bt.last_evaluated_at,
+                  btt.role, btt.rationale, btt.conviction
+             FROM brain_thesis bt
+        LEFT JOIN brain_thesis_ticker btt
+               ON btt.brain_thesis_id = bt.id
+              AND btt.symbol = $1
+            WHERE bt.active = true
+              AND (bt.scope = 'macro' OR btt.symbol IS NOT NULL)
+         ORDER BY CASE bt.scope WHEN 'macro' THEN 0 WHEN 'sector' THEN 1 ELSE 2 END,
+                  COALESCE(btt.conviction, 0) DESC,
+                  bt.name
+            LIMIT 12"#,
+    )
+    .bind(symbol)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|r| {
+            let id: uuid::Uuid = r.try_get("id")?;
+            let scope: String = r.try_get("scope")?;
+            let role = r.try_get::<Option<String>, _>("role")?.unwrap_or_else(|| {
+                if scope == "macro" {
+                    "macro_context"
+                } else {
+                    "linked"
+                }
+                .to_string()
+            });
+            let last_evaluated_at: Option<DateTime<Utc>> = r.try_get("last_evaluated_at")?;
+            Ok::<Value, sqlx::Error>(json!({
+                "id": id,
+                "scope": scope,
+                "key": r.try_get::<String, _>("key")?,
+                "name": r.try_get::<String, _>("name")?,
+                "state": r.try_get::<String, _>("state")?,
+                "direction": r.try_get::<String, _>("direction")?,
+                "version": r.try_get::<i32, _>("version")?,
+                "last_evaluated_at": last_evaluated_at,
+                "symbol": symbol,
+                "role": role,
+                "rationale": r.try_get::<Option<String>, _>("rationale")?,
+                "conviction": r.try_get::<Option<i32>, _>("conviction")?,
+            }))
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("decode parent brain links")
+}
+
 async fn record_outcome(pool: &PgPool, msg: jetstream::Message, realised_up: bool) -> Result<()> {
     let Ok(event) = serde_json::from_slice::<ThesisOutcome>(&msg.payload) else {
         warn!("dropping malformed thesis outcome");
@@ -156,7 +246,10 @@ async fn record_outcome(pool: &PgPool, msg: jetstream::Message, realised_up: boo
     // Mirror the record_prediction FK check: only attempt thesis_id match if
     // the row actually exists. Otherwise fall back to symbol-based lookup so
     // smoke / replay flows still record outcomes.
-    let parsed_uuid = event.thesis_id.as_deref().and_then(|s| uuid::Uuid::parse_str(s).ok());
+    let parsed_uuid = event
+        .thesis_id
+        .as_deref()
+        .and_then(|s| uuid::Uuid::parse_str(s).ok());
     let thesis_uuid: Option<uuid::Uuid> = match parsed_uuid {
         Some(u) => sqlx::query_scalar("SELECT thesis_id FROM thesis WHERE thesis_id = $1")
             .bind(u)
@@ -263,11 +356,17 @@ pub async fn calibration_summary(pool: &PgPool, lookback_days: i64) -> Result<Ca
     .fetch_all(pool)
     .await?
     .into_iter()
-    .map(|r| (r.try_get("brier").unwrap_or(0.0), r.try_get("lead_time").unwrap_or(0.0)))
+    .map(|r| {
+        (
+            r.try_get("brier").unwrap_or(0.0),
+            r.try_get("lead_time").unwrap_or(0.0),
+        )
+    })
     .collect();
 
     let briers: Vec<f64> = scored.iter().map(|(b, _)| *b).collect();
     let lead_times: Vec<f64> = scored.iter().map(|(_, l)| *l).collect();
+    let parent_themes = parent_theme_calibration(pool, lookback_days).await?;
 
     Ok(CalibrationSummary {
         predictions_total: pred_count,
@@ -279,7 +378,56 @@ pub async fn calibration_summary(pool: &PgPool, lookback_days: i64) -> Result<Ca
             Some(lead_times.iter().sum::<f64>() / lead_times.len() as f64)
         },
         median_lead_time_days: median(&lead_times),
+        parent_themes,
     })
+}
+
+async fn parent_theme_calibration(
+    pool: &PgPool,
+    lookback_days: i64,
+) -> Result<Vec<ParentThemeCalibration>> {
+    sqlx::query(
+        r#"SELECT link->>'key' AS key,
+                  COALESCE(link->>'name', link->>'key') AS name,
+                  COALESCE(link->>'scope', 'theme') AS scope,
+                  COALESCE(link->>'role', 'linked') AS role,
+                  COUNT(*) AS predictions_total,
+                  COUNT(o.outcome_id) AS outcomes_scored,
+                  AVG(o.score::float8) AS mean_brier,
+                  AVG(COALESCE((o.observed->>'lead_time_days')::float8, 0.0))
+                      FILTER (WHERE o.outcome_id IS NOT NULL) AS mean_lead_time_days
+             FROM prediction p
+       CROSS JOIN LATERAL jsonb_array_elements(
+                    CASE
+                      WHEN jsonb_typeof(p.claim->'parent_brain_theses') = 'array'
+                      THEN p.claim->'parent_brain_theses'
+                      ELSE '[]'::jsonb
+                    END
+                  ) AS link
+        LEFT JOIN outcome o ON o.prediction_id = p.prediction_id
+            WHERE p.at > now() - ($1 || ' days')::interval
+         GROUP BY key, name, scope, role
+         ORDER BY COUNT(o.outcome_id) DESC, COUNT(*) DESC, name, role
+            LIMIT 20"#,
+    )
+    .bind(lookback_days.to_string())
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| {
+        Ok::<ParentThemeCalibration, sqlx::Error>(ParentThemeCalibration {
+            key: r.try_get("key")?,
+            name: r.try_get("name")?,
+            scope: r.try_get("scope")?,
+            role: r.try_get("role")?,
+            predictions_total: r.try_get("predictions_total")?,
+            outcomes_scored: r.try_get("outcomes_scored")?,
+            mean_brier: r.try_get("mean_brier").ok(),
+            mean_lead_time_days: r.try_get("mean_lead_time_days").ok(),
+        })
+    })
+    .collect::<std::result::Result<Vec<_>, _>>()
+    .context("decode parent theme calibration")
 }
 
 fn median(xs: &[f64]) -> Option<f64> {
@@ -289,7 +437,11 @@ fn median(xs: &[f64]) -> Option<f64> {
     let mut s = xs.to_vec();
     s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = s.len() / 2;
-    Some(if s.len() % 2 == 0 { (s[mid - 1] + s[mid]) / 2.0 } else { s[mid] })
+    Some(if s.len() % 2 == 0 {
+        (s[mid - 1] + s[mid]) / 2.0
+    } else {
+        s[mid]
+    })
 }
 
 /// Long-running entry point.
@@ -299,4 +451,36 @@ pub async fn run(pool: PgPool, bus: Bus) -> Result<()> {
     // Hold consumers alive until ctrl-c.
     let _ = tokio::signal::ctrl_c().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parent_brain_links_are_added_without_losing_forecast_fields() {
+        let claim = claim_with_parent_brain_links(
+            json!({"direction": "up", "prob_up": 0.7}),
+            vec![json!({"key": "ai_compute_infrastructure", "role": "supplier"})],
+        );
+
+        assert_eq!(claim["direction"], "up");
+        assert_eq!(claim["prob_up"], 0.7);
+        assert_eq!(
+            claim["parent_brain_theses"][0]["key"],
+            "ai_compute_infrastructure"
+        );
+        assert_eq!(claim["parent_brain_theses"][0]["role"], "supplier");
+    }
+
+    #[test]
+    fn non_object_claims_are_wrapped_with_parent_brain_links() {
+        let claim = claim_with_parent_brain_links(
+            json!("synthetic"),
+            vec![json!({"key": "macro_regime", "role": "macro_context"})],
+        );
+
+        assert_eq!(claim["forecast"], "synthetic");
+        assert_eq!(claim["parent_brain_theses"][0]["key"], "macro_regime");
+    }
 }

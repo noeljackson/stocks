@@ -2323,6 +2323,31 @@
                 <dt>Median lead</dt><dd>{calibration.median_lead_time_days.toFixed(1)}d</dd>
               {/if}
             </dl>
+            {#if calibration.parent_themes?.length}
+              <section class="calibration-themes">
+                <h4>Parent Theme Calibration</h4>
+                <ul>
+                  {#each calibration.parent_themes as theme (`${theme.key}:${theme.role}`)}
+                    <li>
+                      <div>
+                        <strong>{theme.name}</strong>
+                        <span class="badge tiny">{theme.scope.replace(/_/g, " ")}</span>
+                        <span class="badge tiny">{theme.role.replace(/_/g, " ")}</span>
+                      </div>
+                      <span>
+                        {theme.outcomes_scored}/{theme.predictions_total}
+                        {#if theme.mean_brier !== null}
+                          · brier {theme.mean_brier.toFixed(3)}
+                        {/if}
+                        {#if theme.mean_lead_time_days !== null}
+                          · lead {theme.mean_lead_time_days.toFixed(1)}d
+                        {/if}
+                      </span>
+                    </li>
+                  {/each}
+                </ul>
+              </section>
+            {/if}
           {:else}
             <p class="muted">No calibration data yet.</p>
           {/if}
@@ -3181,6 +3206,41 @@
     display: flex; align-items: baseline; gap: .25rem; font-size: .8rem;
     padding: .2rem .5rem; background: rgba(180, 190, 254, .05);
     border: 1px solid #1f2733; border-radius: 4px;
+  }
+  .calibration-themes {
+    margin-top: .7rem;
+  }
+  .calibration-themes h4 {
+    margin: 0 0 .45rem;
+    font-size: .8rem;
+    color: #bac2de;
+  }
+  .calibration-themes ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: .35rem;
+  }
+  .calibration-themes li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: .75rem;
+    padding: .35rem .45rem;
+    border: 1px solid #1f2733;
+    border-radius: 4px;
+    background: #0a0d14;
+  }
+  .calibration-themes li > div {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .35rem;
+  }
+  .calibration-themes li > span {
+    color: #a6adc8;
+    white-space: nowrap;
   }
   .status { margin-left: auto; font-size: .75rem; color: #f38ba8; }
   .status.on { color: #a6e3a1; }

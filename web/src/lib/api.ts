@@ -556,6 +556,16 @@ export interface Calibration {
   mean_brier: number | null;
   mean_lead_time_days: number | null;
   median_lead_time_days: number | null;
+  parent_themes: {
+    key: string;
+    name: string;
+    scope: string;
+    role: string;
+    predictions_total: number;
+    outcomes_scored: number;
+    mean_brier: number | null;
+    mean_lead_time_days: number | null;
+  }[];
 }
 
 export async function fetchCalibration(days = 90): Promise<Calibration> {

@@ -601,7 +601,9 @@ at medium/low. Promotion into `actionable` is blocked when the freshness score
 is below the high-confidence threshold, so stale evidence cannot silently become
 a trade recommendation. The staleness loop also emits `context_stale` attention
 when an actionable-or-later thesis depends on narrative context older than 30
-days.
+days. News-derived consensus components require at least three articles in the
+last 14 days; otherwise they contribute `no_data` rather than turning thin
+coverage into confidence.
 
 The system should never create multiple open theses for MU or any other symbol.
 New facts reconcile into the canonical current thesis and show as a timeline.

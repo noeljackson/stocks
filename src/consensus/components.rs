@@ -19,11 +19,7 @@ use super::ComponentScore;
 ///   - distance from 52w high (-30%+ → 0, at high → 100)
 /// then average. Each input is clamped 0..100.
 #[must_use]
-pub fn price_extension_raw(
-    pct_above_sma200: f64,
-    rsi14: f64,
-    pct_from_52w_high: f64,
-) -> f64 {
+pub fn price_extension_raw(pct_above_sma200: f64, rsi14: f64, pct_from_52w_high: f64) -> f64 {
     let a = clamp01((pct_above_sma200 / 30.0).clamp(0.0, 1.0)) * 100.0;
     let b = clamp01(((rsi14 - 50.0) / 40.0).clamp(0.0, 1.0)) * 100.0;
     // pct_from_52w_high is typically <= 0; at high (=0) → 100, at -30% → 0
@@ -68,7 +64,11 @@ pub async fn price_extension(pool: &PgPool, symbol: &str) -> Result<ComponentSco
     // pct above SMA200 (degrade to SMA-of-what-we-have if < 200 bars).
     let sma_n = closes.len().min(200);
     let sma = closes.iter().take(sma_n).sum::<f64>() / sma_n as f64;
-    let pct_above_sma = if sma > 0.0 { (latest - sma) / sma * 100.0 } else { 0.0 };
+    let pct_above_sma = if sma > 0.0 {
+        (latest - sma) / sma * 100.0
+    } else {
+        0.0
+    };
 
     // RSI-14 (Wilder, simple form). Iterate oldest→newest over last 15 bars
     // for the seed period; reverse closes since they came DESC.
@@ -76,10 +76,19 @@ pub async fn price_extension(pool: &PgPool, symbol: &str) -> Result<ComponentSco
 
     // Distance from 52w high (≈ 252 trading days; whatever we have).
     let high = closes.iter().take(252).cloned().fold(f64::MIN, f64::max);
-    let pct_from_high = if high > 0.0 { (latest - high) / high * 100.0 } else { 0.0 };
+    let pct_from_high = if high > 0.0 {
+        (latest - high) / high * 100.0
+    } else {
+        0.0
+    };
 
     let raw = price_extension_raw(pct_above_sma, rsi, pct_from_high);
-    Ok(ComponentScore { name: "price_extension", raw, weighted: 0.0, status: "ok" })
+    Ok(ComponentScore {
+        name: "price_extension",
+        raw,
+        weighted: 0.0,
+        status: "ok",
+    })
 }
 
 /// Wilder's RSI-14 (standard, simple). Returns 50 when there isn't enough history.
@@ -121,11 +130,7 @@ pub fn estimate_revision_saturation_raw(up_count: u32, down_count: u32) -> f64 {
     let net = (up_count as i32) - (down_count as i32);
     let abs = net.unsigned_abs() as f64;
     let saturation = if abs >= 5.0 { 100.0 } else { abs * 20.0 };
-    if net >= 0 {
-        saturation
-    } else {
-        -saturation
-    }
+    if net >= 0 { saturation } else { -saturation }
 }
 
 /// Score from news coverage breadth over a lookback window.
@@ -144,6 +149,11 @@ pub fn mainstream_coverage_raw(distinct_publishers: u32) -> f64 {
 pub fn coverage_expansion_raw(new_publishers: u32) -> f64 {
     let p = new_publishers as f64;
     if p >= 5.0 { 100.0 } else { p * 20.0 }
+}
+
+#[must_use]
+pub fn recent_news_fresh_enough(article_count_14d: u32) -> bool {
+    article_count_14d >= 3
 }
 
 // ---------- async scorers (DB I/O) — read from the new tables ----------
@@ -187,17 +197,22 @@ pub async fn estimate_revision_saturation(pool: &PgPool, symbol: &str) -> Result
 /// Distinct publishers carrying news on this ticker in the last 7 days.
 pub async fn mainstream_coverage(pool: &PgPool, symbol: &str) -> Result<ComponentScore> {
     let row = sqlx::query(
-        r#"SELECT COUNT(DISTINCT publisher) AS pubs
+        r#"SELECT COUNT(DISTINCT publisher) FILTER (
+                     WHERE publisher IS NOT NULL
+                       AND published_at > now() - interval '7 days'
+                   ) AS pubs,
+                  COUNT(*) FILTER (
+                     WHERE published_at > now() - interval '14 days'
+                   ) AS articles_14d
              FROM news_article
-            WHERE symbol = $1
-              AND publisher IS NOT NULL
-              AND published_at > now() - interval '7 days'"#,
+            WHERE symbol = $1"#,
     )
     .bind(symbol)
     .fetch_one(pool)
     .await?;
     let pubs: i64 = row.try_get("pubs")?;
-    if pubs == 0 {
+    let articles_14d: i64 = row.try_get("articles_14d")?;
+    if !recent_news_fresh_enough(articles_14d.max(0) as u32) || pubs == 0 {
         return Ok(ComponentScore {
             name: "mainstream_coverage",
             raw: 0.0,
@@ -206,7 +221,12 @@ pub async fn mainstream_coverage(pool: &PgPool, symbol: &str) -> Result<Componen
         });
     }
     let raw = mainstream_coverage_raw(pubs as u32);
-    Ok(ComponentScore { name: "mainstream_coverage", raw, weighted: 0.0, status: "ok" })
+    Ok(ComponentScore {
+        name: "mainstream_coverage",
+        raw,
+        weighted: 0.0,
+        status: "ok",
+    })
 }
 
 /// Publishers in the last 7d that didn't cover the same ticker in the prior 7d.
@@ -222,24 +242,22 @@ pub async fn coverage_expansion(pool: &PgPool, symbol: &str) -> Result<Component
                WHERE symbol = $1 AND publisher IS NOT NULL
                  AND published_at > now() - interval '14 days'
                  AND published_at <= now() - interval '7 days'
+           ), coverage AS (
+              SELECT count(*) AS articles_14d FROM news_article
+               WHERE symbol = $1
+                 AND published_at > now() - interval '14 days'
            )
-           SELECT count(*) AS new_pubs FROM recent
-             WHERE publisher NOT IN (SELECT publisher FROM prior)"#,
+           SELECT (SELECT count(*) FROM recent
+                    WHERE publisher NOT IN (SELECT publisher FROM prior)) AS new_pubs,
+                  coverage.articles_14d
+             FROM coverage"#,
     )
     .bind(symbol)
     .fetch_one(pool)
     .await?;
     let new_pubs: i64 = row.try_get("new_pubs")?;
-    // No-data only when there are literally zero articles either window —
-    // 0 new in 7d when prior window had some is meaningful (story cooling off).
-    let total: i64 = sqlx::query_scalar(
-        r#"SELECT count(*) FROM news_article
-            WHERE symbol = $1 AND published_at > now() - interval '14 days'"#,
-    )
-    .bind(symbol)
-    .fetch_one(pool)
-    .await?;
-    if total == 0 {
+    let articles_14d: i64 = row.try_get("articles_14d")?;
+    if !recent_news_fresh_enough(articles_14d.max(0) as u32) {
         return Ok(ComponentScore {
             name: "coverage_expansion",
             raw: 0.0,
@@ -248,7 +266,12 @@ pub async fn coverage_expansion(pool: &PgPool, symbol: &str) -> Result<Component
         });
     }
     let raw = coverage_expansion_raw(new_pubs as u32);
-    Ok(ComponentScore { name: "coverage_expansion", raw, weighted: 0.0, status: "ok" })
+    Ok(ComponentScore {
+        name: "coverage_expansion",
+        raw,
+        weighted: 0.0,
+        status: "ok",
+    })
 }
 
 // ---------- retail_attention from macro crowd-sentiment markers (#20) ----------
@@ -273,8 +296,12 @@ pub fn retail_attention_raw(vix_close: Option<f64>, equity_pcr: Option<f64>) -> 
         100.0 * (1.0 - clamped) / 0.5
     });
     let mut subs = Vec::new();
-    if let Some(s) = vix_sub { subs.push(s); }
-    if let Some(s) = pcr_sub { subs.push(s); }
+    if let Some(s) = vix_sub {
+        subs.push(s);
+    }
+    if let Some(s) = pcr_sub {
+        subs.push(s);
+    }
     if subs.is_empty() {
         None
     } else {
@@ -355,8 +382,8 @@ mod tests {
     fn rsi_mid_for_flat_oscillation() {
         // Equal gains and losses → RSI = 50.
         let closes_desc: Vec<f64> = vec![
-            100.0, 99.0, 100.0, 99.0, 100.0, 99.0, 100.0, 99.0,
-            100.0, 99.0, 100.0, 99.0, 100.0, 99.0, 100.0,
+            100.0, 99.0, 100.0, 99.0, 100.0, 99.0, 100.0, 99.0, 100.0, 99.0, 100.0, 99.0, 100.0,
+            99.0, 100.0,
         ];
         let r = compute_rsi14(&closes_desc);
         assert!((r - 50.0).abs() < 1.0, "expected ~50, got {r}");
@@ -393,7 +420,11 @@ mod tests {
         assert_eq!(estimate_revision_saturation_raw(1, 0), 20.0);
         assert_eq!(estimate_revision_saturation_raw(3, 0), 60.0);
         assert_eq!(estimate_revision_saturation_raw(5, 0), 100.0);
-        assert_eq!(estimate_revision_saturation_raw(10, 0), 100.0, "clamps at 100");
+        assert_eq!(
+            estimate_revision_saturation_raw(10, 0),
+            100.0,
+            "clamps at 100"
+        );
     }
 
     #[test]
@@ -419,5 +450,12 @@ mod tests {
         assert_eq!(coverage_expansion_raw(0), 0.0);
         assert_eq!(coverage_expansion_raw(2), 40.0);
         assert_eq!(coverage_expansion_raw(5), 100.0);
+    }
+
+    #[test]
+    fn recent_news_freshness_requires_three_articles_in_two_weeks() {
+        assert!(!recent_news_fresh_enough(0));
+        assert!(!recent_news_fresh_enough(2));
+        assert!(recent_news_fresh_enough(3));
     }
 }

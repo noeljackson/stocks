@@ -782,7 +782,9 @@ Current gaps:
   structural substance checklist, and promotion into `actionable` is blocked
   below the high-confidence freshness threshold. The staleness loop emits
   `context_stale` attention when an actionable-or-later thesis is still relying
-  on narrative context older than 30 days.
+  on narrative context older than 30 days. News-derived consensus components
+  now require at least three articles in the last 14 days instead of treating
+  thin coverage as a usable signal.
 - #90: separate system confidence from human conviction.
 - #13: challenge pass needs clearer surfaced adversarial flags.
 

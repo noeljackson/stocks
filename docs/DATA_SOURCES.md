@@ -100,9 +100,10 @@ This is the SPEC §4 "#1 leading signal for the edge" gap (#18).
 
 The normalized fact layer is `evidence_item`. News articles, estimate
 revisions, analyst price-target events, SEC filing metadata, discovery
-price-action signals, macro-regime changes, product/theme web research, and
-context shifts are written there as discrete facts with source, source row
-pointer, strength, polarity, timestamp, and URL where available.
+price-action signals, macro-regime changes, CBOE crowd-sentiment observations,
+product/theme web research, and context shifts are written there as discrete
+facts with source, source row pointer, strength, polarity, timestamp, and URL
+where available.
 `thesis_evidence` links the
 current symbol thesis to the normalized facts seen during draft/reconciliation.
 Raw vendor tables, `ingest_event` rows, `market_state` rows, and

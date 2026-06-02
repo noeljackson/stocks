@@ -330,12 +330,14 @@ raw source row
 ```
 
 Current implementation: `evidence_item` exists for discrete news facts,
-estimate revisions, and analyst price-target events. It is backfilled from
-existing rows, updated by ingest, and visible in the selected-symbol Evidence
-tab. Context and thesis prompts receive the normalized fact stream before raw
-vendor details, so claims can be tied back to source facts. Draft/reconcile
-runs attach recent facts to the current thesis through `thesis_evidence`, and
-the thesis detail panel shows those linked facts next to the rationale.
+estimate revisions, analyst price-target events, SEC filing metadata, discovery
+price-action signals, macro-regime changes, CBOE crowd sentiment,
+product/theme research, and context shifts. It is backfilled from existing
+rows, updated by ingest, and visible in the selected-symbol Evidence tab.
+Context and thesis prompts receive the normalized fact stream before raw vendor
+details, so claims can be tied back to source facts. Draft/reconcile runs attach
+recent facts to the current thesis through `thesis_evidence`, and the thesis
+detail panel shows those linked facts next to the rationale.
 
 Evidence requirement examples:
 

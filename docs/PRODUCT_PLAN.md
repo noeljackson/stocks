@@ -763,6 +763,7 @@ Attention kinds:
 ```text
 candidate_review      confirm/reject monitored universe membership
 thesis_incomplete     evidence/context/thesis blocker needs visibility
+thesis_review         standing thesis materially changed and needs review
 thesis_actionable     trade decision is ready
 risk_review           risk warning/veto needs human acknowledgment
 context_stale         context refresh is overdue or blocked

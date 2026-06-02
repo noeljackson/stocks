@@ -4,6 +4,7 @@ from stocks.thesis_engine import (
     _evidence_weight,
     _extract_json,
     _normalize_known_unknowns,
+    _thesis_review_attention_payload,
     classify_reconciliation,
 )
 
@@ -97,6 +98,48 @@ def test_classify_reconciliation_versions_known_unknown_changes() -> None:
     }
 
     assert classify_reconciliation(prior, draft) == ("confirmed_existing_view", False)
+
+
+def test_thesis_review_attention_payload_explains_direction_change() -> None:
+    payload = _thesis_review_attention_payload(
+        symbol="MU",
+        thesis_id="11111111-1111-4111-8111-111111111111",
+        version=4,
+        classification="material_change",
+        draft={"forecast": {"direction": "down"}},
+        context={"version": 9, "as_of": "2026-06-02T12:00:00+00:00"},
+    )
+
+    assert payload["title"] == "MU thesis needs review: material change"
+    assert "direction to down" in payload["reason"]
+    assert payload["state_reason"] == "thesis_material_change"
+    assert payload["source_ref"] == {
+        "event": "thesis_reconciliation",
+        "classification": "material_change",
+        "operator_action_required": True,
+        "thesis_id": "11111111-1111-4111-8111-111111111111",
+        "version": 4,
+        "context": {
+            "version": 9,
+            "as_of": "2026-06-02T12:00:00+00:00",
+        },
+        "draft_direction": "down",
+    }
+
+
+def test_thesis_review_attention_payload_uses_decline_reason() -> None:
+    payload = _thesis_review_attention_payload(
+        symbol="DELL",
+        thesis_id="22222222-2222-4222-8222-222222222222",
+        version=2,
+        classification="invalidates_existing_view",
+        draft={"no_edge_reason": "Fresh evidence no longer supports the edge."},
+        context=None,
+    )
+
+    assert payload["title"] == "DELL thesis needs review: invalidates existing view"
+    assert payload["reason"] == "Fresh evidence no longer supports the edge."
+    assert payload["source_ref"]["no_edge_reason"] == "Fresh evidence no longer supports the edge."
 
 
 def test_normalize_known_unknowns_keeps_explicit_questions() -> None:

@@ -7,6 +7,7 @@
 //! - discovery scanner → candidate_review on composed discovery candidates
 //! - discovery scanner → thesis_actionable when a hit belongs to an existing thesis
 //! - gateway transition endpoint → thesis_actionable when state → actionable
+//! - cognition reconciliation → thesis_review when a standing thesis materially changes
 //! - risk service → risk_review on veto/warning
 //! - staler service → context_stale + invalidation_hit (future)
 //! - reflection → outcome_ready on horizon_at reached (future)
@@ -27,6 +28,7 @@ pub mod kind {
     pub const CANDIDATE_REVIEW: &str = "candidate_review";
     pub const CONTEXT_STALE: &str = "context_stale";
     pub const THESIS_INCOMPLETE: &str = "thesis_incomplete";
+    pub const THESIS_REVIEW: &str = "thesis_review";
     pub const THESIS_ACTIONABLE: &str = "thesis_actionable";
     pub const RISK_REVIEW: &str = "risk_review";
     pub const INVALIDATION_HIT: &str = "invalidation_hit";
@@ -125,6 +127,7 @@ pub fn initial_assignment(
 ) -> (&'static str, &'static str) {
     match kind {
         kind::CANDIDATE_REVIEW => (fsm::READY_FOR_REVIEW, owner::OPERATOR),
+        kind::THESIS_REVIEW => (fsm::READY_FOR_REVIEW, owner::OPERATOR),
         kind::THESIS_ACTIONABLE => (fsm::ACTIONABLE, owner::OPERATOR),
         kind::RISK_REVIEW if severity == severity::BLOCKED => (fsm::BLOCKED, owner::OPERATOR),
         kind::RISK_REVIEW => (fsm::READY_FOR_REVIEW, owner::OPERATOR),
@@ -268,6 +271,7 @@ mod tests {
             kind::CANDIDATE_REVIEW,
             kind::CONTEXT_STALE,
             kind::THESIS_INCOMPLETE,
+            kind::THESIS_REVIEW,
             kind::THESIS_ACTIONABLE,
             kind::RISK_REVIEW,
             kind::INVALIDATION_HIT,
@@ -322,6 +326,10 @@ mod tests {
     fn initial_assignment_names_the_current_owner() {
         assert_eq!(
             initial_assignment(kind::CANDIDATE_REVIEW, severity::REVIEW, source::DISCOVERY),
+            (fsm::READY_FOR_REVIEW, owner::OPERATOR)
+        );
+        assert_eq!(
+            initial_assignment(kind::THESIS_REVIEW, severity::REVIEW, source::THESIS),
             (fsm::READY_FOR_REVIEW, owner::OPERATOR)
         );
         assert_eq!(

@@ -516,6 +516,10 @@ sync open evidence rows from current source_health/counts
 run the same cognition pipeline for selected tickers
         |
         v
+if thesis reconciliation materially changes/weakens/invalidates the view:
+  upsert thesis_review attention for the operator
+        |
+        v
 write cognition_run with status, reason, blockers, retry
         |
         v
@@ -594,6 +598,11 @@ cognition_run
 This is the durable "what did the brain just do?" ledger. Context and thesis
 timestamps show what changed; `cognition_run` shows that cognition actually ran,
 why it ran, what blocked it, and when it will retry.
+
+`thesis_review` attention is the operator-facing cue for a changed standing
+view. It is emitted for `weakened_view`, `material_change`, and
+`invalidates_existing_view` reconciliations. It is intentionally separate from
+`thesis_actionable`, which means a trade decision is ready.
 
 ```text
 cognition target priority
@@ -997,6 +1006,7 @@ implemented first slice
   attention UI grouped by state/owner
   transition history for attention resolutions
   open-thesis last_evaluated_at freshness loop without no-change version churn
+  thesis_review attention for material thesis reconciliation changes
   evidence requirements carry source-health acquisition state
   source_task rows track acquisition action/state/due time
   satisfied source_task rows requeue when freshness is due

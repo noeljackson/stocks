@@ -21,6 +21,7 @@ import datetime as dt
 import json
 import logging
 import uuid
+from typing import Any
 
 import asyncpg
 
@@ -32,6 +33,12 @@ from .llm import new_provider
 from .prompts import AsyncpgRecorder, invoke, load
 
 log = logging.getLogger("thesis_engine")
+
+REVIEWABLE_RECONCILIATIONS = {
+    "weakened_view",
+    "material_change",
+    "invalidates_existing_view",
+}
 
 
 async def _load_latest_context(pool: asyncpg.Pool, symbol: str) -> dict | None:
@@ -458,6 +465,114 @@ def classify_reconciliation(prior: dict, draft: dict) -> tuple[str, bool]:
     return "confirmed_existing_view", False
 
 
+def _thesis_review_attention_payload(
+    *,
+    symbol: str,
+    thesis_id: uuid.UUID | str,
+    version: int,
+    classification: str,
+    draft: dict,
+    context: dict | None,
+) -> dict[str, Any]:
+    label = classification.replace("_", " ")
+    forecast = draft.get("forecast") if isinstance(draft.get("forecast"), dict) else {}
+    direction = forecast.get("direction") if isinstance(forecast, dict) else None
+    no_edge_reason = draft.get("no_edge_reason")
+
+    if classification == "material_change":
+        reason = (
+            f"Fresh evidence changed the standing thesis direction to {direction}. "
+            "Review before recording a decision."
+            if direction
+            else "Fresh evidence materially changed the standing thesis. Review before acting."
+        )
+    elif classification == "weakened_view":
+        reason = (
+            "Fresh evidence weakened the standing thesis or removed an invalidation guardrail. "
+            "Review the version history before acting."
+        )
+    elif classification == "invalidates_existing_view":
+        reason = (
+            str(no_edge_reason).strip()
+            if no_edge_reason
+            else (
+                "Fresh evidence no longer supports the standing thesis. "
+                "Review whether to retire it."
+            )
+        )
+    else:
+        reason = f"Fresh reconciliation classified this thesis as {label}."
+
+    source_ref = {
+        "event": "thesis_reconciliation",
+        "classification": classification,
+        "operator_action_required": classification in REVIEWABLE_RECONCILIATIONS,
+        "thesis_id": str(thesis_id),
+        "version": version,
+        "context": {
+            "version": context.get("version") if context else None,
+            "as_of": context.get("as_of") if context else None,
+        },
+    }
+    if direction:
+        source_ref["draft_direction"] = direction
+    if no_edge_reason:
+        source_ref["no_edge_reason"] = no_edge_reason
+
+    return {
+        "title": f"{symbol} thesis needs review: {label}",
+        "reason": reason,
+        "state_reason": f"thesis_{classification}",
+        "source_ref": source_ref,
+    }
+
+
+async def _upsert_thesis_review_attention(
+    executor,
+    *,
+    symbol: str,
+    thesis_id: uuid.UUID,
+    version: int,
+    classification: str,
+    draft: dict,
+    context: dict | None,
+) -> None:
+    payload = _thesis_review_attention_payload(
+        symbol=symbol,
+        thesis_id=thesis_id,
+        version=version,
+        classification=classification,
+        draft=draft,
+        context=context,
+    )
+    await executor.execute(
+        """INSERT INTO attention_item
+             (kind, symbol, thesis_id, severity, title, reason, source, source_ref,
+              fsm_state, owner, state_reason)
+           VALUES ('thesis_review', $1, $2, 'review', $3, $4, 'thesis',
+                   $5::jsonb, 'ready_for_review', 'operator', $6)
+           ON CONFLICT (kind, thesis_id)
+             WHERE status = 'open' AND thesis_id IS NOT NULL
+           DO UPDATE SET
+             symbol = EXCLUDED.symbol,
+             severity = EXCLUDED.severity,
+             title = EXCLUDED.title,
+             reason = EXCLUDED.reason,
+             source_ref = attention_item.source_ref || EXCLUDED.source_ref,
+             fsm_state = 'ready_for_review',
+             owner = 'operator',
+             next_retry_at = NULL,
+             resurface_at = NULL,
+             state_reason = EXCLUDED.state_reason""",
+        symbol,
+        thesis_id,
+        payload["title"],
+        payload["reason"],
+        json.dumps(payload["source_ref"], default=str),
+        payload["state_reason"],
+    )
+
+
 def _draft_snapshot(draft: dict) -> dict:
     return {
         "thesis_kind": draft.get("thesis_kind"),
@@ -580,6 +695,16 @@ async def _reconcile_existing_thesis(
                 f"Reconciled fresh draft against active thesis: {classification}",
                 weakens,
             )
+            if classification in REVIEWABLE_RECONCILIATIONS:
+                await _upsert_thesis_review_attention(
+                    conn,
+                    symbol=str(prior.get("symbol") or ""),
+                    thesis_id=thesis_id,
+                    version=next_version,
+                    classification=classification,
+                    draft=draft,
+                    context=context,
+                )
     return thesis_id
 
 
@@ -605,23 +730,34 @@ async def _record_decline_reconciliation(
             "as_of": context.get("as_of") if context else None,
         },
     }
-    await pool.execute(
-        """WITH updated AS (
-               UPDATE thesis
-                  SET version = $2,
-                      updated_at = now(),
-                      last_evaluated_at = now()
-                WHERE thesis_id = $1
-              RETURNING thesis_id
-           )
-           INSERT INTO thesis_version_history
-             (thesis_id, version, diff, rationale, weakens_invalidation)
-           SELECT thesis_id, $2, $3::jsonb, $4, true FROM updated""",
-        thesis_id,
-        next_version,
-        json.dumps(diff, default=str),
-        "Fresh draft declined against active thesis: invalidates_existing_view",
-    )
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                """WITH updated AS (
+                       UPDATE thesis
+                          SET version = $2,
+                              updated_at = now(),
+                              last_evaluated_at = now()
+                        WHERE thesis_id = $1
+                      RETURNING thesis_id
+                   )
+                   INSERT INTO thesis_version_history
+                     (thesis_id, version, diff, rationale, weakens_invalidation)
+                   SELECT thesis_id, $2, $3::jsonb, $4, true FROM updated""",
+                thesis_id,
+                next_version,
+                json.dumps(diff, default=str),
+                "Fresh draft declined against active thesis: invalidates_existing_view",
+            )
+            await _upsert_thesis_review_attention(
+                conn,
+                symbol=str(prior.get("symbol") or ""),
+                thesis_id=thesis_id,
+                version=next_version,
+                classification="invalidates_existing_view",
+                draft=parsed,
+                context=context,
+            )
 
 
 async def _resolve_stale_incomplete_attention(

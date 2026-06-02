@@ -369,6 +369,12 @@ events are classified as `confirmed_existing_view`, `strengthened_view`,
 `weakened_view`, `material_change`, `invalidates_existing_view`, or
 `no_change`.
 
+Only classifications that need judgment create Attention. `no_change` updates
+`last_evaluated_at` only. `weakened_view`, `material_change`, and
+`invalidates_existing_view` upsert `thesis_review` attention so the operator
+reviews the changed standing view. This is separate from `thesis_actionable`,
+which means a thesis has reached a trade-decision state.
+
 Consensus threshold crossings are validation and attention signals, not
 automatic thesis lifecycle progress. When a symbol crosses consensus without an
 open thesis, the system records `thesis_incomplete` attention and kicks
@@ -401,10 +407,12 @@ active ticker where evidence became satisfied after a decline
 active ticker where source_task outcome is newer than thesis evaluation
   -> refresh context/evidence
   -> reconcile current thesis and update last_evaluated_at
+  -> if materially changed, upsert thesis_review attention
 
 active ticker where evidence_item is newer than thesis evaluation
   -> refresh context/evidence
   -> reconcile current thesis and update last_evaluated_at
+  -> if materially changed, upsert thesis_review attention
 ```
 
 For open theses, `updated_at` means the thesis content/version changed.

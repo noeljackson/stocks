@@ -91,11 +91,18 @@ brain_thesis
   freshness + missing evidence + invalidation conditions
         |
         +-> brain_thesis_ticker
-        |     role: leader/challenger/supplier/customer/beneficiary/hedge/candidate
+        |     role: leader/challenger/supplier/customer/beneficiary/hedge/candidate/proxy
         |
         +-> brain_thesis_watchlist
               optional explicit list mapping
 ```
+
+Current parent coverage includes macro regime, AI compute, memory/HBM, optical
+networking, enterprise security/identity, copper/industrial metals,
+wheat/agriculture/food inflation, financial conditions/credit, energy
+supply-demand, consumer staples/margins, and housing/rates/real assets. These
+are parent hypotheses, not sector limits: the brain should add or retire themes
+based on whether they help find evidence-backed opportunities.
 
 `GET /api/brain` reads those records and shows the operator the current macro
 view, active sector/theme views, linked tickers, implied watchlists, queued
@@ -372,8 +379,10 @@ Current gaps:
 - #129: macro and sector theses exist as records, the cognition sweep maintains
   their coverage/freshness state, and a bounded parent-thesis LLM pass can
   rewrite parent claims from linked ticker/evidence state when evidence changes
-  or the parent view is stale. Remaining work is broader factor data coverage
-  for commodities, breadth, credit, and earnings.
+  or the parent view is stale. Parent records now cover tech infrastructure,
+  commodities, financials, energy, staples, and housing/rates. Remaining work
+  is richer factor data coverage for breadth, credit, inventories, flows, and
+  earnings.
 - Discovery ranking reads `brain_thesis_ticker` fit today; it still needs
   active parent-thesis direction and contradiction penalties.
 
@@ -919,6 +928,7 @@ implemented first slice
   first-class brain_thesis records and ticker/watchlist mappings
   parent brain maintainer evaluates source/ticker coverage on cognition sweep
   parent thesis beneficiary/proxy symbols become active ticker mappings
+  broad parent themes for financials, energy, staples, and housing/rates
   commodity proxy roles identify CPER/WEAT/XME as factor-price expressions
   commodity proxy price bars can satisfy parent commodity_price_history gaps
   ticker thesis prompt receives linked parent theses

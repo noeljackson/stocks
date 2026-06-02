@@ -601,6 +601,11 @@ What works now:
 - Every pipeline attempt is visible through `cognition_run`, Diagnostics, and
   the selected-symbol Brain card. Failed, blocked, declined, no-change, drafted,
   and reconciled runs are all recorded.
+- Cognition startup reclaims orphaned `running` rows from a prior process, and
+  each sweep also reclaims stale `running` rows older than
+  `COGNITION_RUNNING_RECLAIM_MINUTES` (default 30). Reclaimed rows become
+  `failed` with an explicit `reclaimed_by` source reference instead of
+  lingering as fake active work.
 - Diagnostics also separates source acquisition work into due source tasks and
   stale `fetching` tasks. Due tasks are normal backlog; stale fetching tasks are
   provider work that did not finish inside the reclaim window and should be

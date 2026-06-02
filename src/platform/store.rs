@@ -1631,6 +1631,9 @@ impl Store {
                       latest.thesis_id                  AS latest_thesis_id,
                       latest.state                      AS thesis_state,
                       latest.direction                   AS thesis_direction,
+                      tech.technical_state              AS technical_state,
+                      tech.entry_stance                 AS entry_stance,
+                      tech.pct_vs_200d                  AS technical_pct_vs_200d,
                       (SELECT count(*) FROM thesis th
                         WHERE th.symbol = t.symbol
                           AND th.state NOT IN ('closed','disqualified')) AS open_theses
@@ -1644,6 +1647,51 @@ impl Store {
               ORDER BY th.updated_at DESC
                  LIMIT 1
             ) latest ON TRUE
+            LEFT JOIN LATERAL (
+                WITH bars AS (
+                    SELECT ts, close::float8 AS close, high::float8 AS high
+                      FROM price_bar
+                     WHERE symbol = t.symbol
+                  ORDER BY ts DESC
+                     LIMIT 260
+                ), ranked AS (
+                    SELECT ts, close, high, row_number() OVER (ORDER BY ts DESC) AS rn
+                      FROM bars
+                ), latest_bar AS (
+                    SELECT close
+                      FROM ranked
+                     WHERE rn = 1
+                ), stats AS (
+                    SELECT count(*) FILTER (WHERE rn <= 200) AS bars_200,
+                           avg(close) FILTER (WHERE rn <= 50) AS sma50,
+                           avg(close) FILTER (WHERE rn <= 200) AS sma200,
+                           max(high) FILTER (WHERE rn <= 252) AS high252
+                      FROM ranked
+                ), classified AS (
+                    SELECT CASE
+                             WHEN stats.bars_200 < 200 OR stats.sma200 IS NULL THEN 'unknown'
+                             WHEN ((latest_bar.close - stats.sma200) / NULLIF(stats.sma200, 0) * 100.0) > 20.0
+                               OR ((latest_bar.close - stats.high252) / NULLIF(stats.high252, 0) * 100.0) >= -2.0 THEN 'extended'
+                             WHEN ((latest_bar.close - stats.sma200) / NULLIF(stats.sma200, 0) * 100.0) < -5.0 THEN 'deteriorating'
+                             WHEN stats.sma50 IS NOT NULL
+                               AND abs((latest_bar.close - stats.sma50) / NULLIF(stats.sma50, 0) * 100.0) <= 5.0 THEN 'base_building'
+                             WHEN ((latest_bar.close - stats.sma200) / NULLIF(stats.sma200, 0) * 100.0) >= 0.0 THEN 'constructive'
+                             ELSE 'unknown'
+                           END AS technical_state,
+                           ((latest_bar.close - stats.sma200) / NULLIF(stats.sma200, 0) * 100.0)::float8 AS pct_vs_200d
+                      FROM latest_bar CROSS JOIN stats
+                )
+                SELECT technical_state,
+                       CASE technical_state
+                         WHEN 'extended' THEN 'avoid_chase'
+                         WHEN 'deteriorating' THEN 'avoid'
+                         WHEN 'base_building' THEN 'wait_breakout'
+                         WHEN 'constructive' THEN 'constructive'
+                         ELSE 'wait_data'
+                       END AS entry_stance,
+                       pct_vs_200d
+                  FROM classified
+            ) tech ON TRUE
                 WHERE t.status = 'active'
              ORDER BY t.tier ASC, t.symbol ASC"#,
         )
@@ -1664,6 +1712,9 @@ impl Store {
                     latest_thesis_id: row.try_get("latest_thesis_id").ok(),
                     thesis_state: row.try_get("thesis_state").ok(),
                     thesis_direction: row.try_get("thesis_direction").ok(),
+                    technical_state: row.try_get("technical_state").ok(),
+                    entry_stance: row.try_get("entry_stance").ok(),
+                    technical_pct_vs_200d: row.try_get("technical_pct_vs_200d").ok(),
                 })
             })
             .collect()
@@ -2312,6 +2363,9 @@ impl Store {
                       latest.thesis_id AS latest_thesis_id,
                       latest.state AS thesis_state,
                       latest.direction AS thesis_direction,
+                      tech.technical_state AS technical_state,
+                      tech.entry_stance AS entry_stance,
+                      tech.pct_vs_200d AS technical_pct_vs_200d,
                       (SELECT count(*) FROM thesis th
                         WHERE th.symbol = wm.symbol
                           AND th.state NOT IN ('closed','disqualified')) AS open_theses
@@ -2324,6 +2378,51 @@ impl Store {
               ORDER BY th.updated_at DESC
                  LIMIT 1
             ) latest ON TRUE
+            LEFT JOIN LATERAL (
+                WITH bars AS (
+                    SELECT ts, close::float8 AS close, high::float8 AS high
+                      FROM price_bar
+                     WHERE symbol = wm.symbol
+                  ORDER BY ts DESC
+                     LIMIT 260
+                ), ranked AS (
+                    SELECT ts, close, high, row_number() OVER (ORDER BY ts DESC) AS rn
+                      FROM bars
+                ), latest_bar AS (
+                    SELECT close
+                      FROM ranked
+                     WHERE rn = 1
+                ), stats AS (
+                    SELECT count(*) FILTER (WHERE rn <= 200) AS bars_200,
+                           avg(close) FILTER (WHERE rn <= 50) AS sma50,
+                           avg(close) FILTER (WHERE rn <= 200) AS sma200,
+                           max(high) FILTER (WHERE rn <= 252) AS high252
+                      FROM ranked
+                ), classified AS (
+                    SELECT CASE
+                             WHEN stats.bars_200 < 200 OR stats.sma200 IS NULL THEN 'unknown'
+                             WHEN ((latest_bar.close - stats.sma200) / NULLIF(stats.sma200, 0) * 100.0) > 20.0
+                               OR ((latest_bar.close - stats.high252) / NULLIF(stats.high252, 0) * 100.0) >= -2.0 THEN 'extended'
+                             WHEN ((latest_bar.close - stats.sma200) / NULLIF(stats.sma200, 0) * 100.0) < -5.0 THEN 'deteriorating'
+                             WHEN stats.sma50 IS NOT NULL
+                               AND abs((latest_bar.close - stats.sma50) / NULLIF(stats.sma50, 0) * 100.0) <= 5.0 THEN 'base_building'
+                             WHEN ((latest_bar.close - stats.sma200) / NULLIF(stats.sma200, 0) * 100.0) >= 0.0 THEN 'constructive'
+                             ELSE 'unknown'
+                           END AS technical_state,
+                           ((latest_bar.close - stats.sma200) / NULLIF(stats.sma200, 0) * 100.0)::float8 AS pct_vs_200d
+                      FROM latest_bar CROSS JOIN stats
+                )
+                SELECT technical_state,
+                       CASE technical_state
+                         WHEN 'extended' THEN 'avoid_chase'
+                         WHEN 'deteriorating' THEN 'avoid'
+                         WHEN 'base_building' THEN 'wait_breakout'
+                         WHEN 'constructive' THEN 'constructive'
+                         ELSE 'wait_data'
+                       END AS entry_stance,
+                       pct_vs_200d
+                  FROM classified
+            ) tech ON TRUE
                 WHERE wm.watchlist_id = $1
              ORDER BY wm.added_at DESC"#,
         )
@@ -2341,6 +2440,9 @@ impl Store {
                     latest_thesis_id: r.try_get("latest_thesis_id").ok(),
                     thesis_state: r.try_get("thesis_state").ok(),
                     thesis_direction: r.try_get("thesis_direction").ok(),
+                    technical_state: r.try_get("technical_state").ok(),
+                    entry_stance: r.try_get("entry_stance").ok(),
+                    technical_pct_vs_200d: r.try_get("technical_pct_vs_200d").ok(),
                     open_theses: r.try_get::<i64, _>("open_theses").unwrap_or(0),
                 })
             })

@@ -105,6 +105,9 @@ pub struct TickerRow {
     pub latest_thesis_id: Option<Uuid>,
     pub thesis_state: Option<String>,
     pub thesis_direction: Option<String>,
+    pub technical_state: Option<String>,
+    pub entry_stance: Option<String>,
+    pub technical_pct_vs_200d: Option<f64>,
 }
 
 /// User-curated multi-list ticker organization (#54).
@@ -130,6 +133,9 @@ pub struct WatchlistMember {
     pub latest_thesis_id: Option<Uuid>,
     pub thesis_state: Option<String>,
     pub thesis_direction: Option<String>,
+    pub technical_state: Option<String>,
+    pub entry_stance: Option<String>,
+    pub technical_pct_vs_200d: Option<f64>,
     pub open_theses: i64,
 }
 

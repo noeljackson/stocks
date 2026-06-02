@@ -270,9 +270,17 @@ impl Store {
                          due_at AS last_ranked_at
                     FROM source_task
                    WHERE scope = 'symbol'
-                     AND state IN ('queued', 'no_rows', 'failed', 'rate_limited', 'satisfied')
-                     AND due_at <= now()
                      AND target_id <> ''
+                     AND (
+                         (
+                             state IN ('queued', 'no_rows', 'failed', 'rate_limited', 'satisfied')
+                             AND due_at <= now()
+                         )
+                         OR (
+                             state = 'fetching'
+                             AND updated_at < now() - interval '15 minutes'
+                         )
+                     )
                   UNION ALL
                   SELECT symbol,
                          0 AS source_rank,
@@ -343,9 +351,11 @@ impl Store {
                 WHERE scope = $4
                   AND target_id = ANY($1::text[])
                   AND action = ANY($2::text[])
-                  AND due_at <= now()
                   AND (
-                      state IN ('queued', 'no_rows', 'failed', 'rate_limited', 'satisfied')
+                      (
+                          state IN ('queued', 'no_rows', 'failed', 'rate_limited', 'satisfied')
+                          AND due_at <= now()
+                      )
                       OR (
                           state = 'fetching'
                           AND updated_at < now() - interval '15 minutes'

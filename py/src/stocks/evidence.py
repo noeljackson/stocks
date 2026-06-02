@@ -143,6 +143,19 @@ def _parse_dt(value) -> dt.datetime | None:
     return None
 
 
+SOURCE_RUNNING_STALE_AFTER = dt.timedelta(minutes=15)
+
+
+def _source_running_is_fresh(row: dict, *, now: dt.datetime | None = None) -> bool:
+    if row.get("last_status") != "running":
+        return False
+    started_at = _parse_dt(row.get("last_started_at") or row.get("updated_at"))
+    if started_at is None:
+        return True
+    now = now or dt.datetime.now(dt.UTC)
+    return started_at >= now - SOURCE_RUNNING_STALE_AFTER
+
+
 def canonical_requirement_key(item: dict) -> str | None:
     """Map LLM-declared missing evidence onto the acquisition FSM.
 
@@ -586,7 +599,8 @@ def _acquisition_state(
             "retry_after_at": None,
             "source_health": [],
         }
-    if any(r["last_status"] == "running" for r in rows):
+    running_rows = [r for r in rows if r["last_status"] == "running"]
+    if any(_source_running_is_fresh(r) for r in running_rows):
         return {
             "blocking_state": "fetching",
             "state_reason": "fetching_required_sources",
@@ -613,6 +627,14 @@ def _acquisition_state(
             "state_reason": reason or "source_failed",
             "last_error": last_error,
             "retry_after_at": retry_after,
+            "source_health": rows,
+        }
+    if running_rows:
+        return {
+            "blocking_state": "missing",
+            "state_reason": "source_running_stale",
+            "last_error": "source still marked running after reclaim window",
+            "retry_after_at": None,
             "source_health": rows,
         }
     if any(r["last_status"] == "ok" and r["rows_inserted"] > 0 for r in rows):
@@ -828,14 +850,39 @@ async def sync_source_tasks(pool: asyncpg.Pool, tasks: list[dict]) -> None:
                   source_type = EXCLUDED.source_type,
                   provider = EXCLUDED.provider,
                   limiter_key = EXCLUDED.limiter_key,
-                  state = EXCLUDED.state,
+                  state = CASE
+                      WHEN source_task.state = 'fetching'
+                       AND EXCLUDED.state = 'fetching'
+                      THEN source_task.state
+                      ELSE EXCLUDED.state
+                  END,
                   priority = EXCLUDED.priority,
-                  due_at = EXCLUDED.due_at,
+                  due_at = CASE
+                      WHEN source_task.state = 'fetching'
+                       AND EXCLUDED.state = 'fetching'
+                      THEN source_task.due_at
+                      ELSE EXCLUDED.due_at
+                  END,
                   attempts = GREATEST(source_task.attempts, EXCLUDED.attempts),
-                  next_retry_at = EXCLUDED.next_retry_at,
-                  last_error = EXCLUDED.last_error,
-                  source_ref = EXCLUDED.source_ref,
-                  updated_at = now()""",
+                  next_retry_at = CASE
+                      WHEN source_task.state = 'fetching'
+                       AND EXCLUDED.state = 'fetching'
+                      THEN source_task.next_retry_at
+                      ELSE EXCLUDED.next_retry_at
+                  END,
+                  last_error = CASE
+                      WHEN source_task.state = 'fetching'
+                       AND EXCLUDED.state = 'fetching'
+                      THEN source_task.last_error
+                      ELSE EXCLUDED.last_error
+                  END,
+                  source_ref = source_task.source_ref || EXCLUDED.source_ref,
+                  updated_at = CASE
+                      WHEN source_task.state = 'fetching'
+                       AND EXCLUDED.state = 'fetching'
+                      THEN source_task.updated_at
+                      ELSE now()
+                  END""",
             task["source_type"],
             task["requirement_key"],
             task["action"],
@@ -878,10 +925,16 @@ async def refresh_open_evidence_requirements(
                           false
                       ) AS has_open_requirement,
                       COALESCE(bool_or(
-                          st.due_at <= now()
-                          AND st.state IN (
-                              'queued', 'no_rows', 'failed',
-                              'rate_limited', 'satisfied'
+                          (
+                              st.due_at <= now()
+                              AND st.state IN (
+                                  'queued', 'no_rows', 'failed',
+                                  'rate_limited', 'satisfied'
+                              )
+                          )
+                          OR (
+                              st.state = 'fetching'
+                              AND st.updated_at < now() - interval '15 minutes'
                           )
                       ), false) AS has_due_task
                  FROM active_symbols a

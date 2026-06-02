@@ -219,6 +219,38 @@ def test_assess_evidence_requirements_marks_running_sources_as_fetching() -> Non
     assert facts["state_reason"] == "fetching_required_sources"
 
 
+def test_assess_evidence_requirements_reclaims_stale_running_sources() -> None:
+    missing = assess_evidence_requirements(
+        {
+            "price_bars": 12,
+            "filing_events": 1,
+            "company_facts": 0,
+            "recent_news": 1,
+            "estimate_snapshots": 4,
+            "analyst_price_target_snapshots": 1,
+            "research_evidence": 1,
+        },
+        {
+            "xbrl": {
+                "source": "xbrl",
+                "last_status": "running",
+                "last_started_at": "2020-01-01T00:00:00Z",
+                "last_failure_kind": None,
+                "last_error": None,
+                "retry_after_at": None,
+                "rows_seen": 0,
+                "rows_inserted": 0,
+            },
+        },
+    )
+
+    [facts] = missing
+    assert facts["blocking_state"] == "missing"
+    assert facts["state_reason"] == "source_running_stale"
+    tasks = build_source_tasks("MU", facts)
+    assert {task["state"] for task in tasks} == {"queued"}
+
+
 def test_assess_evidence_requirements_marks_checked_sources_as_missing() -> None:
     missing = assess_evidence_requirements(
         {

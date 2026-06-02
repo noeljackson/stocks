@@ -183,8 +183,10 @@ run, when it is due, whether it is rate-limited, and what retry state applies.
 Satisfied tasks are fresh-until `due_at`, not terminal; when a task becomes due
 the owning worker may claim it and re-check the source without making the ticker
 look blank. A `fetching` task whose claim is older than 15 minutes is treated as
-reclaimable work; this prevents an interrupted worker from leaving evidence
-acquisition stuck forever.
+reclaimable work, even if its `due_at` was pushed forward. A source health row
+that is still `running` after the same window is no longer treated as active
+fetching; evidence sync turns it back into queued acquisition work. This
+prevents an interrupted worker from leaving evidence acquisition stuck forever.
 
 The thesis engine also feeds this FSM. If it declines to draft because the
 context is too thin and returns structured `missing_evidence`, cognition maps

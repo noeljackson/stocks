@@ -26,6 +26,13 @@
 
   type Candle = { time: string; open: number; high: number; low: number; close: number; volume: number };
   type SymbolEvent = { kind: string; time: string; thesis_id: string; label: string; detail: string };
+  type ChartCoverage = {
+    start: string | null;
+    end: string | null;
+    bars: number;
+    fetchAttempts: number;
+    fetchError: string | null;
+  };
   type Interval = "1m" | "3m" | "5m" | "15m" | "30m" | "1h" | "2h" | "4h" | "1D" | "1W" | "3W" | "1M";
   type Range = "1D" | "5D" | "1M" | "3M" | "6M" | "200D" | "1Y" | "2Y" | "ALL";
   const INTERVALS: Interval[] = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1D", "1W", "3W", "1M"];
@@ -51,6 +58,7 @@
   let candles = $state<Candle[] | null>(null);
   let smaCandles = $state<Candle[] | null>(null);
   let events = $state<SymbolEvent[]>([]);
+  let coverage = $state<ChartCoverage | null>(null);
   let error = $state<string | null>(null);
   let loading = $state(false);
   let loadSeq = 0;
@@ -80,6 +88,7 @@
     candles = [];
     smaCandles = [];
     events = [];
+    coverage = null;
     clearSeries();
     try {
       const [cRes, eRes, sRes] = await Promise.all([
@@ -91,12 +100,20 @@
       ]);
       if (!cRes.ok) throw new Error(await cRes.text() || `candles ${cRes.status}`);
       const nextCandles = (await cRes.json()) as Candle[];
+      const nextCoverage: ChartCoverage = {
+        start: cRes.headers.get("x-chart-coverage-start"),
+        end: cRes.headers.get("x-chart-coverage-end"),
+        bars: Number(cRes.headers.get("x-chart-bars") ?? nextCandles.length),
+        fetchAttempts: Number(cRes.headers.get("x-chart-fetch-attempts") ?? 0),
+        fetchError: cRes.headers.get("x-chart-fetch-error"),
+      };
       let nextSmaCandles = nextCandles;
       if (sRes?.ok) nextSmaCandles = (await sRes.json()) as Candle[];
       if (seq !== loadSeq) return;
       candles = nextCandles;
       smaCandles = nextSmaCandles;
       events = eRes.ok ? ((await eRes.json()) as SymbolEvent[]) : [];
+      coverage = nextCoverage;
       render();
     } catch (e) {
       if (seq !== loadSeq) return;
@@ -104,6 +121,7 @@
       candles = [];
       smaCandles = [];
       events = [];
+      coverage = null;
       render();
     } finally {
       if (seq === loadSeq) loading = false;
@@ -352,6 +370,18 @@
       </span>
       <span class="meta">
         <span class="muted">{candles.length} bars</span>
+      </span>
+    {/if}
+    {#if coverage?.start && coverage?.end}
+      <span class="meta coverage" title={coverage.fetchError ?? ""}>
+        <span class="muted">coverage</span>
+        <strong>{coverage.start.slice(0, 10)} to {coverage.end.slice(0, 10)}</strong>
+        {#if coverage.fetchAttempts > 0}
+          <span class="muted">{coverage.fetchAttempts} fetches</span>
+        {/if}
+        {#if coverage.fetchError}
+          <span class="err">partial</span>
+        {/if}
       </span>
     {/if}
     <span class="meta" data-testid="chart-interval-status">

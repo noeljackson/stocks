@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use chrono::{NaiveDateTime, TimeZone, Utc};
+use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use reqwest::Client;
 use serde::Deserialize;
 
@@ -54,40 +54,49 @@ impl FmpIntradayAdapter {
         native_interval: &str,
         lookback_days: i64,
     ) -> Result<Vec<IntradayPriceBarRow>> {
+        let today = Utc::now().date_naive();
+        let from = today - chrono::Duration::days(lookback_days);
+        self.fetch_range(symbol, native_interval, from, today).await
+    }
+
+    pub async fn fetch_range(
+        &self,
+        symbol: &str,
+        native_interval: &str,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> Result<Vec<IntradayPriceBarRow>> {
         if self.api_key.is_empty() {
             return Ok(Vec::new());
         }
-        let today = Utc::now().date_naive();
-        let from = today - chrono::Duration::days(lookback_days);
+        if from > to {
+            return Ok(Vec::new());
+        }
         let url = format!(
-            "{}/stable/historical-chart/{native_interval}?symbol={symbol}&from={from}&to={today}&apikey={key}",
+            "{}/stable/historical-chart/{native_interval}?symbol={symbol}&from={from}&to={to}&apikey={key}",
             self.base_url,
             from = from.format("%Y-%m-%d"),
-            today = today.format("%Y-%m-%d"),
+            to = to.format("%Y-%m-%d"),
             key = self.api_key,
         );
         rate_limit::fmp().wait().await;
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .with_context(|| format!("fmp intraday fetch {symbol} {native_interval}"))?;
+        let resp = self.client.get(&url).send().await.with_context(|| {
+            format!("fmp intraday fetch {symbol} {native_interval} {from}..{to}")
+        })?;
         let status = resp.status();
         let retry_after = rate_limit::retry_after(resp.headers());
         rate_limit::fmp().observe_status(status, retry_after).await;
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!(
-                "fmp intraday {symbol} {native_interval} {}: {}",
+                "fmp intraday {symbol} {native_interval} {from}..{to} {}: {}",
                 status.as_u16(),
                 &body[..body.len().min(256)]
             );
         }
-        let parsed: Vec<FmpIntradayBar> = resp
-            .json()
-            .await
-            .with_context(|| format!("fmp intraday decode {symbol} {native_interval}"))?;
+        let parsed: Vec<FmpIntradayBar> = resp.json().await.with_context(|| {
+            format!("fmp intraday decode {symbol} {native_interval} {from}..{to}")
+        })?;
         Ok(to_rows(symbol, native_interval, &parsed))
     }
 }

@@ -674,7 +674,7 @@ test("overview explains selected symbol brain status and stale source", async ({
   await mockApi(page);
   await page.goto("/");
 
-  const brain = page.locator(".brain-card");
+  const brain = page.locator(".brain-card.brain-due");
   await expect(brain).toBeVisible();
   await expect(brain).toContainText("Brain");
   await expect(brain).toContainText("due");

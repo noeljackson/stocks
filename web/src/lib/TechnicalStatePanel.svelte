@@ -42,9 +42,12 @@
       <div class="tech-title">
         <strong>{state.symbol}</strong>
         <span class="state-badge state-{state.state}">{titleize(state.state)}</span>
+        <span class="state-badge setup-{state.setup.kind}">{titleize(state.setup.kind)}</span>
+        <span class="state-badge stance-{state.setup.entry_stance}">{titleize(state.setup.entry_stance)}</span>
         <span class="muted">as of {shortTs(state.as_of)}</span>
       </div>
       <p>{state.summary}</p>
+      <p class="muted">{state.setup.summary}</p>
     </header>
 
     {#if state.daily}
@@ -196,6 +199,9 @@
 
   .state-badge.state-constructive,
   .state-badge.state-base_building,
+  .state-badge.setup-200d_reclaim,
+  .state-badge.stance-actionable,
+  .state-badge.stance-constructive,
   .zone-strong,
   .zone-up {
     background: rgba(166, 227, 161, .18);
@@ -203,12 +209,20 @@
   }
 
   .state-badge.state-extended,
+  .state-badge.setup-extended_run,
+  .state-badge.setup-200d_reclaim_watch,
+  .state-badge.stance-wait_reclaim,
+  .state-badge.stance-wait_retest,
+  .state-badge.stance-wait_breakout,
+  .state-badge.stance-avoid_chase,
   .zone-overbought {
     background: rgba(249, 226, 175, .15);
     color: rgb(249, 226, 175);
   }
 
   .state-badge.state-deteriorating,
+  .state-badge.setup-breakdown,
+  .state-badge.stance-avoid,
   .zone-weak,
   .zone-oversold,
   .zone-down {

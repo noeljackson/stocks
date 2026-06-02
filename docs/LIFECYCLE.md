@@ -417,6 +417,7 @@ raw detectors       -> src/discovery/signals.rs
 interpretation      -> src/discovery/composer.rs
 candidate storage   -> discovery_candidate
 attention storage   -> attention_item
+normalized facts    -> evidence_item + thesis_evidence
 context memory      -> ticker_context
 parent brain        -> brain_thesis + brain_thesis_ticker/watchlist
 thesis lifecycle    -> thesis + thesis_state_history

@@ -99,11 +99,13 @@ This is the SPEC §4 "#1 leading signal for the edge" gap (#18).
 | Analyst price target events | Recent firm-level target changes for catalysts and consensus drift narrative | FMP | Starter | `/stable/price-target-news?symbol=&limit=10` | wired — `src/ingest/fmp_opinion.rs`, active tickers + Tier 1/2 proposed candidates, persisted to `analyst_price_target_event` |
 
 The normalized fact layer is `evidence_item`. News articles, estimate
-revisions, and analyst price-target events are written there as discrete facts
-with source, source row pointer, strength, polarity, timestamp, and URL where
-available. `thesis_evidence` links the current symbol thesis to the normalized
-facts seen during draft/reconciliation. Raw vendor tables remain the audit
-source; `evidence_item` is the operator/cognition-facing fact stream.
+revisions, analyst price-target events, discovery price-action signals,
+product/theme web research, and context shifts are written there as discrete
+facts with source, source row pointer, strength, polarity, timestamp, and URL
+where available. `thesis_evidence` links the current symbol thesis to the
+normalized facts seen during draft/reconciliation. Raw vendor tables and
+`ticker_context` versions remain the audit source; `evidence_item` is the
+operator/cognition-facing fact stream.
 
 ## 4. News + per-article sentiment
 

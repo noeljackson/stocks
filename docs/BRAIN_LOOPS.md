@@ -486,6 +486,7 @@ every COGNITION_SWEEP_SECONDS
         |
         v
 select up to COGNITION_MAX_SYMBOLS_PER_SWEEP active tickers where:
+  provider source_task outcome is newer than thesis evaluation / no-thesis decline
   open thesis is older than COGNITION_OPEN_THESIS_MAX_AGE_MINUTES
   no context exists
   context is missing market data
@@ -523,11 +524,14 @@ and lower cap of 60s. Batch size is floored by
 `COGNITION_MIN_SYMBOLS_PER_SWEEP`. This prevents stale environment config like
 `900s/5 symbols` from silently breaking the 30-minute product SLA.
 
-Sweep priority is opinion-first. A stale open thesis outranks broad bootstrap
-work, because the current standing view is what the operator is relying on.
-Each scheduled run records a `sweep_reason` such as `open_thesis_due`,
-`context_missing`, or `evidence_retry_due` into the pipeline source reference so
-the UI/audit trail can explain why the symbol was touched.
+Sweep priority is opinion-first. Fresh provider outcomes for an open thesis
+come first, then stale open theses, then bootstrap work. A provider outcome is
+a completed `source_task` check such as `satisfied` or `no_rows`; `fetching`,
+`failed`, and rate-limited work stays visible in source health/tasks without
+forcing a thesis LLM pass. Each scheduled run records a `sweep_reason` such as
+`source_task_changed`, `open_thesis_due`, `context_missing`, or
+`evidence_retry_due` into the pipeline source reference so the UI/audit trail
+can explain why the symbol was touched.
 
 The worker still reserves a small number of each sweep's slots for bootstrap
 work (`COGNITION_BOOTSTRAP_SYMBOLS_PER_SWEEP`, default 5), because otherwise a
@@ -561,13 +565,15 @@ why it ran, what blocked it, and when it will retry.
 
 ```text
 cognition target priority
-  0 open thesis due for re-evaluation
-  1 missing context
-  2 context exists but market context is blank
-  3 evidence checklist missing
-  4 evidence retry due for a no-thesis symbol
-  5 stale context
-  6 older decline retry / maintenance
+  0 source_task outcome newer than open thesis evaluation
+  1 open thesis due for re-evaluation
+  2 missing context
+  3 context exists but market context is blank
+  4 evidence checklist missing
+  5 evidence retry due for a no-thesis symbol
+  6 source_task outcome newer than no-thesis decline
+  7 stale context
+  8 older decline retry / maintenance
 ```
 
 What works now:
@@ -576,6 +582,10 @@ What works now:
 - Active tickers are swept without requiring the UI to open them.
 - Evidence checklists are bootstrapped for old tickers.
 - Open theses are explicitly due for re-evaluation after 30 minutes.
+- Fresh source-task outcomes trigger a cognition pass immediately when they are
+  newer than the open thesis evaluation or newer than the last no-thesis
+  decline. This gives the brain a data-change edge in addition to the
+  30-minute clock edge.
 - Fresh drafts reconcile into one canonical open thesis per symbol.
 - Draft/reconcile runs attach the latest normalized evidence facts to the
   thesis via `thesis_evidence`, so the current view can be inspected back to
@@ -602,8 +612,9 @@ What works now:
 Current gaps:
 
 - #128: source loops and cognition still coordinate through `source_task` rather
-  than a single top-level controller process, but the run ledger now makes that
-  coordination observable.
+  than a single top-level controller process, but provider outcomes now feed
+  cognition target selection and the run ledger makes the coordination
+  observable.
 - #128: provider-wide retry gates now pause source tasks, and due source tasks
   move their symbols to the front of the expensive ingest scan universe. The
   FMP price, estimates, analyst-opinion, news, XBRL, EDGAR, FRED, and CBOE

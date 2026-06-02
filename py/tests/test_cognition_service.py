@@ -140,6 +140,14 @@ def test_sweep_trigger_marks_open_thesis_update_when_evidence_exists() -> None:
     assert _sweep_trigger(4, "thesis-id") == "open_thesis_update_loop"
 
 
+def test_sweep_trigger_marks_source_task_delta_for_open_thesis() -> None:
+    assert _sweep_trigger(4, "thesis-id", "source_task_changed") == "source_task_delta"
+
+
+def test_sweep_trigger_marks_source_task_delta_for_no_thesis_retry() -> None:
+    assert _sweep_trigger(4, None, "source_task_changed_retry") == "source_task_delta"
+
+
 def test_sweep_trigger_keeps_open_thesis_update_auditable_when_evidence_bootstraps() -> None:
     assert _sweep_trigger(0, "thesis-id") == "open_thesis_update_loop"
 

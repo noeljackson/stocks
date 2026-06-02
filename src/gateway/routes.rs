@@ -1962,6 +1962,7 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
     .unwrap_or_default()
     .into_iter()
     .map(|r| {
+        let now = chrono::Utc::now();
         let last_started_at: Option<chrono::DateTime<chrono::Utc>> =
             r.try_get("last_started_at").ok();
         let last_success_at: Option<chrono::DateTime<chrono::Utc>> =
@@ -1971,9 +1972,15 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
         let retry_after_at: Option<chrono::DateTime<chrono::Utc>> =
             r.try_get("retry_after_at").ok();
         let updated_at: Option<chrono::DateTime<chrono::Utc>> = r.try_get("updated_at").ok();
+        let last_status = r.try_get::<String, _>("last_status").unwrap_or_default();
+        let (effective_status, stale_running, running_age_minutes) =
+            source_health_effective_status(&last_status, last_started_at, now);
         json!({
             "source": r.try_get::<String, _>("source").unwrap_or_default(),
-            "last_status": r.try_get::<String, _>("last_status").unwrap_or_default(),
+            "last_status": last_status,
+            "effective_status": effective_status,
+            "stale_running": stale_running,
+            "running_age_minutes": running_age_minutes,
             "last_started_at": last_started_at,
             "last_success_at": last_success_at,
             "last_failure_at": last_failure_at,
@@ -3051,6 +3058,29 @@ fn cognition_run_json(r: sqlx::postgres::PgRow) -> serde_json::Value {
         "next_retry_at": next_retry_at,
         "error": r.try_get::<Option<String>, _>("error").ok().flatten(),
     })
+}
+
+fn source_health_effective_status(
+    last_status: &str,
+    last_started_at: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (String, bool, Option<i64>) {
+    let running_age_minutes = if last_status == "running" {
+        last_started_at.map(|at| now.signed_duration_since(at).num_minutes().max(0))
+    } else {
+        None
+    };
+    let stale_running = running_age_minutes.is_some_and(|minutes| minutes > 15);
+    let effective_status = if stale_running {
+        "stale_running"
+    } else {
+        last_status
+    };
+    (
+        effective_status.to_string(),
+        stale_running,
+        running_age_minutes,
+    )
 }
 
 fn source_health_group(
@@ -4443,6 +4473,42 @@ mod tests {
         assert_eq!(opinion[0]["action"], "fmp_price_target_news");
         assert_eq!(price.as_array().unwrap().len(), 1);
         assert_eq!(price[0]["provider"], "twse");
+    }
+
+    #[test]
+    fn source_health_effective_status_marks_stale_running() {
+        let now = Utc.with_ymd_and_hms(2026, 6, 1, 12, 30, 0).unwrap();
+        let started = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
+
+        let (status, stale, age) = source_health_effective_status("running", Some(started), now);
+
+        assert_eq!(status, "stale_running");
+        assert!(stale);
+        assert_eq!(age, Some(30));
+    }
+
+    #[test]
+    fn source_health_effective_status_keeps_fresh_running() {
+        let now = Utc.with_ymd_and_hms(2026, 6, 1, 12, 10, 0).unwrap();
+        let started = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
+
+        let (status, stale, age) = source_health_effective_status("running", Some(started), now);
+
+        assert_eq!(status, "running");
+        assert!(!stale);
+        assert_eq!(age, Some(10));
+    }
+
+    #[test]
+    fn source_health_effective_status_leaves_finished_statuses() {
+        let now = Utc.with_ymd_and_hms(2026, 6, 1, 12, 30, 0).unwrap();
+        let started = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
+
+        let (status, stale, age) = source_health_effective_status("ok", Some(started), now);
+
+        assert_eq!(status, "ok");
+        assert!(!stale);
+        assert_eq!(age, None);
     }
 
     #[test]

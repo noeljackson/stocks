@@ -672,6 +672,23 @@ async function mockApi(page: Page): Promise<Calls> {
           source_tasks_by_state: [{ state: "fetching", count: 1 }],
         },
         attention: { open_items: attentionOpen ? 1 : 0, by_kind: [] },
+        source_health: [{
+          source: "xbrl",
+          last_status: "running",
+          effective_status: "stale_running",
+          stale_running: true,
+          running_age_minutes: 30,
+          last_started_at: "2026-06-01T12:00:00Z",
+          last_success_at: null,
+          last_failure_at: null,
+          last_failure_kind: null,
+          last_error: null,
+          retry_after_at: null,
+          rows_seen: 0,
+          rows_inserted: 0,
+          symbols_attempted: 1,
+          symbols_failed: 0,
+        }],
         llm: { calls_24h: 0, avg_latency_ms: null, by_prompt: [] },
       });
       return;
@@ -859,6 +876,7 @@ test("diagnostics tab shows source task backlog state", async ({ page }) => {
   await expect(evidence).toContainText("source tasks due");
   await expect(evidence).toContainText("stale fetching");
   await expect(evidence).toContainText("source fetching");
+  await expect(page.locator(".diag").filter({ hasText: "Source health" })).toContainText("stale running");
 });
 
 test("discovery tab shows candidate ranking reasons", async ({ page }) => {

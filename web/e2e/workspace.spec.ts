@@ -700,8 +700,65 @@ async function mockApi(page: Page): Promise<Calls> {
       });
       return;
     }
+    if (path === "/api/decisions/8b4c3f5b-8288-49ff-9282-b4398abe85ba/replay") {
+      await json(route, {
+        decision_id: "8b4c3f5b-8288-49ff-9282-b4398abe85ba",
+        symbol: "OKTA",
+        thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+        context_version: 2,
+        thesis_snapshot: {
+          thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+          symbol: "OKTA",
+          state: "forming",
+          version: 1,
+          forecast: { direction: "up", system_confidence: "monitoring" },
+          conviction_tier: "monitoring",
+        },
+        consensus_score: 64,
+        risk_verdict: { status: "pass", veto: false, reasons: [], warnings: [] },
+        evidence_ids: [501],
+        evidence_snapshot: [{
+          id: 501,
+          symbol: "OKTA",
+          kind: "news",
+          observed_at: "2026-06-01T00:00:00Z",
+          source: "fmp",
+          source_id: "news_article:501",
+          source_ref: { table: "news_article", id: 501 },
+          summary: "OKTA customer deployment article supports consolidation demand",
+          strength: 0.8,
+          polarity: 0.6,
+          url: "https://example.com/evidence",
+          created_at: "2026-06-01T00:01:00Z",
+          weight: 0.9,
+          added_by: "system",
+        }],
+        system_confidence: "monitoring",
+        chart_range_seen: "ALL 1D",
+        decision_snapshot: {
+          decision_id: "8b4c3f5b-8288-49ff-9282-b4398abe85ba",
+          action: "skip",
+          user_choice: "deferred",
+        },
+        captured_at: "2026-06-01T00:02:00Z",
+      });
+      return;
+    }
     if (path === "/api/decisions") {
-      await json(route, []);
+      const symbol = url.searchParams.get("symbol");
+      await json(route, symbol === "OKTA" ? [{
+        decision_id: "8b4c3f5b-8288-49ff-9282-b4398abe85ba",
+        thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+        action: "skip",
+        user_choice: "deferred",
+        sizing: { thesis_direction: "up" },
+        thesis_state: "forming",
+        thesis_direction: "up",
+        side: "",
+        instrument: "equity",
+        has_replay: true,
+        at: "2026-06-01T00:02:00Z",
+      }] : []);
       return;
     }
     if (path === "/api/candles") {
@@ -1058,6 +1115,7 @@ test("decisions tab shows positions and posts manual exit fills", async ({ page 
     thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
     action: "exit",
     user_choice: "confirmed",
+    chart_range_seen: "ALL 1D",
     sizing: { side: "long", instrument: "equity", thesis_direction: "up" },
     manual_fill: {
       position_id: "9b496f4d-cbb8-4bb5-bd41-9766f8f962f2",
@@ -1068,6 +1126,25 @@ test("decisions tab shows positions and posts manual exit fills", async ({ page 
       fees: 0,
     },
   });
+});
+
+test("decisions tab opens decision replay snapshot", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/symbol/OKTA");
+
+  await page.locator(".right").getByRole("button", { name: "decisions" }).click();
+  await page.locator(".decisions li").filter({ hasText: "skip" }).getByRole("button", { name: "replay" }).click();
+
+  const replay = page.locator(".decision-replay");
+  await expect(replay).toContainText("Decision replay");
+  await expect(replay).toContainText("OKTA");
+  await expect(replay).toContainText("v1 · forming · up");
+  await expect(replay).toContainText("v2");
+  await expect(replay).toContainText("64");
+  await expect(replay).toContainText("ALL 1D");
+  await expect(replay).toContainText("pass");
+  await expect(replay).toContainText("confidence monitoring");
+  await expect(replay).toContainText("OKTA customer deployment article supports consolidation demand");
 });
 
 test("discovery pool rows show thesis state and direction", async ({ page }) => {

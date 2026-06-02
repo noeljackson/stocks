@@ -22,8 +22,6 @@
     type SeriesMarkerShape,
   } from "lightweight-charts";
 
-  let { symbol = null as string | null } = $props();
-
   type Candle = { time: string; open: number; high: number; low: number; close: number; volume: number };
   type SymbolEvent = { kind: string; time: string; thesis_id: string; label: string; detail: string };
   type ChartCoverage = {
@@ -35,6 +33,12 @@
   };
   type Interval = "1m" | "3m" | "5m" | "15m" | "30m" | "1h" | "2h" | "4h" | "1D" | "1W" | "3W" | "1M";
   type Range = "1D" | "5D" | "1M" | "3M" | "6M" | "200D" | "1Y" | "2Y" | "ALL";
+  type ChartState = { interval: Interval; range: Range };
+  let {
+    symbol = null as string | null,
+    onStateChange = (_state: ChartState) => {},
+  } = $props();
+
   const INTERVALS: Interval[] = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1D", "1W", "3W", "1M"];
   const RANGES: Range[] = ["1D", "5D", "1M", "3M", "6M", "200D", "1Y", "2Y", "ALL"];
   const INTRADAY_INTERVALS = new Set<Interval>(["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h"]);
@@ -75,6 +79,10 @@
 
   function chooseInterval(next: Interval) {
     interval = next;
+  }
+
+  function chooseRange(next: Range) {
+    range = next;
   }
 
   function smaLabel(window: number) {
@@ -343,6 +351,7 @@
   }
 
   $effect(() => {
+    onStateChange({ interval, range });
     if (symbol) load(symbol, range, interval);
   });
 
@@ -418,7 +427,7 @@
         <button
           class:active={range === r}
           data-testid={`range-${r}`}
-          onclick={() => (range = r)}
+          onclick={() => chooseRange(r)}
         >{r}</button>
       {/each}
     </span>

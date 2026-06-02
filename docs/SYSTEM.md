@@ -462,6 +462,7 @@ route.ticker.SYMBOL
   + previous ticker_context
   + prompt version
   -> new ticker_context version
+  -> evidence_item(kind=context_shift) when structural/narrative/market changes
   -> context.updated / context.shift
 ```
 
@@ -474,7 +475,10 @@ market      fast     price, volume, technicals, sentiment
 ```
 
 Freshness is part of the output. A stale narrative band is a decision input, not
-just an ops warning.
+just an ops warning. When the maintained context changes, the maintainer writes
+a normalized `context_shift` evidence item pointing at the new
+`ticker_context` version. Thesis and decision replay can then distinguish
+source facts from the system's interpretation of those facts.
 
 The cognition service owns automatic maintenance. It reacts immediately to
 `discovery.confirmed`, but it also periodically sweeps active tickers so the

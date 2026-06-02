@@ -511,6 +511,102 @@ def _extract_json(content: str) -> dict:
     raise ValueError(f"could not parse JSON from LLM response: {s[:200]}")
 
 
+def _normalized_context_section(value: dict | None) -> object:
+    return json.loads(json.dumps(value or {}, sort_keys=True, default=str))
+
+
+def _context_changed_sections(
+    prior_context: dict | None,
+    structural: dict,
+    narrative: dict,
+    market: dict,
+) -> list[str]:
+    if prior_context is None:
+        return ["structural", "narrative", "market"]
+    candidates = {
+        "structural": structural,
+        "narrative": narrative,
+        "market": market,
+    }
+    changed: list[str] = []
+    for section, current in candidates.items():
+        prior = prior_context.get(section) if isinstance(prior_context, dict) else None
+        if _normalized_context_section(prior) != _normalized_context_section(current):
+            changed.append(section)
+    return changed
+
+
+def _first_context_shift_summary(
+    structural: dict,
+    narrative: dict,
+    market: dict,
+) -> str:
+    def text(value: object) -> str | None:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, dict):
+            for key in ("summary", "what", "title", "claim", "reason"):
+                item = value.get(key)
+                if isinstance(item, str) and item.strip():
+                    return item.strip()
+        return None
+
+    recent = narrative.get("recent_signals")
+    if isinstance(recent, list):
+        for item in recent:
+            found = text(item)
+            if found:
+                return found
+
+    attention = text(market.get("attention_reason"))
+    if attention and "no current attention reason" not in attention.lower():
+        return attention
+
+    for item in (
+        narrative.get("analyst_trajectory"),
+        market.get("technical_context"),
+        structural.get("summary"),
+    ):
+        found = text(item)
+        if found:
+            return found
+    return "context materially changed"
+
+
+def _context_shift_strength(changed_sections: list[str]) -> float:
+    return round(min(0.85, 0.45 + 0.10 * len(changed_sections)), 2)
+
+
+def _build_context_shift_evidence(
+    symbol: str,
+    prior_context: dict | None,
+    structural: dict,
+    narrative: dict,
+    market: dict,
+    new_version: int,
+) -> dict | None:
+    changed_sections = _context_changed_sections(prior_context, structural, narrative, market)
+    if not changed_sections:
+        return None
+
+    summary_detail = _first_context_shift_summary(structural, narrative, market)
+    summary = f"{symbol} context v{new_version}: {summary_detail}"
+    prior_version = prior_context.get("version") if isinstance(prior_context, dict) else None
+    return {
+        "source_id": f"context_shift:{symbol}:v{new_version}",
+        "source_ref": {
+            "table": "ticker_context",
+            "symbol": symbol,
+            "version": new_version,
+            "prior_version": prior_version,
+            "changed_sections": changed_sections,
+        },
+        "summary": summary[:500],
+        "strength": _context_shift_strength(changed_sections),
+        "polarity": None,
+    }
+
+
 async def _persist_context(
     pool: asyncpg.Pool,
     symbol: str,
@@ -518,6 +614,8 @@ async def _persist_context(
     narrative: dict,
     market: dict,
     prior_version: int | None,
+    *,
+    prior_context: dict | None = None,
 ) -> int:
     """Append a new ticker_context row. Idempotent in the sense that a fresh
     call just bumps the version."""
@@ -537,6 +635,34 @@ async def _persist_context(
         json.dumps(narrative),
         json.dumps(market),
     )
+    evidence = _build_context_shift_evidence(
+        symbol,
+        prior_context,
+        structural,
+        narrative,
+        market,
+        new_version,
+    )
+    if evidence is not None:
+        await pool.execute(
+            """INSERT INTO evidence_item
+                 (symbol, kind, observed_at, source, source_id, source_ref,
+                  summary, strength, polarity)
+               VALUES ($1, 'context_shift', $2, 'context_maintainer', $3, $4::jsonb,
+                       $5, $6, $7)
+               ON CONFLICT (source, source_id) DO UPDATE SET
+                 source_ref = evidence_item.source_ref || EXCLUDED.source_ref,
+                 summary = EXCLUDED.summary,
+                 strength = EXCLUDED.strength,
+                 polarity = EXCLUDED.polarity""",
+            symbol,
+            now,
+            evidence["source_id"],
+            json.dumps(evidence["source_ref"]),
+            evidence["summary"],
+            evidence["strength"],
+            evidence["polarity"],
+        )
     return new_version
 
 
@@ -661,7 +787,13 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
         narrative = parsed.get("narrative", {})
         market = parsed.get("market", {})
         new_version = await _persist_context(
-            pool, symbol, structural, narrative, market, prior["version"] if prior else None
+            pool,
+            symbol,
+            structural,
+            narrative,
+            market,
+            prior["version"] if prior else None,
+            prior_context=prior,
         )
         log.info(
             "persisted ticker_context v%d for %s (input_tokens=%d output_tokens=%d)",

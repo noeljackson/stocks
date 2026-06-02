@@ -1,7 +1,14 @@
 import datetime as dt
 import json
 
-from stocks.context_maintainer import _build_price_snapshot, _build_user_message
+import pytest
+
+from stocks.context_maintainer import (
+    _build_context_shift_evidence,
+    _build_price_snapshot,
+    _build_user_message,
+    _persist_context,
+)
 from stocks.evidence import (
     assess_evidence_requirements,
     build_satisfied_source_tasks,
@@ -83,6 +90,94 @@ def test_context_user_message_includes_normalized_evidence_items() -> None:
 
     parsed = json.loads(msg)
     assert parsed["evidence_items"][0]["summary"] == "MU HBM customer win"
+
+
+def test_context_shift_evidence_skips_identical_context() -> None:
+    prior = {
+        "version": 1,
+        "structural": {"summary": "same fundamentals"},
+        "narrative": {"recent_signals": ["same signal"]},
+        "market": {"attention_reason": "same setup"},
+    }
+
+    assert _build_context_shift_evidence(
+        "MU",
+        prior,
+        {"summary": "same fundamentals"},
+        {"recent_signals": ["same signal"]},
+        {"attention_reason": "same setup"},
+        2,
+    ) is None
+
+
+def test_context_shift_evidence_captures_changed_sections() -> None:
+    prior = {
+        "version": 1,
+        "structural": {"summary": "same fundamentals"},
+        "narrative": {"recent_signals": ["old signal"]},
+        "market": {"attention_reason": "no current attention reason"},
+    }
+
+    item = _build_context_shift_evidence(
+        "MU",
+        prior,
+        {"summary": "same fundamentals"},
+        {
+            "recent_signals": ["MU HBM customer allocation improved"],
+            "analyst_trajectory": "Estimate revisions moved higher.",
+        },
+        {"attention_reason": "Watch MU because HBM demand is moving estimates."},
+        2,
+    )
+
+    assert item is not None
+    assert item["source_id"] == "context_shift:MU:v2"
+    assert item["summary"] == "MU context v2: MU HBM customer allocation improved"
+    assert item["source_ref"]["changed_sections"] == ["narrative", "market"]
+    assert item["source_ref"]["prior_version"] == 1
+    assert item["strength"] == 0.65
+
+
+class RecordingPool:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+    async def execute(self, sql: str, *args: object) -> str:
+        self.calls.append((sql, args))
+        return "INSERT 0 1"
+
+
+@pytest.mark.asyncio
+async def test_persist_context_upserts_context_shift_evidence_item() -> None:
+    pool = RecordingPool()
+    prior = {
+        "version": 1,
+        "structural": {"summary": "old"},
+        "narrative": {"recent_signals": ["old signal"]},
+        "market": {"attention_reason": "old setup"},
+    }
+
+    version = await _persist_context(
+        pool,  # type: ignore[arg-type]
+        "MU",
+        {"summary": "old"},
+        {"recent_signals": ["MU HBM customer allocation improved"]},
+        {"attention_reason": "Watch MU because HBM demand is moving estimates."},
+        1,
+        prior_context=prior,
+    )
+
+    assert version == 2
+    evidence_calls = [
+        (sql, args)
+        for sql, args in pool.calls
+        if "INSERT INTO evidence_item" in sql and "context_shift" in sql
+    ]
+    assert len(evidence_calls) == 1
+    _, args = evidence_calls[0]
+    assert args[0] == "MU"
+    assert args[2] == "context_shift:MU:v2"
+    assert json.loads(args[3])["changed_sections"] == ["narrative", "market"]
 
 
 def test_assess_evidence_requirements_reports_missing_inputs() -> None:

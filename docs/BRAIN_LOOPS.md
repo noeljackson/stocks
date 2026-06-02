@@ -653,14 +653,13 @@ Current gaps:
   adapters and attention retry/blocked transitions.
 - #130: product/theme web retrieval has a first GDELT/Bing-backed slice; paid
   semantic search may still be needed if recall is too weak.
-- #93: normalized evidence items now have a first slice. News, estimate
-  revisions, and analyst price-target events are backfilled and new ingest rows
-  create `evidence_item` records. Context and thesis prompts now receive those
-  facts directly, thesis drafting/reconciliation records `thesis_evidence`
-  links for the current fact set, and the thesis UI shows those linked facts.
-  The remaining work is producer coverage for filings, price action,
-  regime/context shifts, and more selective LLM-picked support/contradiction
-  labels.
+- #93: normalized evidence items cover news, estimate revisions, analyst
+  price-target events, discovery price action, product/theme web research, and
+  context shifts. Context and thesis prompts receive those facts directly,
+  thesis drafting/reconciliation records `thesis_evidence` links for the
+  current fact set, and the thesis UI shows those linked facts. Remaining work
+  is producer coverage for filings/regime changes and more selective
+  LLM-picked support/contradiction labels.
 
 Selected-symbol status now exposes the first slice of #128:
 

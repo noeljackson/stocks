@@ -807,7 +807,7 @@
 
   function normalizeSymbol(value: string | null | undefined): string | null {
     const symbol = (value ?? "").trim().toUpperCase();
-    if (!/^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol)) return null;
+    if (!/^(?=.{1,14}$)[A-Z0-9]+(?:[.-][A-Z0-9]+)*$/.test(symbol)) return null;
     return symbol;
   }
 

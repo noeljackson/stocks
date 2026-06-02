@@ -20,6 +20,7 @@ use stocks::ingest::fmp_opinion_service;
 use stocks::ingest::fred::FredAdapter;
 use stocks::ingest::massive_news::MassiveNewsAdapter;
 use stocks::ingest::news_service::{self, NewsIngestService, ScorerFn};
+use stocks::ingest::twse::TwseDailyAdapter;
 use stocks::ingest::xbrl::XbrlAdapter;
 use stocks::ingest::{self, rate_limit, source_health};
 use stocks::llm::prompts::load;
@@ -40,16 +41,16 @@ async fn main() -> Result<()> {
     bus.ensure_stream(subjects::STREAM_INGEST, &["ingest.*"])
         .await?;
 
-    // FMP price ingest (#60, #88). Per-ticker incremental backfill: 5y on
-    // first sight, 30d on subsequent polls. This follows the tiered deep
-    // universe so active names refresh first and top proposed candidates get
-    // enough data to graduate into research.
+    // Price ingest (#60, #88). FMP is primary; numeric `.TW` listings use
+    // TWSE's official no-key daily endpoint because FMP search knows them but
+    // the configured EOD entitlement rejects Taiwan price history.
     {
         let store = store.clone();
         let key = cfg.fmp_api_key.clone();
         let base = cfg.fmp_base_url.clone();
         tokio::spawn(async move {
             let adapter = FmpPriceAdapter::new(&key, &base);
+            let twse_adapter = TwseDailyAdapter::new("https://www.twse.com.tw");
             let interval = ingest::interval_secs_from_env("FMP_PRICE_INTERVAL_SECS", 30 * 60);
             loop {
                 // Tiered deep universe ∪ benchmarks.
@@ -84,10 +85,114 @@ async fn main() -> Result<()> {
                         .oldest_bar_per_symbol(&symbols)
                         .await
                         .unwrap_or_default();
-                    match adapter.poll_symbols(&symbols, &oldest).await {
+                    let (twse_symbols, fmp_symbols): (Vec<_>, Vec<_>) = symbols
+                        .iter()
+                        .cloned()
+                        .partition(|s| TwseDailyAdapter::supports_symbol(s));
+                    let mut total_rows_seen = 0_i64;
+                    let mut total_inserted = 0_i64;
+                    if !twse_symbols.is_empty() {
+                        match twse_adapter.poll_symbols(&twse_symbols, &oldest).await {
+                            Ok(rows) => {
+                                total_rows_seen += rows.len() as i64;
+                                let symbols_with_rows: Vec<String> = rows
+                                    .iter()
+                                    .map(|r| r.symbol.clone())
+                                    .collect::<std::collections::BTreeSet<_>>()
+                                    .into_iter()
+                                    .collect();
+                                match store.upsert_price_bars(&rows).await {
+                                    Ok(inserted) => {
+                                        total_inserted += inserted as i64;
+                                        if let Err(e) = store
+                                            .complete_source_tasks_for_attempt(
+                                                "fmp_price_backfill",
+                                                &twse_symbols,
+                                                &symbols_with_rows,
+                                                "ingest.fmp_price",
+                                                chrono::Duration::minutes(30),
+                                            )
+                                            .await
+                                        {
+                                            error!(error = %e, "twse source task completion failed");
+                                        }
+                                        info!(
+                                            symbols = twse_symbols.len(),
+                                            rows = rows.len(),
+                                            inserted,
+                                            "twse price batch complete"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        let message = e.to_string();
+                                        if let Err(task_err) = store
+                                            .fail_source_tasks_for_attempt(
+                                                "fmp_price_backfill",
+                                                &twse_symbols,
+                                                "ingest.fmp_price",
+                                                source_health::failure_kind(&message),
+                                                &message,
+                                                None,
+                                            )
+                                            .await
+                                        {
+                                            error!(error = %task_err, "twse source task failure record failed");
+                                        }
+                                        error!(error = %e, "twse price persist failed")
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let message = e.to_string();
+                                if let Err(task_err) = store
+                                    .fail_source_tasks_for_attempt(
+                                        "fmp_price_backfill",
+                                        &twse_symbols,
+                                        "ingest.fmp_price",
+                                        source_health::failure_kind(&message),
+                                        &message,
+                                        None,
+                                    )
+                                    .await
+                                {
+                                    error!(error = %task_err, "twse source task failure record failed");
+                                }
+                                error!(error = %e, "twse price poll failed")
+                            }
+                        }
+                    }
+                    if fmp_symbols.is_empty() {
+                        if let Err(e) = store
+                            .record_source_success(
+                                "fmp_price",
+                                total_rows_seen,
+                                total_inserted,
+                                symbols.len() as i32,
+                                0,
+                            )
+                            .await
+                        {
+                            error!(error = %e, "fmp_price source health success record failed");
+                        }
+                        info!(
+                            symbols = symbols.len(),
+                            rows = total_rows_seen,
+                            inserted = total_inserted,
+                            "fmp price pass complete"
+                        );
+                        tokio::time::sleep(interval).await;
+                        continue;
+                    }
+                    match adapter.poll_symbols(&fmp_symbols, &oldest).await {
                         Ok(rows) if rows.is_empty() => {
                             if let Err(e) = store
-                                .record_source_success("fmp_price", 0, 0, symbols.len() as i32, 0)
+                                .record_source_success(
+                                    "fmp_price",
+                                    total_rows_seen,
+                                    total_inserted,
+                                    symbols.len() as i32,
+                                    0,
+                                )
                                 .await
                             {
                                 error!(error = %e, "fmp_price source health success record failed");
@@ -95,7 +200,7 @@ async fn main() -> Result<()> {
                             if let Err(e) = store
                                 .complete_source_tasks_for_attempt(
                                     "fmp_price_backfill",
-                                    &symbols,
+                                    &fmp_symbols,
                                     &[],
                                     "ingest.fmp_price",
                                     chrono::Duration::minutes(30),
@@ -107,6 +212,8 @@ async fn main() -> Result<()> {
                         }
                         Ok(rows) => match store.upsert_price_bars(&rows).await {
                             Ok(inserted) => {
+                                total_rows_seen += rows.len() as i64;
+                                total_inserted += inserted as i64;
                                 let symbols_with_rows: Vec<String> = rows
                                     .iter()
                                     .map(|r| r.symbol.clone())
@@ -116,8 +223,8 @@ async fn main() -> Result<()> {
                                 if let Err(e) = store
                                     .record_source_success(
                                         "fmp_price",
-                                        rows.len() as i64,
-                                        inserted as i64,
+                                        total_rows_seen,
+                                        total_inserted,
                                         symbols.len() as i32,
                                         0,
                                     )
@@ -128,7 +235,7 @@ async fn main() -> Result<()> {
                                 if let Err(e) = store
                                     .complete_source_tasks_for_attempt(
                                         "fmp_price_backfill",
-                                        &symbols,
+                                        &fmp_symbols,
                                         &symbols_with_rows,
                                         "ingest.fmp_price",
                                         chrono::Duration::minutes(30),
@@ -139,8 +246,8 @@ async fn main() -> Result<()> {
                                 }
                                 info!(
                                     symbols = symbols.len(),
-                                    rows = rows.len(),
-                                    inserted,
+                                    rows = total_rows_seen,
+                                    inserted = total_inserted,
                                     "fmp price pass complete"
                                 )
                             }
@@ -160,7 +267,7 @@ async fn main() -> Result<()> {
                                 if let Err(task_err) = store
                                     .fail_source_tasks_for_attempt(
                                         "fmp_price_backfill",
-                                        &symbols,
+                                        &fmp_symbols,
                                         "ingest.fmp_price",
                                         source_health::failure_kind(&message),
                                         &message,
@@ -195,7 +302,7 @@ async fn main() -> Result<()> {
                             if let Err(task_err) = store
                                 .fail_source_tasks_for_attempt(
                                     "fmp_price_backfill",
-                                    &symbols,
+                                    &fmp_symbols,
                                     "ingest.fmp_price",
                                     source_health::failure_kind(&message),
                                     &message,

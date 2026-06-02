@@ -28,7 +28,7 @@ from .prompts import AsyncpgRecorder, invoke, load
 
 log = logging.getLogger("brain_maintainer")
 
-SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+SYMBOL_RE = re.compile(r"^(?=.{1,14}$)[A-Z0-9]+(?:[.\-][A-Z0-9]+)*$")
 SOURCE_FRESHNESS_MINUTES = 90
 COMMODITY_PRICE_REQUIREMENT_PARTS = (
     "commodity_price",

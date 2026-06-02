@@ -86,7 +86,7 @@ ingestion (Rust) ─ingest.*→ JetStream ─→ context maintainer (Py, LLM)
 
 Streams (JetStream, file-backed): `INGEST` (ingest.*), `MARKET` (regime.*,
 discovery.*), `THESIS` (thesis.*), `DECISIONS` (risk.*, decision.*), `TICKER`
-(route.ticker.*), `CONTEXT` (context.*). Each consumer is a named durable
+(route.ticker.>), `CONTEXT` (context.*). Each consumer is a named durable
 (e.g. `regime-classifier`, `gateway-thesis-alerts`) with explicit ack and
 bounded redelivery.
 
@@ -129,7 +129,7 @@ src/
   ingest/       adapter trait + EDGAR + FRED
   llm/          provider trait (mock | anthropic | openai_compat)
   regime/       deterministic macro classifier (SPEC §4)
-  router/       fan-out: ingest.* → route.ticker.*
+  router/       fan-out: ingest.* → route.ticker.>
   risk/         risk overlay (SPEC §7) — pure Evaluate + service
   goalpost/     thesis integrity guard (SPEC §5.3)
   thesis/       substance/state-machine helpers

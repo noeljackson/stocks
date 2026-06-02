@@ -29,29 +29,39 @@ pub fn extract_symbol(payload: &[u8]) -> Option<String> {
 
 #[must_use]
 pub fn route_subject(symbol: &str) -> String {
-    format!("route.ticker.{symbol}")
+    subjects::ticker_route(symbol)
 }
 
 /// Run the router service: ensures the TICKER stream, binds a durable
 /// consumer on INGEST/ingest.*, and republishes events with a ticker to
-/// route.ticker.<SYMBOL>. Market-wide events ack-and-drop.
+/// route.ticker.<SYMBOL>. Market-wide events ack-and-drop. The stream filter
+/// is multi-token so exchange suffixes like 2454.TW are routed.
 pub async fn run(bus: Bus) -> Result<ConsumerHandle> {
-    bus.ensure_stream(subjects::STREAM_TICKER, &["route.ticker.*"])
+    bus.ensure_stream(subjects::STREAM_TICKER, &[subjects::TICKER_ROUTE_FILTER])
         .await?;
     let bus = Arc::new(bus);
     let publisher = bus.clone();
     let handle = bus
-        .consume(subjects::STREAM_INGEST, "event-router", "ingest.*", move |msg| {
-            let publisher = publisher.clone();
-            async move {
-                let Some(sym) = extract_symbol(&msg.payload) else {
-                    return Ok(());
-                };
-                publisher.publish(&route_subject(&sym), &msg.payload).await
-            }
-        })
+        .consume(
+            subjects::STREAM_INGEST,
+            "event-router",
+            "ingest.*",
+            move |msg| {
+                let publisher = publisher.clone();
+                async move {
+                    let Some(sym) = extract_symbol(&msg.payload) else {
+                        return Ok(());
+                    };
+                    publisher.publish(&route_subject(&sym), &msg.payload).await
+                }
+            },
+        )
         .await?;
-    info!(stream = subjects::STREAM_INGEST, filter = "ingest.*", "router consuming");
+    info!(
+        stream = subjects::STREAM_INGEST,
+        filter = "ingest.*",
+        "router consuming"
+    );
     Ok(handle)
 }
 
@@ -76,6 +86,14 @@ mod tests {
     #[test]
     fn extract_accepts_symbol_key() {
         assert_eq!(extract_symbol(br#"{"symbol":"MU"}"#), Some("MU".into()));
+    }
+
+    #[test]
+    fn extract_exchange_suffix_symbol_normalizes() {
+        assert_eq!(
+            extract_symbol(br#"{"symbol":" 2454.tw "}"#),
+            Some("2454.TW".into())
+        );
     }
 
     #[test]
@@ -109,5 +127,6 @@ mod tests {
     #[test]
     fn route_subject_format() {
         assert_eq!(route_subject("NVDA"), "route.ticker.NVDA");
+        assert_eq!(route_subject("2454.TW"), "route.ticker.2454.TW");
     }
 }

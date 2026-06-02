@@ -148,7 +148,7 @@ run-ingest: ## Run the ingestion runner (EDGAR + FRED)
 run-regime: ## Run the macro regime classifier
 	$(RUN) cargo run --release --bin regime
 
-run-router: ## Run the event router (ingest.* → route.ticker.*)
+run-router: ## Run the event router (ingest.* → route.ticker.>)
 	$(RUN) cargo run --release --bin router
 
 run-risk: ## Run the risk overlay (thesis.actionable → risk.veto/warning)

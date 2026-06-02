@@ -1,4 +1,4 @@
-//! Event router: ingest.* → route.ticker.*
+//! Event router: ingest.* → route.ticker.>
 
 use anyhow::Result;
 use stocks::platform::{bus::Bus, config::Config, logging};

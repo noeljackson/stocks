@@ -73,10 +73,20 @@ impl Bus {
             retention: RetentionPolicy::Limits,
             ..Default::default()
         };
-        self.js
+        let stream = self
+            .js
             .get_or_create_stream(cfg)
             .await
             .map_err(|e| anyhow::anyhow!("ensure_stream {name}: {e}"))?;
+        let expected_subjects: Vec<String> = subjects.iter().map(|&s| s.to_string()).collect();
+        let mut current_cfg = stream.cached_info().config.clone();
+        if current_cfg.subjects != expected_subjects {
+            current_cfg.subjects = expected_subjects;
+            self.js
+                .update_stream(&current_cfg)
+                .await
+                .map_err(|e| anyhow::anyhow!("update_stream {name}: {e}"))?;
+        }
         Ok(())
     }
 

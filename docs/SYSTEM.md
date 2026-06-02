@@ -347,7 +347,7 @@ write durable state to Postgres.
         +-------+------------+------------+
                 |            |
                 v            v
-          route.ticker.*   regime.*
+          route.ticker.>   regime.*
                 |            |
                 v            v
         ticker context   market_state
@@ -418,6 +418,7 @@ consume without knowing every vendor shape.
 ingest.*
   -> route.ticker.NVDA
   -> route.ticker.AMD
+  -> route.ticker.2454.TW
   -> route.market
 ```
 

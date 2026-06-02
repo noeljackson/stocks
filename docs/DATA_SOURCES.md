@@ -18,6 +18,9 @@ file an issue and link it from the relevant row's "status" column.
 - **Massive Stocks Starter** ($29/mo) — kept for: news with per-article sentiment (where FMP has no equivalent)
 - **SEC EDGAR** (free) — XBRL company facts, insider transactions, 13F holdings
 - **FRED** (free) — macro economic series, credit spreads, VIX history
+- **TWSE** (free, no key) — official daily OHLCV fallback for numeric Taiwan
+  listings such as `2454.TW` when FMP search resolves the symbol but EOD
+  history is entitlement-gated
 - **GDELT Doc 2.0** (free, no key) + **Bing News RSS** (free, no key) —
   fallback web/news search for product and theme evidence that vendor
   symbol-news misses
@@ -31,7 +34,7 @@ file an issue and link it from the relevant row's "status" column.
 
 | Data | Why | Vendor | Tier / cost | Endpoint | Status |
 |---|---|---|---|---|---|
-| Daily OHLCV bars | Discovery signals (volume_anomaly, base_breakout), evaluator (`SYMBOL.close`), consensus price_extension component | **FMP** (primary) | Starter $22/mo | `/stable/historical-price-eod/full?symbol=&from=&to=` returns OHLCV + change + vwap. 5+ yrs adjusted history. | wired — `src/ingest/fmp.rs`; tiered deep universe plus benchmarks |
+| Daily OHLCV bars | Discovery signals (volume_anomaly, base_breakout), evaluator (`SYMBOL.close`), consensus price_extension component | **FMP** primary; **TWSE** fallback for numeric `.TW` symbols | FMP Starter $22/mo; TWSE free/no key | FMP `/stable/historical-price-eod/full?symbol=&from=&to=`; TWSE `/exchangeReport/STOCK_DAY?response=json&date=&stockNo=` monthly bars | wired — `src/ingest/fmp.rs` plus `src/ingest/twse.rs`; tiered deep universe plus benchmarks; `.TW` price history uses TWSE so symbols like `2454.TW` can chart and enter technical analysis |
 | Intraday bars (1m/5m/15m/30m/1h/4h) | TradingView-style chart intervals; 3m/2h are aggregated from native bars | FMP | Same plan | `/stable/historical-chart/{interval}` | wired — `src/ingest/fmp_intraday.rs` |
 | Company screener / discovery pool | Broad radar for liquid equities across technology, financials, staples/agriculture, energy, materials/metals, healthcare, industrials, real estate, utilities, consumer, and communications | FMP | Starter | `/stable/company-screener` by sector slice | wired — `src/ingest/fmp_screener.rs`; creates `research_nomination` candidates with explicit sector/theme/business/evidence reasons for unreviewed pool names |
 | Commodity/factor proxy bars | First slice for copper/wheat/factor parent theses via tradable proxies such as CPER, WEAT, and XME | FMP | Starter | same EOD/intraday endpoints as equities/ETFs | wired as price bars when proxies are active tickers; direct futures/inventory/USDA/weather remain separate gaps |

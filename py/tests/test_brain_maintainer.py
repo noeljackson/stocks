@@ -12,12 +12,15 @@ from stocks.brain_maintainer import (
 
 
 def test_symbols_from_json_normalizes_and_filters_symbols() -> None:
-    assert symbols_from_json([" nvda ", "$amd", "bad symbol", 123, "NVDA", "BRK.B"]) == [
+    symbols = [" nvda ", "$amd", "$2454.tw", "bad symbol", 123, "NVDA", "BRK.B"]
+    assert symbols_from_json(symbols) == [
         "NVDA",
         "AMD",
+        "2454.TW",
         "BRK.B",
     ]
     assert normalize_symbol("too-long-symbol") is None
+    assert normalize_symbol(".TW") is None
 
 
 def test_theme_update_marks_active_when_linked_coverage_is_complete() -> None:

@@ -3514,6 +3514,7 @@ async fn insert_decision_replay(
                                'polarity', ei.polarity,
                                'url', ei.url,
                                'created_at', ei.created_at,
+                               'updated_at', ei.updated_at,
                                'weight', te.weight,
                                'added_by', te.added_by
                              )

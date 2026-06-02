@@ -106,7 +106,7 @@ async def _load_evidence_items(
 ) -> list[dict]:
     rows = await pool.fetch(
         """SELECT id, kind, observed_at, source, source_id, source_ref,
-                  summary, strength, polarity, url
+                  summary, strength, polarity, url, updated_at
              FROM evidence_item
             WHERE symbol = $1
               AND NOT (
@@ -134,6 +134,7 @@ async def _load_evidence_items(
             "strength": None if row["strength"] is None else float(row["strength"]),
             "polarity": None if row["polarity"] is None else float(row["polarity"]),
             "url": row["url"],
+            "updated_at": row["updated_at"].isoformat(),
             "source_ref": source_ref,
         })
     return out

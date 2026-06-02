@@ -109,6 +109,11 @@ Raw vendor tables, `ingest_event` rows, `market_state` rows, and
 `ticker_context` versions remain the audit source; `evidence_item` is the
 operator/cognition-facing fact stream.
 
+`evidence_item.observed_at` is when the underlying market/company fact happened.
+`created_at` is when the fact first entered the normalized stream. `updated_at`
+advances when an existing fact is refreshed, rescored, or merged with new
+source details; the cognition sweep uses that as the evidence-delta clock.
+
 ## 4. News + per-article sentiment
 
 Two-source strategy: ingest from both vendors, dedupe by URL/title, sentiment

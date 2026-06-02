@@ -250,7 +250,8 @@ async def test_insert_result_upserts_product_research_evidence_item_on_refresh()
     assert insert_source_ref["relevance"]["accepted"] is True
     assert insert_source_ref["relevance"]["score"] == 0.9
     assert len(pool.execute_calls) == 1
-    _, args = pool.execute_calls[0]
+    sql, args = pool.execute_calls[0]
+    assert "updated_at = now()" in sql
     source_ref = json.loads(args[4])
     assert args[0] == "AMD"
     assert args[1] == published_at

@@ -636,7 +636,7 @@ async def _load_parent_context(pool: asyncpg.Pool, thesis: dict[str, Any]) -> di
     if symbols:
         evidence_rows = await pool.fetch(
             """SELECT id, symbol, kind, observed_at, source, source_id,
-                      summary, strength, polarity, url
+                      summary, strength, polarity, url, updated_at
                  FROM evidence_item
                 WHERE symbol = ANY($1::text[])
                   AND NOT (
@@ -660,6 +660,7 @@ async def _load_parent_context(pool: asyncpg.Pool, thesis: dict[str, Any]) -> di
                 "strength": None if row["strength"] is None else float(row["strength"]),
                 "polarity": None if row["polarity"] is None else float(row["polarity"]),
                 "url": row["url"],
+                "updated_at": _iso(row["updated_at"]),
             })
 
     return {

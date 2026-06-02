@@ -610,7 +610,7 @@ async def _sweep_targets(
              GROUP BY target_id
            ), latest_evidence_item AS (
                SELECT symbol,
-                      max(created_at) AS latest_evidence_item_at,
+                      max(updated_at) AS latest_evidence_item_at,
                       count(*) AS normalized_evidence_rows
                  FROM evidence_item
                 WHERE NOT (

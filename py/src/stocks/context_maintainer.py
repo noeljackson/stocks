@@ -357,7 +357,7 @@ async def _load_evidence_items(
     if since is None:
         rows = await pool.fetch(
             """SELECT id, kind, observed_at, source, source_id, source_ref,
-                      summary, strength, polarity, url
+                      summary, strength, polarity, url, updated_at
                  FROM evidence_item
                 WHERE symbol = $1
                   AND NOT (
@@ -373,9 +373,10 @@ async def _load_evidence_items(
     else:
         rows = await pool.fetch(
             """SELECT id, kind, observed_at, source, source_id, source_ref,
-                      summary, strength, polarity, url
+                      summary, strength, polarity, url, updated_at
                  FROM evidence_item
-                WHERE symbol = $1 AND observed_at > $2
+                WHERE symbol = $1
+                  AND (observed_at > $2 OR updated_at > $2)
                   AND NOT (
                       kind = 'product_research'
                       AND source = 'web_research'
@@ -402,6 +403,7 @@ async def _load_evidence_items(
             "strength": _f(r["strength"]),
             "polarity": _f(r["polarity"]),
             "url": r["url"],
+            "updated_at": r["updated_at"].isoformat(),
             "source_ref": source_ref,
         })
     return out
@@ -654,7 +656,8 @@ async def _persist_context(
                  source_ref = evidence_item.source_ref || EXCLUDED.source_ref,
                  summary = EXCLUDED.summary,
                  strength = EXCLUDED.strength,
-                 polarity = EXCLUDED.polarity""",
+                 polarity = EXCLUDED.polarity,
+                 updated_at = now()""",
             symbol,
             now,
             evidence["source_id"],

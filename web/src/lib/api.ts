@@ -98,6 +98,17 @@ export interface ThesisSubstance {
   missing: string[];
   blocked_at: string | null;
   well_formed: WellFormedCondCounts;
+  freshness_score?: number;
+  freshness_status?: string;
+  confidence_cap?: string | null;
+  freshness_penalties?: string[];
+  freshness_components?: {
+    name: string;
+    status: string;
+    score: number;
+    last_at?: string | null;
+    reason: string;
+  }[];
 }
 
 export interface ThesisDetail {

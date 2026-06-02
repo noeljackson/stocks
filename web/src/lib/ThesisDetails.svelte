@@ -43,6 +43,9 @@
 
   // Substance checklist (#10): which structural slots are filled.
   let sub = $derived(thesis.substance);
+  let freshnessPct = $derived(
+    sub?.freshness_score === undefined ? null : Math.round(sub.freshness_score * 100)
+  );
   let slotState = $derived.by(() => {
     const wf = sub?.well_formed ?? { conviction: 0, trigger: 0, invalidation: 0, fulfillment: 0 };
     const missing = new Set(sub?.missing ?? []);
@@ -179,6 +182,14 @@
         {:else}
           <span class="badge ok">complete — all gates pass</span>
         {/if}
+        {#if freshnessPct !== null}
+          <span class={`badge freshness-${sub.freshness_status ?? "missing"}`}>
+            freshness {freshnessPct}%
+          </span>
+        {/if}
+        {#if sub.confidence_cap}
+          <span class="badge warn">confidence capped at {sub.confidence_cap}</span>
+        {/if}
       </div>
       <ul class="slots">
         {#each slotState as s (s.key)}
@@ -188,6 +199,25 @@
           </li>
         {/each}
       </ul>
+      {#if sub.freshness_components?.length}
+        <ul class="freshness-components">
+          {#each sub.freshness_components as component (component.name)}
+            <li class:weak={component.score < 0.85}>
+              <strong>{component.name}</strong>
+              <span>{component.status}</span>
+              <span>{Math.round(component.score * 100)}%</span>
+              <span class="muted">{component.reason}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      {#if sub.freshness_penalties?.length}
+        <ul class="freshness-penalties">
+          {#each sub.freshness_penalties as penalty (penalty)}
+            <li>{penalty}</li>
+          {/each}
+        </ul>
+      {/if}
     </div>
   {/if}
 
@@ -371,6 +401,15 @@
   .badge.tiny { font-size: 0.65rem; text-transform: uppercase; }
   .badge.danger { background: rgba(243, 139, 168, 0.18); color: rgb(243, 139, 168); }
   .badge.ok { background: rgba(166, 227, 161, 0.15); color: rgb(166, 227, 161); }
+  .badge.warn,
+  .badge.freshness-stale,
+  .badge.freshness-limited,
+  .badge.freshness-missing {
+    background: rgba(249, 226, 175, 0.15); color: rgb(249, 226, 175);
+  }
+  .badge.freshness-fresh {
+    background: rgba(166, 227, 161, 0.15); color: rgb(166, 227, 161);
+  }
 
   .linked-evidence {
     list-style: none; padding: 0; margin: 0.25rem 0 0.75rem 0;
@@ -420,4 +459,23 @@
   .slots li.on { color: #a6e3a1; }
   .slots li.off { color: #f38ba8; }
   .slots li .muted { margin-left: 0.4rem; }
+  .freshness-components,
+  .freshness-penalties {
+    list-style: none; padding: 0; margin: 0.55rem 0 0 0;
+    display: grid; gap: 0.25rem;
+    font-size: 0.8rem;
+  }
+  .freshness-components li {
+    display: grid; grid-template-columns: 6rem 4.5rem 3rem 1fr; gap: 0.5rem;
+    background: #11161f; border: 1px solid #1f2733; border-radius: 4px;
+    padding: 0.3rem 0.45rem;
+  }
+  .freshness-components li.weak { border-color: rgba(249, 226, 175, 0.32); }
+  .freshness-penalties li {
+    color: #f9e2af;
+  }
+  @media (max-width: 700px) {
+    .freshness-components li { grid-template-columns: 1fr 4.5rem 3rem; }
+    .freshness-components li .muted { grid-column: 1 / -1; }
+  }
 </style>

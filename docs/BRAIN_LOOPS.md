@@ -776,7 +776,11 @@ Current gaps:
   attached to thesis/context/chat prompt inputs.
 - #141: reconciliation history needs a clearer operator-facing timeline.
 - #96: theses should declare known unknowns.
-- #97: stale evidence should reduce confidence, not just show as a warning.
+- #97: thesis detail now computes deterministic input freshness from market
+  source checks, ticker context age, estimate age, and recent-news coverage.
+  The score, component penalties, and confidence cap are shown beside the
+  structural substance checklist, and promotion into `actionable` is blocked
+  below the high-confidence freshness threshold.
 - #90: separate system confidence from human conviction.
 - #13: challenge pass needs clearer surfaced adversarial flags.
 

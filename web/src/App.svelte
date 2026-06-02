@@ -59,6 +59,7 @@
     type TickerContext,
     type Watchlist,
     type WatchlistMember,
+    type WatchlistParentTheme,
   } from "./lib/api";
   import AnalystPanel from "./lib/AnalystPanel.svelte";
   import ContextPanel from "./lib/ContextPanel.svelte";
@@ -627,8 +628,12 @@
   let newListName = $state("");
   let addSymbolFor = $state<Record<string, string>>({});
   let expandedListIds = $state<Record<string, boolean>>({});
-  let watchlistThesisFilter = $state("all");
+  let watchlistStatusFilter = $state("all");
+  let watchlistDirectionFilter = $state("all");
   let watchlistTechnicalFilter = $state("all");
+  let watchlistFreshnessFilter = $state("all");
+  let watchlistAttentionFilter = $state("all");
+  let watchlistThemeFilter = $state("all");
 
   // ---------- decision form (in bottom drawer) ----------
   let decThesisId = $state("");
@@ -673,6 +678,14 @@
       entry_stance: t.entry_stance,
       technical_pct_vs_200d: t.technical_pct_vs_200d,
       open_theses: t.open_theses,
+      freshness_status: t.freshness_status,
+      open_attention: t.open_attention,
+      attention_states: t.attention_states,
+      attention_owners: t.attention_owners,
+      open_evidence: t.open_evidence,
+      blocking_evidence: t.blocking_evidence,
+      due_source_tasks: t.due_source_tasks,
+      parent_themes: t.parent_themes,
     })),
   );
 
@@ -702,9 +715,40 @@
       entry_stance: p.entry_stance,
       technical_pct_vs_200d: p.technical_pct_vs_200d,
       open_theses: p.open_theses ?? 0,
+      freshness_status: p.freshness_status,
+      open_attention: p.open_attention,
+      attention_states: p.attention_states,
+      attention_owners: p.attention_owners,
+      open_evidence: p.open_evidence,
+      blocking_evidence: p.blocking_evidence,
+      due_source_tasks: p.due_source_tasks,
+      parent_themes: p.parent_themes,
     })),
   );
   let allWatchlists = $derived<Watchlist[]>([...watchlists, universeList, poolList]);
+  let watchlistThemeOptions = $derived.by<WatchlistParentTheme[]>(() => {
+    const map = new Map<string, WatchlistParentTheme>();
+    const remember = (theme: WatchlistParentTheme) => {
+      if (!theme.key || map.has(theme.key)) return;
+      map.set(theme.key, theme);
+    };
+    for (const thesis of brainOverview?.sectors ?? []) {
+      remember({
+        key: thesis.key,
+        name: thesis.name,
+        scope: thesis.scope,
+        state: thesis.state,
+        direction: thesis.direction,
+        role: "parent",
+        conviction: null,
+      });
+    }
+    for (const members of Object.values(watchlistMembers)) {
+      for (const m of members) for (const theme of m.parent_themes ?? []) remember(theme);
+    }
+    for (const m of universeMembers) for (const theme of m.parent_themes ?? []) remember(theme);
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+  });
 
   // ---------- helpers ----------
   function regimeColor(r: string | undefined): string {
@@ -785,6 +829,24 @@
     return state ? state.replace(/_/g, " ") : "no thesis";
   }
 
+  function freshnessLabel(status: string | null | undefined): string {
+    return status ? status.replace(/_/g, " ") : "missing";
+  }
+
+  function freshnessClass(status: string | null | undefined): string {
+    return `fresh-${status ?? "missing"}`;
+  }
+
+  function freshnessTitle(m: WatchlistMember): string {
+    const parts = [
+      `${freshnessLabel(m.freshness_status)} brain inputs`,
+      `${m.open_evidence ?? 0} open evidence`,
+      `${m.blocking_evidence ?? 0} blocking evidence`,
+      `${m.due_source_tasks ?? 0} due source tasks`,
+    ];
+    return parts.join(" · ");
+  }
+
   function thesisDirectionLabel(direction: string | null | undefined): string {
     if (direction === "up") return "bull";
     if (direction === "down") return "bear";
@@ -811,6 +873,46 @@
 
   function entryStanceClass(stance: string | null | undefined): string {
     return `stance-${stance ?? "none"}`;
+  }
+
+  function themesForMember(m: WatchlistMember): WatchlistParentTheme[] {
+    if (m.parent_themes?.length) return m.parent_themes;
+    const matches: WatchlistParentTheme[] = [];
+    for (const thesis of brainOverview?.sectors ?? []) {
+      const linked = thesis.tickers.find((t) => t.symbol === m.symbol);
+      if (!linked) continue;
+      matches.push({
+        key: thesis.key,
+        name: thesis.name,
+        scope: thesis.scope,
+        state: thesis.state,
+        direction: thesis.direction,
+        role: linked.role,
+        conviction: linked.conviction ?? null,
+      });
+    }
+    return matches;
+  }
+
+  function themeShortName(theme: WatchlistParentTheme): string {
+    return theme.name
+      .replace(/\btheme\b/gi, "")
+      .replace(/\bsector\b/gi, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function hasAttentionOwner(m: WatchlistMember, owner: string): boolean {
+    return (m.attention_owners ?? []).some((item) => item.owner === owner && item.count > 0);
+  }
+
+  function hasAttentionState(m: WatchlistMember, state: string): boolean {
+    return (m.attention_states ?? []).some((item) => item.state === state && item.count > 0);
+  }
+
+  function attentionLabel(m: WatchlistMember): string {
+    const n = m.open_attention ?? 0;
+    return n === 1 ? "1 attention" : `${n} attention`;
   }
 
   function pctCompact(value: number | null | undefined): string {
@@ -850,16 +952,60 @@
 
   function filteredMembersFor(listId: string): WatchlistMember[] {
     return membersFor(listId).filter((m) => {
-      if (watchlistThesisFilter !== "all") {
+      if (watchlistStatusFilter !== "all") {
+        const status = m.thesis_state ?? "none";
+        if (status !== watchlistStatusFilter) return false;
+      }
+      if (watchlistDirectionFilter !== "all") {
         const direction = m.thesis_direction ?? "none";
-        if (direction !== watchlistThesisFilter) return false;
+        if (direction !== watchlistDirectionFilter) return false;
       }
       if (watchlistTechnicalFilter !== "all") {
         const state = m.technical_state ?? "unknown";
         if (state !== watchlistTechnicalFilter) return false;
       }
+      if (watchlistFreshnessFilter !== "all") {
+        const freshness = m.freshness_status ?? "missing";
+        if (watchlistFreshnessFilter === "stale_missing") {
+          if (!["stale", "missing", "blocked"].includes(freshness)) return false;
+        } else if (freshness !== watchlistFreshnessFilter) {
+          return false;
+        }
+      }
+      if (watchlistAttentionFilter !== "all") {
+        if (watchlistAttentionFilter === "open") {
+          if ((m.open_attention ?? 0) <= 0) return false;
+        } else if (watchlistAttentionFilter.startsWith("owner:")) {
+          if (!hasAttentionOwner(m, watchlistAttentionFilter.slice("owner:".length))) return false;
+        } else if (watchlistAttentionFilter.startsWith("state:")) {
+          if (!hasAttentionState(m, watchlistAttentionFilter.slice("state:".length))) return false;
+        }
+      }
+      if (watchlistThemeFilter !== "all") {
+        if (!themesForMember(m).some((theme) => theme.key === watchlistThemeFilter)) return false;
+      }
       return true;
     });
+  }
+
+  function resetWatchlistFilters() {
+    watchlistStatusFilter = "all";
+    watchlistDirectionFilter = "all";
+    watchlistTechnicalFilter = "all";
+    watchlistFreshnessFilter = "all";
+    watchlistAttentionFilter = "all";
+    watchlistThemeFilter = "all";
+  }
+
+  function watchlistFiltersActive(): boolean {
+    return [
+      watchlistStatusFilter,
+      watchlistDirectionFilter,
+      watchlistTechnicalFilter,
+      watchlistFreshnessFilter,
+      watchlistAttentionFilter,
+      watchlistThemeFilter,
+    ].some((value) => value !== "all");
   }
 
   function normalizeSymbol(value: string | null | undefined): string | null {
@@ -2075,8 +2221,17 @@
           <button type="submit" disabled={!newListName.trim()}>add</button>
         </form>
         <div class="wl-filters">
-          <select bind:value={watchlistThesisFilter} aria-label="Thesis filter">
-            <option value="all">all theses</option>
+          <select bind:value={watchlistStatusFilter} aria-label="Thesis status filter">
+            <option value="all">all statuses</option>
+            <option value="forming">forming</option>
+            <option value="building_conviction">building conviction</option>
+            <option value="armed">armed</option>
+            <option value="actionable">actionable</option>
+            <option value="position_open">position open</option>
+            <option value="none">no thesis</option>
+          </select>
+          <select bind:value={watchlistDirectionFilter} aria-label="Thesis direction filter">
+            <option value="all">all directions</option>
             <option value="up">bull</option>
             <option value="down">bear</option>
             <option value="neutral">neutral</option>
@@ -2090,6 +2245,37 @@
             <option value="deteriorating">deteriorating</option>
             <option value="unknown">unknown</option>
           </select>
+          <select bind:value={watchlistFreshnessFilter} aria-label="Freshness filter">
+            <option value="all">all freshness</option>
+            <option value="fresh">fresh</option>
+            <option value="stale_missing">stale/missing</option>
+            <option value="blocked">blocked</option>
+          </select>
+          <select bind:value={watchlistAttentionFilter} aria-label="Attention filter">
+            <option value="all">all attention</option>
+            <option value="open">open attention</option>
+            <option value="owner:operator">owner operator</option>
+            <option value="owner:source">owner source</option>
+            <option value="owner:cognition">owner cognition</option>
+            <option value="state:ready_for_review">ready review</option>
+            <option value="state:waiting_on_data">waiting data</option>
+            <option value="state:actionable">actionable</option>
+            <option value="state:blocked">blocked</option>
+          </select>
+          <select bind:value={watchlistThemeFilter} aria-label="Parent brain theme filter">
+            <option value="all">all themes</option>
+            {#each watchlistThemeOptions as theme (theme.key)}
+              <option value={theme.key}>{themeShortName(theme)}</option>
+            {/each}
+          </select>
+          <button
+            type="button"
+            class="wl-reset"
+            class:active={watchlistFiltersActive()}
+            disabled={!watchlistFiltersActive()}
+            onclick={resetWatchlistFilters}
+            title="clear watchlist filters"
+          >reset</button>
         </div>
         <ul class="wl-list">
           {#each allWatchlists as w (w.id)}
@@ -2118,6 +2304,7 @@
                 {/if}
                 <ul class="wl-members">
                   {#each members as m (m.symbol)}
+                    {@const themes = themesForMember(m)}
                     <li
                       class="wl-mem"
                       class:active={selectedSymbol === m.symbol}
@@ -2136,6 +2323,19 @@
                         <span class={`badge tiny ${entryStanceClass(m.entry_stance)}`}>
                           {entryStanceLabel(m.entry_stance)}
                         </span>
+                        <span class={`badge tiny ${freshnessClass(m.freshness_status)}`} title={freshnessTitle(m)}>
+                          {freshnessLabel(m.freshness_status)}
+                        </span>
+                        {#if (m.open_attention ?? 0) > 0}
+                          <span class="badge tiny att-open" title={attentionLabel(m)}>
+                            {m.open_attention}
+                          </span>
+                        {/if}
+                        {#if themes.length > 0}
+                          <span class="badge tiny theme" title={themes.map(themeShortName).join(" · ")}>
+                            {themeShortName(themes[0])}
+                          </span>
+                        {/if}
                         {#if pctCompact(m.technical_pct_vs_200d)}
                           <span class="muted wl-distance">{pctCompact(m.technical_pct_vs_200d)} 200D</span>
                         {/if}
@@ -2682,13 +2882,20 @@
     border-radius: 4px; padding: .2rem .35rem; font: inherit; font-size: .8rem;
   }
   .wl-filters {
-    display: grid; grid-template-columns: 1fr 1fr; gap: .35rem;
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .35rem;
     margin-bottom: .35rem;
   }
   .wl-filters select {
     min-width: 0; background: #0a0d14; color: #cdd6f4; border: 1px solid #2a3548;
     border-radius: 4px; padding: .2rem .3rem; font: inherit; font-size: .72rem;
   }
+  .wl-reset {
+    min-width: 0; background: transparent; color: #6c7693; border: 1px solid #2a3548;
+    border-radius: 4px; padding: .2rem .3rem; font: inherit; font-size: .72rem;
+    cursor: pointer;
+  }
+  .wl-reset.active { color: #cdd6f4; border-color: #45567a; }
+  .wl-reset:disabled { cursor: default; opacity: .45; }
   .wl-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .15rem; }
   .wl-row {
     width: 100%; display: flex; gap: .35rem; align-items: baseline; cursor: pointer;
@@ -2711,6 +2918,9 @@
     text-align: left; padding: 0; cursor: pointer;
   }
   .wl-mem-select strong { flex: 1 0 3.8rem; }
+  .wl-mem-select .badge.theme {
+    max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .wl-distance { font-size: .68rem; white-space: nowrap; }
   .wl-thesis-state {
     color: #9aa3b8; font-size: .68rem; text-transform: lowercase;
@@ -3210,6 +3420,12 @@
   .badge.tech-extended { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
   .badge.tech-deteriorating { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
   .badge.tech-unknown { background: rgba(108,112,134,.2); color: #9aa3b8; }
+  .badge.fresh-fresh { background: rgba(166,227,161,.16); color: rgb(166,227,161); }
+  .badge.fresh-stale,
+  .badge.fresh-missing { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
+  .badge.fresh-blocked { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
+  .badge.att-open { background: rgba(137,180,250,.16); color: rgb(137,180,250); }
+  .badge.theme { background: rgba(180,190,254,.14); color: rgb(180,190,254); }
 
   /* Attention queue (#86) — grouped card design */
   .att-toolbar { display: flex; gap: .5rem; align-items: baseline; margin-bottom: .5rem; flex-wrap: wrap; }

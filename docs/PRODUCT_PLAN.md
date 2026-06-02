@@ -599,7 +599,9 @@ The thesis detail response carries `substance.freshness_score`,
 `confidence_cap`. A thesis can be structurally complete while freshness caps it
 at medium/low. Promotion into `actionable` is blocked when the freshness score
 is below the high-confidence threshold, so stale evidence cannot silently become
-a trade recommendation.
+a trade recommendation. The staleness loop also emits `context_stale` attention
+when an actionable-or-later thesis depends on narrative context older than 30
+days.
 
 The system should never create multiple open theses for MU or any other symbol.
 New facts reconcile into the canonical current thesis and show as a timeline.

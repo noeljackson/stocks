@@ -780,7 +780,9 @@ Current gaps:
   source checks, ticker context age, estimate age, and recent-news coverage.
   The score, component penalties, and confidence cap are shown beside the
   structural substance checklist, and promotion into `actionable` is blocked
-  below the high-confidence freshness threshold.
+  below the high-confidence freshness threshold. The staleness loop emits
+  `context_stale` attention when an actionable-or-later thesis is still relying
+  on narrative context older than 30 days.
 - #90: separate system confidence from human conviction.
 - #13: challenge pass needs clearer surfaced adversarial flags.
 

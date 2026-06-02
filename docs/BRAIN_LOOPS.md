@@ -589,6 +589,9 @@ What works now:
   stale `fetching` tasks. Due tasks are normal backlog; stale fetching tasks are
   provider work that did not finish inside the reclaim window and should be
   treated as a stuck worker/backoff problem, not as satisfied evidence.
+- The Source health diagnostics table renders stale `running` provider rows as
+  `stale running`, so the operator can distinguish an active pass from a pass
+  whose worker exceeded the reclaim window.
 
 Current gaps:
 

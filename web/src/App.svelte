@@ -189,6 +189,7 @@
 
   function healthLabel(status: string, failureKind?: string | null): string {
     if (failureKind) return failureKind;
+    if (status === "stale_running") return "stale running";
     if (status === "no_new_rows") return "checked, no new rows";
     if (status === "ok") return "new data";
     if (status === "rate_limited") return "rate limited";
@@ -1819,7 +1820,7 @@
             {@const ev = sysStatus.evidence as { open_requirements: number; source_tasks_due?: number; source_tasks_stale_fetching?: number; by_state: { state: string; count: number }[]; by_reason?: { reason: string; count: number }[]; source_tasks_by_state?: { state: string; count: number }[] }}
             {@const att = sysStatus.attention as { open_items: number; deferred_items?: number; by_kind: { kind: string; count: number }[]; by_state?: { state: string; count: number }[]; by_owner?: { owner: string; count: number }[] }}
             {@const llm = sysStatus.llm as { calls_24h: number; avg_latency_ms: number|null; by_prompt: { prompt: string; count: number; avg_ms: number|null; last_at: string|null }[] }}
-            {@const health = (sysStatus.source_health ?? []) as { source: string; last_status: string; last_started_at: string|null; last_success_at: string|null; last_failure_at: string|null; last_failure_kind?: string|null; last_error?: string|null; retry_after_at?: string|null; rows_seen: number; rows_inserted: number; symbols_attempted: number; symbols_failed: number }[]}
+            {@const health = (sysStatus.source_health ?? []) as { source: string; last_status: string; effective_status?: string; stale_running?: boolean; running_age_minutes?: number|null; last_started_at: string|null; last_success_at: string|null; last_failure_at: string|null; last_failure_kind?: string|null; last_error?: string|null; retry_after_at?: string|null; rows_seen: number; rows_inserted: number; symbols_attempted: number; symbols_failed: number }[]}
             {@const priceFresh = sysStatus.price_freshness as { expected_latest_session?: string|null; actual_latest_session?: string|null; symbols_total?: number; symbols_fresh?: number; status?: string }}
             <div class="diag-grid">
               <section class="diag">
@@ -1845,12 +1846,13 @@
                   <thead><tr><th>source</th><th>status</th><th>last result</th><th>checked rows</th><th>new rows</th><th>symbols</th><th>retry</th></tr></thead>
                   <tbody>
                     {#each health as h (h.source)}
+                      {@const effectiveStatus = h.effective_status ?? h.last_status}
                       <tr title={h.last_error ?? ""}>
                         <td><strong>{h.source}</strong></td>
-                        <td><span class={`badge tiny health-${h.last_status}`}>{healthLabel(h.last_status, h.last_failure_kind)}</span></td>
+                        <td><span class={`badge tiny health-${effectiveStatus}`}>{healthLabel(effectiveStatus, h.last_failure_kind)}</span></td>
                         <td class="muted">{h.last_success_at ? relativeTime(h.last_success_at) : "—"}</td>
-                        <td>{h.last_status === "running" && !h.last_success_at ? "checking" : h.rows_seen}</td>
-                        <td>{h.last_status === "running" && !h.last_success_at ? "—" : h.rows_inserted}</td>
+                        <td>{effectiveStatus === "running" && !h.last_success_at ? "checking" : h.rows_seen}</td>
+                        <td>{effectiveStatus === "running" && !h.last_success_at ? "—" : h.rows_inserted}</td>
                         <td>{h.symbols_attempted - h.symbols_failed}/{h.symbols_attempted}</td>
                         <td class="muted">{h.retry_after_at ? relativeTime(h.retry_after_at) : "—"}</td>
                       </tr>
@@ -3120,6 +3122,7 @@
   .badge.health-ok { background: rgba(166,227,161,.18); color: rgb(166,227,161); }
   .badge.health-no_new_rows { background: rgba(137,180,250,.16); color: rgb(137,180,250); }
   .badge.health-running { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
+  .badge.health-stale_running { background: rgba(250,179,135,.18); color: rgb(250,179,135); }
   .badge.health-failed { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
   .badge.health-rate_limited { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
   .badge.brain-fresh,

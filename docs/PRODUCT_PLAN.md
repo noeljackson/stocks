@@ -543,6 +543,7 @@ Cognition is the symbol brain. It creates and maintains current views.
 symbol selected by event or scheduler
   -> refresh evidence requirements
   -> fetch due evidence where possible
+  -> react immediately when normalized evidence_items changed
   -> refresh context bands
   -> draft/reconcile thesis
   -> sharpen conditions
@@ -571,6 +572,7 @@ Open theses are on a maintenance loop:
 
 ```text
 open thesis older than freshness target
+or normalized evidence newer than thesis evaluation
   -> outrank no-context and broad evidence-bootstrap work in the scheduler
   -> re-evaluate against latest context
   -> no_change: update last_evaluated_at only

@@ -158,7 +158,9 @@ context and thesis workflows.
 Open theses are not static notes. The cognition service runs a bounded update
 loop that selects active tickers whose context is stale, whose evidence
 checklist has not been initialized, whose evidence retry is due, or whose open
-thesis has not been re-evaluated within the configured freshness window
+thesis has not been re-evaluated within the configured freshness window.
+Fresh normalized evidence facts also trigger re-evaluation when they arrive
+after the last thesis evaluation or after the last no-thesis decline
 (`COGNITION_OPEN_THESIS_MAX_AGE_MINUTES`, default 30). A fresh draft against an
 existing open thesis reconciles into the canonical thesis and appends
 `thesis_version_history`; it should not create a second open thesis. The
@@ -495,6 +497,7 @@ active ticker with no open thesis
   -> persist monitoring/actionable thesis OR record thesis_incomplete reason
 
 active ticker with an open thesis
+  + source_task or evidence_item newer than last_evaluated_at OR freshness due
   -> refresh context
   -> update the canonical thesis row when the view changes
   -> append a thesis_version_history reconciliation event

@@ -496,6 +496,7 @@ every COGNITION_SWEEP_SECONDS
         v
 select up to COGNITION_MAX_SYMBOLS_PER_SWEEP active tickers where:
   provider source_task outcome is newer than thesis evaluation / no-thesis decline
+  normalized evidence_item is newer than thesis evaluation / no-thesis decline
   open thesis is older than COGNITION_OPEN_THESIS_MAX_AGE_MINUTES
   no context exists
   context is missing market data
@@ -547,14 +548,17 @@ Parent brain/theme thesis maintenance runs after ticker target execution inside
 the sweep. It is important context, but it should not block stale open ticker
 theses from entering the update loop.
 
-Sweep priority is opinion-first. Fresh provider outcomes for an open thesis
-come first, then stale open theses, then bootstrap work. A provider outcome is
-a completed `source_task` check such as `satisfied` or `no_rows`; `fetching`,
-`failed`, and rate-limited work stays visible in source health/tasks without
-forcing a thesis LLM pass. Each scheduled run records a `sweep_reason` such as
-`source_task_changed`, `open_thesis_due`, `context_missing`, or
-`evidence_retry_due` into the pipeline source reference so the UI/audit trail
-can explain why the symbol was touched.
+Sweep priority is evidence-first. Fresh provider outcomes for an open thesis
+come first, then fresh normalized `evidence_item` facts, then stale open
+theses, then bootstrap work. A provider outcome is a completed `source_task`
+check such as `satisfied` or `no_rows`; `fetching`, `failed`, and rate-limited
+work stays visible in source health/tasks without forcing a thesis LLM pass.
+A normalized evidence delta is a newly available fact such as news, a filing,
+estimate revision, price-action event, product research, context shift, or
+regime change. Each scheduled run records a `sweep_reason` such as
+`source_task_changed`, `evidence_item_changed`, `open_thesis_due`,
+`context_missing`, or `evidence_retry_due` into the pipeline source reference
+so the UI/audit trail can explain why the symbol was touched.
 
 The worker still reserves a small number of each sweep's slots for bootstrap
 work (`COGNITION_BOOTSTRAP_SYMBOLS_PER_SWEEP`, default 5), because otherwise a
@@ -589,14 +593,16 @@ why it ran, what blocked it, and when it will retry.
 ```text
 cognition target priority
   0 source_task outcome newer than open thesis evaluation
-  1 open thesis due for re-evaluation
-  2 missing context
-  3 context exists but market context is blank
-  4 evidence checklist missing
-  5 evidence retry due for a no-thesis symbol
-  6 source_task outcome newer than no-thesis decline
-  7 stale context
-  8 older decline retry / maintenance
+  1 normalized evidence newer than open thesis evaluation
+  2 open thesis due for re-evaluation
+  3 missing context
+  4 context exists but market context is blank
+  5 evidence checklist missing
+  6 evidence retry due for a no-thesis symbol
+  7 source_task outcome newer than no-thesis decline
+  8 normalized evidence newer than no-thesis decline
+  9 stale context
+ 10 older decline retry / maintenance
 ```
 
 What works now:
@@ -609,6 +615,11 @@ What works now:
   newer than the open thesis evaluation or newer than the last no-thesis
   decline. This gives the brain a data-change edge in addition to the
   30-minute clock edge.
+- Fresh normalized evidence facts trigger the same immediate pass when they are
+  newer than the open thesis evaluation or newer than the last no-thesis
+  decline. This catches facts created by news, filings, research, price-action,
+  context-shift, and regime producers even when they are not represented as a
+  source task.
 - Fresh drafts reconcile into one canonical open thesis per symbol.
 - Draft/reconcile runs attach the latest normalized evidence facts to the
   thesis via `thesis_evidence`, so the current view can be inspected back to
@@ -640,10 +651,10 @@ What works now:
 
 Current gaps:
 
-- #128: source loops and cognition still coordinate through `source_task` rather
-  than a single top-level controller process, but provider outcomes now feed
-  cognition target selection and the run ledger makes the coordination
-  observable.
+- #128: source loops, normalized evidence producers, and cognition still
+  coordinate through shared tables rather than a single top-level controller
+  process, but provider outcomes and evidence deltas now feed cognition target
+  selection and the run ledger makes the coordination observable.
 - #128: provider-wide retry gates now pause source tasks, and due source tasks
   move their symbols to the front of the expensive ingest scan universe. The
   FMP price, estimates, analyst-opinion, news, XBRL, EDGAR, FRED, and CBOE

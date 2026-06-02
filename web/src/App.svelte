@@ -237,6 +237,7 @@
 
   function cognitionTriggerLabel(trigger: string | null | undefined): string {
     if (trigger === "source_task_delta") return "source data changed";
+    if (trigger === "evidence_delta") return "evidence changed";
     if (trigger === "open_thesis_update_loop") return "thesis refresh";
     if (trigger === "evidence_state_bootstrap") return "evidence bootstrap";
     if (trigger === "maintenance_sweep") return "maintenance";
@@ -247,6 +248,8 @@
   function cognitionSweepReasonLabel(reason: string | null | undefined): string {
     if (reason === "source_task_changed") return "source data newer than thesis";
     if (reason === "source_task_changed_retry") return "source data newer than decline";
+    if (reason === "evidence_item_changed") return "evidence newer than thesis";
+    if (reason === "evidence_item_changed_retry") return "evidence newer than decline";
     if (reason === "open_thesis_due") return "thesis due";
     if (reason === "context_missing") return "context missing";
     if (reason === "context_missing_market") return "market context missing";
@@ -262,9 +265,11 @@
   function cognitionRunDriver(run: CognitionRun): string {
     const sourceRef = run.source_ref ?? {};
     const sourceTaskAt = typeof sourceRef.source_task_at === "string" ? sourceRef.source_task_at : "";
+    const evidenceItemAt = typeof sourceRef.evidence_item_at === "string" ? sourceRef.evidence_item_at : "";
     const parts = [
       cognitionSweepReasonLabel(run.sweep_reason) || cognitionTriggerLabel(run.trigger),
       sourceTaskAt ? `source ${relativeTime(sourceTaskAt)}` : "",
+      evidenceItemAt ? `evidence ${relativeTime(evidenceItemAt)}` : "",
     ].filter(Boolean);
     return parts.join(" · ");
   }

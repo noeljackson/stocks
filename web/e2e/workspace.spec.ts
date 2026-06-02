@@ -465,6 +465,30 @@ async function mockApi(page: Page): Promise<Calls> {
         ],
         evidence: { rows: 4, open: 0, blocking: 0, due: 0 },
         attention: { open: symbol === "OKTA" ? 0 : 1, by_kind: [] },
+        cognition: {
+          last_run: symbol === "OKTA" ? {
+            id: 77,
+            symbol: "OKTA",
+            trigger: "evidence_delta",
+            sweep_reason: "evidence_item_changed",
+            status: "reconciled",
+            reason: "thesis reconciled: strengthened_view",
+            context_version: 2,
+            thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+            thesis_classification: "strengthened_view",
+            evidence_open_count: 0,
+            evidence_blocking_count: 0,
+            started_at: "2026-06-01T00:02:00Z",
+            finished_at: "2026-06-01T00:03:00Z",
+            next_retry_at: null,
+            error: null,
+            source_ref: {
+              evidence_item_at: "2026-06-01T00:01:00Z",
+              sweep_reason: "evidence_item_changed",
+            },
+          } : null,
+          recent_runs: [],
+        },
       });
       return;
     }
@@ -877,6 +901,18 @@ test("overview explains selected symbol brain status and stale source", async ({
   await expect(brain).toContainText("tasks fmp price target consensus queued");
   await expect(brain).toContainText("SLA 30m");
   await expect(brain).toContainText("v2");
+});
+
+test("overview labels evidence-delta cognition runs", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/symbol/OKTA");
+
+  const brain = page.locator(".brain-card.brain-fresh");
+  await expect(brain).toContainText("Last cognition run");
+  await expect(brain).toContainText("reconciled");
+  await expect(brain).toContainText("evidence newer than thesis");
+  await expect(brain).toContainText("evidence");
+  await expect(brain).toContainText("classification strengthened_view");
 });
 
 test("workflow rail shows selected ticker state and routes to thesis review", async ({ page }) => {

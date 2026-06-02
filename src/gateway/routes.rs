@@ -9,10 +9,11 @@ use anyhow::{Context, Result as AnyResult};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::{StatusCode, header},
-    response::{IntoResponse, Sse, sse::Event},
+    http::{HeaderValue, StatusCode, header},
+    response::{IntoResponse, Response, Sse, sse::Event},
     routing::{get, post},
 };
+use chrono::NaiveDate;
 use futures::{
     StreamExt,
     stream::{self, Stream},
@@ -465,6 +466,171 @@ fn chart_lookback_days(range: Option<&str>, interval: ChartInterval) -> i64 {
     }
 }
 
+const MAX_INTRADAY_FETCHES_PER_CHART_REQUEST: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IntradayFetchWindow {
+    from: NaiveDate,
+    to: NaiveDate,
+}
+
+fn intraday_chunk_days(native_interval: &str) -> i64 {
+    match native_interval {
+        "1min" => 7,
+        "5min" => 14,
+        "15min" => 45,
+        "30min" => 45,
+        "1hour" => 120,
+        "4hour" => 365,
+        _ => 45,
+    }
+}
+
+fn intraday_history_windows(
+    target_from: NaiveDate,
+    oldest: NaiveDate,
+    chunk_days: i64,
+    max_windows: usize,
+) -> Vec<IntradayFetchWindow> {
+    if oldest <= target_from || max_windows == 0 {
+        return Vec::new();
+    }
+    let mut windows = Vec::new();
+    let mut to = oldest - chrono::Duration::days(1);
+    while to >= target_from && windows.len() < max_windows {
+        let from = std::cmp::max(target_from, to - chrono::Duration::days(chunk_days - 1));
+        windows.push(IntradayFetchWindow { from, to });
+        if from <= target_from {
+            break;
+        }
+        to = from - chrono::Duration::days(1);
+    }
+    windows
+}
+
+async fn fetch_intraday_window(
+    gw: &Gateway,
+    symbol: &str,
+    native_interval: &str,
+    window: IntradayFetchWindow,
+) -> AnyResult<usize> {
+    let rows = gw
+        .fmp_intraday
+        .fetch_range(symbol, native_interval, window.from, window.to)
+        .await?;
+    let count = rows.len();
+    if count > 0 {
+        gw.store.upsert_intraday_price_bars(&rows).await?;
+    }
+    Ok(count)
+}
+
+async fn ensure_intraday_chart_coverage(
+    gw: &Gateway,
+    symbol: &str,
+    native_interval: &str,
+    lookback_days: i64,
+) -> (usize, Option<String>) {
+    let today = chrono::Utc::now().date_naive();
+    let target_from = today - chrono::Duration::days(lookback_days);
+    let chunk_days = intraday_chunk_days(native_interval);
+    let mut attempts = 0usize;
+    let mut fetch_error = None;
+
+    let coverage = match gw
+        .store
+        .intraday_bar_coverage(symbol, native_interval)
+        .await
+    {
+        Ok(coverage) => coverage,
+        Err(e) => {
+            warn!(symbol = %symbol, interval = native_interval, error = %e, "intraday coverage lookup failed");
+            return (attempts, Some(e.to_string()));
+        }
+    };
+    let latest_stale = coverage
+        .latest
+        .map(|ts| chrono::Utc::now() - ts > chrono::Duration::minutes(30))
+        .unwrap_or(true);
+    if latest_stale && attempts < MAX_INTRADAY_FETCHES_PER_CHART_REQUEST {
+        let from = std::cmp::max(target_from, today - chrono::Duration::days(chunk_days - 1));
+        let window = IntradayFetchWindow { from, to: today };
+        attempts += 1;
+        if let Err(e) = fetch_intraday_window(gw, symbol, native_interval, window).await {
+            warn!(symbol = %symbol, interval = native_interval, from = %window.from, to = %window.to, error = %e, "fetch latest intraday chart window failed");
+            fetch_error = Some(e.to_string());
+        }
+    }
+
+    let coverage = match gw
+        .store
+        .intraday_bar_coverage(symbol, native_interval)
+        .await
+    {
+        Ok(coverage) => coverage,
+        Err(e) => {
+            warn!(symbol = %symbol, interval = native_interval, error = %e, "intraday coverage refresh lookup failed");
+            return (attempts, fetch_error.or_else(|| Some(e.to_string())));
+        }
+    };
+    let Some(oldest) = coverage.oldest.map(|ts| ts.date_naive()) else {
+        return (attempts, fetch_error);
+    };
+    let remaining = MAX_INTRADAY_FETCHES_PER_CHART_REQUEST.saturating_sub(attempts);
+    for window in intraday_history_windows(target_from, oldest, chunk_days, remaining) {
+        attempts += 1;
+        if let Err(e) = fetch_intraday_window(gw, symbol, native_interval, window).await {
+            warn!(symbol = %symbol, interval = native_interval, from = %window.from, to = %window.to, error = %e, "fetch older intraday chart window failed");
+            fetch_error = Some(e.to_string());
+            break;
+        }
+    }
+
+    (attempts, fetch_error)
+}
+
+fn candle_rows_response(
+    rows: Vec<serde_json::Value>,
+    fetch_attempts: usize,
+    fetch_error: Option<String>,
+) -> Response {
+    let first = rows
+        .first()
+        .and_then(|r| r.get("time"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let last = rows
+        .last()
+        .and_then(|r| r.get("time"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let bars = rows.len().to_string();
+    let mut resp = (StatusCode::OK, Json(rows)).into_response();
+    insert_header(&mut resp, "x-chart-bars", &bars);
+    insert_header(
+        &mut resp,
+        "x-chart-fetch-attempts",
+        &fetch_attempts.to_string(),
+    );
+    if let Some(first) = first {
+        insert_header(&mut resp, "x-chart-coverage-start", &first);
+    }
+    if let Some(last) = last {
+        insert_header(&mut resp, "x-chart-coverage-end", &last);
+    }
+    if let Some(error) = fetch_error {
+        insert_header(&mut resp, "x-chart-fetch-error", &error);
+    }
+    resp
+}
+
+fn insert_header(resp: &mut Response, name: &'static str, value: &str) {
+    if let Ok(value) = HeaderValue::from_str(value) {
+        resp.headers_mut()
+            .insert(header::HeaderName::from_static(name), value);
+    }
+}
+
 async fn get_candles(
     State(gw): State<Arc<Gateway>>,
     Query(q): Query<CandlesQuery>,
@@ -482,30 +648,8 @@ async fn get_candles(
             )
                 .into_response();
         }
-        let mut fetch_error: Option<String> = None;
-        match gw.store.latest_intraday_bar_ts(&sym, native).await {
-            Ok(latest) => {
-                let stale = latest
-                    .map(|ts| chrono::Utc::now() - ts > chrono::Duration::minutes(30))
-                    .unwrap_or(true);
-                if stale {
-                    match gw.fmp_intraday.fetch_one(&sym, native, lookback_days).await {
-                        Ok(rows) => {
-                            if let Err(e) = gw.store.upsert_intraday_price_bars(&rows).await {
-                                warn!(symbol = %sym, interval = native, error = %e, "persist intraday bars failed");
-                            }
-                        }
-                        Err(e) => {
-                            warn!(symbol = %sym, interval = native, error = %e, "fetch intraday bars failed");
-                            fetch_error = Some(e.to_string());
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                warn!(symbol = %sym, interval = native, error = %e, "latest_intraday_bar_ts failed")
-            }
-        }
+        let (fetch_attempts, fetch_error) =
+            ensure_intraday_chart_coverage(&gw, &sym, native, lookback_days).await;
         match gw
             .store
             .intraday_candles_for(&sym, native, lookback_days, interval.bucket_minutes)
@@ -513,7 +657,7 @@ async fn get_candles(
         {
             Ok(rows) => {
                 if rows.is_empty() {
-                    if let Some(e) = fetch_error {
+                    if let Some(e) = fetch_error.clone() {
                         return (
                             StatusCode::BAD_GATEWAY,
                             format!(
@@ -524,7 +668,7 @@ async fn get_candles(
                             .into_response();
                     }
                 }
-                return (StatusCode::OK, Json(rows)).into_response();
+                return candle_rows_response(rows, fetch_attempts, fetch_error);
             }
             Err(e) => {
                 warn!(symbol = %sym, interval = native, error = %e, "get intraday candles failed");
@@ -537,7 +681,7 @@ async fn get_candles(
         .candles_for(&sym, lookback_days, interval.label)
         .await
     {
-        Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
+        Ok(rows) => candle_rows_response(rows, 0, None),
         Err(e) => {
             warn!(symbol = %sym, error = %e, "get_candles failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
@@ -4045,5 +4189,39 @@ mod tests {
         assert_eq!(req.source_type, "web_research");
         assert_eq!(req.priority, "high");
         assert!(req.reason.contains("AMD"));
+    }
+
+    #[test]
+    fn intraday_history_windows_backfill_from_oldest_bar() {
+        let target = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let oldest = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+
+        let windows = intraday_history_windows(target, oldest, 45, 3);
+
+        assert_eq!(
+            windows,
+            vec![
+                IntradayFetchWindow {
+                    from: NaiveDate::from_ymd_opt(2026, 3, 20).unwrap(),
+                    to: NaiveDate::from_ymd_opt(2026, 5, 3).unwrap(),
+                },
+                IntradayFetchWindow {
+                    from: NaiveDate::from_ymd_opt(2026, 2, 3).unwrap(),
+                    to: NaiveDate::from_ymd_opt(2026, 3, 19).unwrap(),
+                },
+                IntradayFetchWindow {
+                    from: target,
+                    to: NaiveDate::from_ymd_opt(2026, 2, 2).unwrap(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn intraday_history_windows_do_not_fetch_when_covered() {
+        let target = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let oldest = NaiveDate::from_ymd_opt(2025, 12, 15).unwrap();
+
+        assert!(intraday_history_windows(target, oldest, 45, 4).is_empty());
     }
 }

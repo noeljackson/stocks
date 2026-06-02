@@ -66,11 +66,19 @@ pub struct TechnicalState {
     pub symbol: String,
     pub as_of: Option<DateTime<Utc>>,
     pub state: String,
+    pub setup: TechnicalSetup,
     pub summary: String,
     pub daily: Option<DailyTechnical>,
     pub intervals: Vec<IntervalTechnical>,
     pub last_crosses: Vec<CrossEvent>,
     pub analog_events: Vec<AnalogEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TechnicalSetup {
+    pub kind: String,
+    pub entry_stance: String,
+    pub summary: String,
 }
 
 #[must_use]
@@ -90,11 +98,13 @@ pub fn build_technical_state(
 
     let daily_technical = daily_state(daily);
     let state = classify_state(daily, &daily_technical, &intervals);
+    let setup = classify_setup(daily, &daily_technical, &intervals, &state);
     let summary = state_summary(&state, &daily_technical, &intervals);
     TechnicalState {
         symbol: symbol.to_ascii_uppercase(),
         as_of: daily.last().map(|b| b.ts),
         state,
+        setup,
         summary,
         daily: daily_technical,
         intervals,
@@ -192,6 +202,131 @@ fn classify_state(
         return "constructive".to_string();
     }
     "unknown".to_string()
+}
+
+fn classify_setup(
+    daily: &[TechnicalBar],
+    daily_technical: &Option<DailyTechnical>,
+    intervals: &[IntervalTechnical],
+    state: &str,
+) -> TechnicalSetup {
+    let Some(d) = daily_technical else {
+        return TechnicalSetup {
+            kind: "unknown".to_string(),
+            entry_stance: "wait_data".to_string(),
+            summary: "Need daily bars before classifying entry setup.".to_string(),
+        };
+    };
+    let closes = daily.iter().map(|b| b.close).collect::<Vec<_>>();
+    let sma200 = (0..closes.len())
+        .map(|idx| sma_at(&closes, idx, 200))
+        .collect::<Vec<_>>();
+    let pct_vs_200 = d
+        .sma
+        .iter()
+        .find(|s| s.window == 200)
+        .and_then(|s| s.pct_vs);
+    let rsi_1d = intervals
+        .iter()
+        .find(|i| i.interval == "1d")
+        .and_then(|i| i.rsi14);
+    let recent_up_200 = recent_cross_index(daily, &sma200, "up", 45);
+    let recent_down_200 = recent_cross_index(daily, &sma200, "down", 180);
+    let latest_idx = daily.len().saturating_sub(1);
+    let had_prior_above = recent_down_200.is_some_and(|down_idx| {
+        daily
+            .iter()
+            .enumerate()
+            .take(down_idx)
+            .any(|(idx, bar)| sma200[idx].is_some_and(|sma| bar.close >= sma))
+    });
+    let reclaim_after_break = recent_up_200
+        .zip(recent_down_200)
+        .is_some_and(|(up_idx, down_idx)| up_idx > down_idx && had_prior_above);
+    let near_reclaim_after_break = recent_down_200.is_some_and(|down_idx| {
+        had_prior_above
+            && latest_idx > down_idx
+            && pct_vs_200.is_some_and(|pct| (-3.0..=2.0).contains(&pct))
+    });
+
+    if reclaim_after_break && pct_vs_200.is_some_and(|pct| pct <= 8.0) {
+        let entry_stance = if rsi_1d.is_some_and(|rsi| rsi >= 70.0) {
+            "wait_retest"
+        } else {
+            "actionable"
+        };
+        return TechnicalSetup {
+            kind: "200d_reclaim".to_string(),
+            entry_stance: entry_stance.to_string(),
+            summary: "Price recently reclaimed the 200-day SMA after a prior break below it."
+                .to_string(),
+        };
+    }
+
+    if near_reclaim_after_break {
+        return TechnicalSetup {
+            kind: "200d_reclaim_watch".to_string(),
+            entry_stance: "wait_reclaim".to_string(),
+            summary: "Price previously broke the 200-day SMA and is now close enough to watch for a reclaim.".to_string(),
+        };
+    }
+
+    if state == "extended" {
+        return TechnicalSetup {
+            kind: "extended_run".to_string(),
+            entry_stance: "avoid_chase".to_string(),
+            summary: "Chart is extended versus trend or RSI; bullish theses need a pullback, base, or retest before entry.".to_string(),
+        };
+    }
+
+    if state == "base_building" {
+        return TechnicalSetup {
+            kind: "base_building".to_string(),
+            entry_stance: "wait_breakout".to_string(),
+            summary: "Price is compressing near moving averages; wait for a clean breakout or failed breakdown.".to_string(),
+        };
+    }
+
+    if state == "deteriorating" {
+        return TechnicalSetup {
+            kind: "breakdown".to_string(),
+            entry_stance: "avoid".to_string(),
+            summary: "Price is below key trend or momentum is weak; do not treat bullish theses as actionable yet.".to_string(),
+        };
+    }
+
+    TechnicalSetup {
+        kind: "constructive_trend".to_string(),
+        entry_stance: "constructive".to_string(),
+        summary: "Trend is constructive but there is no fresh 200-day reclaim setup.".to_string(),
+    }
+}
+
+fn recent_cross_index(
+    bars: &[TechnicalBar],
+    sma: &[Option<f64>],
+    direction: &str,
+    lookback_bars: usize,
+) -> Option<usize> {
+    if bars.len() < 2 {
+        return None;
+    }
+    let start = bars.len().saturating_sub(lookback_bars + 1).max(1);
+    (start..bars.len()).rev().find(|&idx| {
+        let Some(prev_sma) = sma[idx - 1] else {
+            return false;
+        };
+        let Some(curr_sma) = sma[idx] else {
+            return false;
+        };
+        let prev = bars[idx - 1].close;
+        let curr = bars[idx].close;
+        match direction {
+            "up" => prev <= prev_sma && curr > curr_sma,
+            "down" => prev >= prev_sma && curr < curr_sma,
+            _ => false,
+        }
+    })
 }
 
 fn state_summary(
@@ -481,6 +616,48 @@ mod tests {
                 .iter()
                 .any(|c| c.window == 200 && c.direction == "up")
         );
+    }
+
+    #[test]
+    fn classifies_200_day_reclaim_as_actionable_setup() {
+        let mut bars = (0..220).map(|i| bar(i, 100.0)).collect::<Vec<_>>();
+        bars.push(bar(220, 92.0));
+        bars.push(bar(221, 93.0));
+        bars.push(bar(222, 94.0));
+        bars.push(bar(223, 96.0));
+        bars.push(bar(224, 100.0));
+        bars.push(bar(225, 103.0));
+
+        let state = build_technical_state("RCLM", &bars, &[]);
+
+        assert_eq!(state.setup.kind, "200d_reclaim");
+        assert_eq!(state.setup.entry_stance, "actionable");
+    }
+
+    #[test]
+    fn classifies_near_200_day_reclaim_as_watch_setup() {
+        let mut bars = (0..220).map(|i| bar(i, 100.0)).collect::<Vec<_>>();
+        bars.push(bar(220, 92.0));
+        bars.push(bar(221, 94.0));
+        bars.push(bar(222, 96.0));
+        bars.push(bar(223, 98.5));
+
+        let state = build_technical_state("WATCH", &bars, &[]);
+
+        assert_eq!(state.setup.kind, "200d_reclaim_watch");
+        assert_eq!(state.setup.entry_stance, "wait_reclaim");
+    }
+
+    #[test]
+    fn classifies_extended_run_as_avoid_chase() {
+        let mut bars = (0..220).map(|i| bar(i, 100.0)).collect::<Vec<_>>();
+        bars.push(bar(220, 135.0));
+
+        let state = build_technical_state("HOT", &bars, &[]);
+
+        assert_eq!(state.state, "extended");
+        assert_eq!(state.setup.kind, "extended_run");
+        assert_eq!(state.setup.entry_stance, "avoid_chase");
     }
 
     #[test]

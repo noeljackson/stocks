@@ -26,6 +26,13 @@ pub struct Store {
     pub pool: PgPool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct IntradayBarCoverage {
+    pub oldest: Option<DateTime<Utc>>,
+    pub latest: Option<DateTime<Utc>>,
+    pub bars: i64,
+}
+
 impl Store {
     pub async fn connect(url: &str) -> Result<Self> {
         // Strip the sslmode=disable querystring noise that pgx accepts but
@@ -1310,6 +1317,28 @@ impl Store {
         .await
         .context("latest_intraday_bar_ts")?;
         Ok(row.try_get("ts")?)
+    }
+
+    pub async fn intraday_bar_coverage(
+        &self,
+        symbol: &str,
+        native_interval: &str,
+    ) -> Result<IntradayBarCoverage> {
+        let row = sqlx::query(
+            r#"SELECT min(ts) AS oldest, max(ts) AS latest, count(*)::int8 AS bars
+                 FROM price_bar_intraday
+                WHERE symbol = $1 AND interval = $2"#,
+        )
+        .bind(symbol)
+        .bind(native_interval)
+        .fetch_one(&self.pool)
+        .await
+        .context("intraday_bar_coverage")?;
+        Ok(IntradayBarCoverage {
+            oldest: row.try_get("oldest")?,
+            latest: row.try_get("latest")?,
+            bars: row.try_get::<i64, _>("bars")?,
+        })
     }
 
     pub async fn intraday_candles_for(

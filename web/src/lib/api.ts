@@ -447,6 +447,11 @@ export interface TechnicalState {
   symbol: string;
   as_of?: string | null;
   state: string;
+  setup: {
+    kind: string;
+    entry_stance: string;
+    summary: string;
+  };
   summary: string;
   daily?: DailyTechnical | null;
   intervals: IntervalTechnical[];

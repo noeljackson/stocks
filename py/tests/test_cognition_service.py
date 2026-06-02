@@ -7,7 +7,9 @@ from stocks.cognition_service import (
     _decline_attention_assignment,
     _effective_sweep_interval_seconds,
     _effective_sweep_limit,
+    _next_retry_from_evidence,
     _run_symbol_once,
+    _status_for_thesis_result,
     _sweep_trigger,
 )
 
@@ -116,3 +118,35 @@ def test_effective_sweep_limit_floors_stale_config(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("COGNITION_MIN_SYMBOLS_PER_SWEEP", "20")
 
     assert _effective_sweep_limit() == 20
+
+
+def test_status_for_thesis_result_classifies_new_draft() -> None:
+    assert _status_for_thesis_result({"_thesis_id": "abc"}) == ("drafted", None)
+
+
+def test_status_for_thesis_result_classifies_no_change_reconciliation() -> None:
+    assert _status_for_thesis_result({
+        "_thesis_id": "abc",
+        "_reconciled_existing_thesis": True,
+        "_reconciliation_classification": "no_change",
+    }) == ("no_change", "no_change")
+
+
+def test_status_for_thesis_result_classifies_material_reconciliation() -> None:
+    assert _status_for_thesis_result({
+        "_thesis_id": "abc",
+        "_reconciled_existing_thesis": True,
+        "_reconciliation_classification": "weakened_view",
+    }) == ("reconciled", "weakened_view")
+
+
+def test_status_for_thesis_result_classifies_decline() -> None:
+    assert _status_for_thesis_result({"edge_present": False}) == ("declined", None)
+
+
+def test_next_retry_from_evidence_uses_earliest_retry() -> None:
+    assert _next_retry_from_evidence([
+        {"next_retry_at": "2026-06-02T12:30:00+00:00"},
+        {"next_retry_at": "2026-06-02T12:00:00+00:00"},
+        {"next_retry_at": None},
+    ]).isoformat() == "2026-06-02T12:00:00+00:00"

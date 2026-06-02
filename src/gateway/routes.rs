@@ -1905,10 +1905,51 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
             })
         })
         .collect();
+        let runs_24h: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cognition_run WHERE started_at > now() - interval '24 hours'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        let runs_by_status: Vec<serde_json::Value> = sqlx::query(
+            r#"SELECT status, COUNT(*) AS n
+                 FROM cognition_run
+                WHERE started_at > now() - interval '24 hours'
+             GROUP BY status ORDER BY n DESC, status"#,
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            json!({
+                "status": r.try_get::<String, _>("status").unwrap_or_default(),
+                "count": r.try_get::<i64, _>("n").unwrap_or(0),
+            })
+        })
+        .collect();
+        let latest_runs: Vec<serde_json::Value> = sqlx::query(
+            r#"SELECT id, symbol, trigger, sweep_reason, status, reason,
+                      context_version, thesis_id, thesis_classification,
+                      evidence_open_count, evidence_blocking_count,
+                      started_at, finished_at, next_retry_at, error
+                 FROM cognition_run
+             ORDER BY started_at DESC
+                LIMIT 8"#,
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(cognition_run_json)
+        .collect();
         json!({
             "contexts_24h": ctx_24h,
             "contexts_total_symbols": ctx_total,
             "thesis_by_state": by_state,
+            "runs_24h": runs_24h,
+            "runs_by_status": runs_by_status,
+            "latest_runs": latest_runs,
         })
     };
 
@@ -2600,6 +2641,25 @@ async fn get_brain_status(
     })
     .collect::<Vec<_>>();
 
+    let cognition_runs = sqlx::query(
+        r#"SELECT id, symbol, trigger, sweep_reason, status, reason,
+                  context_version, thesis_id, thesis_classification,
+                  evidence_open_count, evidence_blocking_count,
+                  started_at, finished_at, next_retry_at, error
+             FROM cognition_run
+            WHERE symbol = $1
+         ORDER BY started_at DESC
+            LIMIT 5"#,
+    )
+    .bind(&symbol)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(cognition_run_json)
+    .collect::<Vec<_>>();
+    let last_cognition_run = cognition_runs.first().cloned();
+
     let body = json!({
         "symbol": symbol,
         "as_of": now,
@@ -2652,8 +2712,35 @@ async fn get_brain_status(
             "open": row.try_get::<i64, _>("open_attention").unwrap_or(0),
             "by_kind": attention_kinds,
         },
+        "cognition": {
+            "last_run": last_cognition_run,
+            "recent_runs": cognition_runs,
+        },
     });
     (StatusCode::OK, Json(body)).into_response()
+}
+
+fn cognition_run_json(r: sqlx::postgres::PgRow) -> serde_json::Value {
+    let started_at: Option<chrono::DateTime<chrono::Utc>> = r.try_get("started_at").ok();
+    let finished_at: Option<chrono::DateTime<chrono::Utc>> = r.try_get("finished_at").ok();
+    let next_retry_at: Option<chrono::DateTime<chrono::Utc>> = r.try_get("next_retry_at").ok();
+    json!({
+        "id": r.try_get::<i64, _>("id").unwrap_or(0),
+        "symbol": r.try_get::<String, _>("symbol").unwrap_or_default(),
+        "trigger": r.try_get::<String, _>("trigger").unwrap_or_default(),
+        "sweep_reason": r.try_get::<Option<String>, _>("sweep_reason").ok().flatten(),
+        "status": r.try_get::<String, _>("status").unwrap_or_default(),
+        "reason": r.try_get::<Option<String>, _>("reason").ok().flatten(),
+        "context_version": r.try_get::<Option<i32>, _>("context_version").ok().flatten(),
+        "thesis_id": r.try_get::<Option<uuid::Uuid>, _>("thesis_id").ok().flatten(),
+        "thesis_classification": r.try_get::<Option<String>, _>("thesis_classification").ok().flatten(),
+        "evidence_open_count": r.try_get::<i32, _>("evidence_open_count").unwrap_or(0),
+        "evidence_blocking_count": r.try_get::<i32, _>("evidence_blocking_count").unwrap_or(0),
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "next_retry_at": next_retry_at,
+        "error": r.try_get::<Option<String>, _>("error").ok().flatten(),
+    })
 }
 
 fn source_health_group(

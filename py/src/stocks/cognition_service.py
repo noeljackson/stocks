@@ -32,6 +32,7 @@ Reads:
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import json
 import logging
 import os
@@ -120,6 +121,108 @@ async def _open_thesis_count(pool: asyncpg.Pool, symbol: str) -> int:
     ) or 0)
 
 
+def _json_default(value):
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+async def _start_cognition_run(
+    pool: asyncpg.Pool,
+    symbol: str,
+    source_ref: dict | None,
+) -> int:
+    ref = dict(source_ref or {})
+    trigger = str(ref.get("trigger") or "manual")
+    sweep_reason = ref.get("sweep_reason")
+    return int(await pool.fetchval(
+        """INSERT INTO cognition_run
+             (symbol, trigger, sweep_reason, status, reason, source_ref)
+           VALUES ($1, $2, $3, 'running', $4, $5::jsonb)
+        RETURNING id""",
+        symbol,
+        trigger,
+        str(sweep_reason) if sweep_reason else None,
+        str(ref.get("reason") or trigger),
+        json.dumps(ref, default=_json_default),
+    ))
+
+
+def _parse_dt(value) -> dt.datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, dt.datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+def _next_retry_from_evidence(evidence: list[dict]) -> dt.datetime | None:
+    dates = [
+        parsed
+        for parsed in (_parse_dt(row.get("next_retry_at")) for row in evidence)
+        if parsed is not None
+    ]
+    return min(dates) if dates else None
+
+
+def _status_for_thesis_result(result: dict | None) -> tuple[str, str | None]:
+    if result and result.get("_thesis_id"):
+        classification = result.get("_reconciliation_classification")
+        if result.get("_reconciled_existing_thesis"):
+            if classification == "no_change":
+                return "no_change", classification
+            return "reconciled", classification
+        return "drafted", classification
+    return "declined", None
+
+
+async def _finish_cognition_run(
+    pool: asyncpg.Pool,
+    run_id: int,
+    *,
+    status: str,
+    reason: str | None,
+    context_version: int | None,
+    thesis_id: str | None,
+    thesis_classification: str | None,
+    evidence: list[dict],
+    error: str | None = None,
+    source_ref: dict | None = None,
+) -> None:
+    blocking = [row for row in evidence if row.get("priority") == "blocking"]
+    await pool.execute(
+        """UPDATE cognition_run
+              SET status = $2,
+                  reason = $3,
+                  context_version = $4,
+                  thesis_id = $5::uuid,
+                  thesis_classification = $6,
+                  evidence_open_count = $7,
+                  evidence_blocking_count = $8,
+                  finished_at = now(),
+                  next_retry_at = $9,
+                  error = $10,
+                  source_ref = source_ref || $11::jsonb
+            WHERE id = $1""",
+        run_id,
+        status,
+        reason,
+        context_version,
+        thesis_id,
+        thesis_classification,
+        len(evidence),
+        len(blocking),
+        _next_retry_from_evidence(evidence),
+        error,
+        json.dumps(source_ref or {}, default=_json_default),
+    )
+
+
 async def _record_decline(
     pool: asyncpg.Pool,
     symbol: str,
@@ -186,76 +289,121 @@ async def _run_pipeline(
     draft_when_thesis_exists: bool = True,
     source_ref: dict | None = None,
 ) -> None:
-    log.info("cognition kickoff: %s (candidate_id=%s)", symbol, candidate_id)
+    symbol = symbol.upper()
+    run_id = await _start_cognition_run(pool, symbol, source_ref)
+    context_version: int | None = None
+    thesis_id: str | None = None
+    thesis_classification: str | None = None
+    final_status = "failed"
+    final_reason: str | None = None
+    final_error: str | None = None
+    open_evidence: list[dict] = []
+    log.info("cognition kickoff: %s (candidate_id=%s run_id=%s)", symbol, candidate_id, run_id)
 
     try:
-        ctx_version = await refresh_context(symbol)
-        log.info("cognition: %s context refreshed to v%s", symbol, ctx_version)
-    except BlockingEvidenceMissing as e:
-        log.info(
-            "cognition: %s waiting for blocking evidence before context: %s",
-            symbol,
-            [r["requirement_key"] for r in e.missing],
-        )
-    except Exception:  # noqa: BLE001
-        log.exception("cognition: context refresh failed for %s", symbol)
+        try:
+            context_version = await refresh_context(symbol)
+            final_status = "context_refreshed"
+            final_reason = f"context refreshed to v{context_version}"
+            log.info("cognition: %s context refreshed to v%s", symbol, context_version)
+        except BlockingEvidenceMissing as e:
+            open_evidence = list(e.missing)
+            log.info(
+                "cognition: %s waiting for blocking evidence before context: %s",
+                symbol,
+                [r["requirement_key"] for r in e.missing],
+            )
+        except Exception as e:  # noqa: BLE001
+            final_error = str(e)
+            final_reason = "context refresh failed"
+            log.exception("cognition: context refresh failed for %s", symbol)
 
-    if not draft_when_thesis_exists and await _open_thesis_count(pool, symbol) > 0:
-        log.info("cognition: %s already has an open thesis; draft will reconcile", symbol)
+        if not draft_when_thesis_exists and await _open_thesis_count(pool, symbol) > 0:
+            log.info("cognition: %s already has an open thesis; draft will reconcile", symbol)
 
-    open_evidence = await load_open_evidence_requirements(pool, symbol)
-    blocking_evidence = [r for r in open_evidence if r["priority"] == "blocking"]
-    if blocking_evidence:
-        log.info("cognition: %s waiting for blocking evidence before thesis draft", symbol)
-        decline_ref = dict(source_ref or {"reason": "missing_evidence"})
-        decline_ref["blocking_evidence"] = blocking_evidence
-        await _record_decline(
-            pool,
-            symbol,
-            candidate_id,
-            "Waiting for blocking evidence before drafting a thesis.",
-            decline_ref,
-        )
-        return
-
-    thesis_id = None
-    try:
-        result = await draft_thesis(symbol)
-        if result and result.get("_thesis_id"):
-            thesis_id = result["_thesis_id"]
-            log.info("cognition: %s thesis drafted %s", symbol, thesis_id)
-        else:
-            log.info("cognition: %s thesis declined (no edge)", symbol)
-            decline_ref = dict(source_ref or {"reason": "no_edge"})
-            llm_missing_evidence = []
-            if result and result.get("missing_evidence"):
-                llm_missing_evidence = result["missing_evidence"]
-                synced = await sync_llm_missing_evidence(pool, symbol, llm_missing_evidence)
-                decline_ref["synced_missing_evidence"] = [
-                    r["requirement_key"] for r in synced
-                ]
+        open_evidence = await load_open_evidence_requirements(pool, symbol)
+        blocking_evidence = [r for r in open_evidence if r["priority"] == "blocking"]
+        if blocking_evidence:
+            log.info("cognition: %s waiting for blocking evidence before thesis draft", symbol)
+            decline_ref = dict(source_ref or {"reason": "missing_evidence"})
+            decline_ref["blocking_evidence"] = blocking_evidence
+            final_status = "blocked_on_evidence"
+            final_reason = "Waiting for blocking evidence before drafting a thesis."
             await _record_decline(
                 pool,
                 symbol,
                 candidate_id,
-                (result or {}).get("no_edge_reason"),
+                final_reason,
                 decline_ref,
-                llm_missing_evidence,
             )
-    except Exception:  # noqa: BLE001
-        log.exception("cognition: thesis_engine failed for %s", symbol)
+            return
 
-    if thesis_id:
+        result = None
         try:
-            await sharpen_thesis(thesis_id)
-            log.info("cognition: %s sharpen complete", symbol)
-        except Exception:  # noqa: BLE001
-            log.exception("cognition: sharpen failed for %s", symbol)
+            result = await draft_thesis(symbol)
+            final_status, thesis_classification = _status_for_thesis_result(result)
+            if result and result.get("_thesis_id"):
+                thesis_id = result["_thesis_id"]
+                final_reason = (
+                    f"thesis {final_status}: {thesis_classification}"
+                    if thesis_classification
+                    else f"thesis {final_status}"
+                )
+                log.info("cognition: %s thesis drafted/reconciled %s", symbol, thesis_id)
+            else:
+                log.info("cognition: %s thesis declined (no edge)", symbol)
+                decline_ref = dict(source_ref or {"reason": "no_edge"})
+                llm_missing_evidence = []
+                if result and result.get("missing_evidence"):
+                    llm_missing_evidence = result["missing_evidence"]
+                    synced = await sync_llm_missing_evidence(pool, symbol, llm_missing_evidence)
+                    decline_ref["synced_missing_evidence"] = [
+                        r["requirement_key"] for r in synced
+                    ]
+                    open_evidence = await load_open_evidence_requirements(pool, symbol)
+                final_reason = (result or {}).get("no_edge_reason") or "thesis declined"
+                await _record_decline(
+                    pool,
+                    symbol,
+                    candidate_id,
+                    (result or {}).get("no_edge_reason"),
+                    decline_ref,
+                    llm_missing_evidence,
+                )
+        except Exception as e:  # noqa: BLE001
+            final_status = "failed"
+            final_error = str(e)
+            final_reason = "thesis_engine failed"
+            log.exception("cognition: thesis_engine failed for %s", symbol)
+
+        if thesis_id:
+            try:
+                await sharpen_thesis(thesis_id)
+                log.info("cognition: %s sharpen complete", symbol)
+            except Exception:  # noqa: BLE001
+                log.exception("cognition: sharpen failed for %s", symbol)
+            try:
+                await challenge_thesis(thesis_id)
+                log.info("cognition: %s challenge complete", symbol)
+            except Exception:  # noqa: BLE001
+                log.exception("cognition: challenge failed for %s", symbol)
+    finally:
         try:
-            await challenge_thesis(thesis_id)
-            log.info("cognition: %s challenge complete", symbol)
+            open_evidence = await load_open_evidence_requirements(pool, symbol)
         except Exception:  # noqa: BLE001
-            log.exception("cognition: challenge failed for %s", symbol)
+            log.warning("cognition: failed to reload evidence state for run ledger", exc_info=True)
+        await _finish_cognition_run(
+            pool,
+            run_id,
+            status=final_status,
+            reason=final_reason,
+            context_version=context_version,
+            thesis_id=thesis_id,
+            thesis_classification=thesis_classification,
+            evidence=open_evidence,
+            error=final_error,
+            source_ref={"candidate_id": candidate_id},
+        )
 
 
 async def _run_symbol_once(

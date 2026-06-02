@@ -492,6 +492,9 @@ sync open evidence rows from current source_health/counts
         |
         v
 run the same cognition pipeline for selected tickers
+        |
+        v
+write cognition_run with status, reason, blockers, retry
 ```
 
 Current defaults:
@@ -517,6 +520,26 @@ work, because the current standing view is what the operator is relying on.
 Each scheduled run records a `sweep_reason` such as `open_thesis_due`,
 `context_missing`, or `evidence_retry_due` into the pipeline source reference so
 the UI/audit trail can explain why the symbol was touched.
+
+Every event-driven or scheduled attempt writes `cognition_run`:
+
+```text
+cognition_run
+  symbol
+  trigger
+  sweep_reason
+  status = running | blocked_on_evidence | declined | drafted |
+           reconciled | no_change | failed
+  reason
+  context_version
+  thesis_id + thesis_classification
+  evidence_open_count + evidence_blocking_count
+  started_at + finished_at + next_retry_at
+```
+
+This is the durable "what did the brain just do?" ledger. Context and thesis
+timestamps show what changed; `cognition_run` shows that cognition actually ran,
+why it ran, what blocked it, and when it will retry.
 
 ```text
 cognition target priority
@@ -547,12 +570,15 @@ What works now:
   health before selecting cognition targets. That lets provider success,
   failures, no-new-row passes, and newly satisfied rows move tickers forward
   without waiting for an operator to open the ticker.
+- Every pipeline attempt is visible through `cognition_run`, Diagnostics, and
+  the selected-symbol Brain card. Failed, blocked, declined, no-change, drafted,
+  and reconciled runs are all recorded.
 
 Current gaps:
 
-- #128: the sweep is still split across source loops and cognition, but the
-  expensive source loops now use a tiered deep-research universe so active names
-  are no longer starved behind the broad screener pool.
+- #128: source loops and cognition still coordinate through `source_task` rather
+  than a single top-level controller process, but the run ledger now makes that
+  coordination observable.
 - #128: provider-wide retry gates now pause source tasks, and due source tasks
   move their symbols to the front of the expensive ingest scan universe. The
   FMP price, estimates, analyst-opinion, news, XBRL, EDGAR, FRED, and CBOE

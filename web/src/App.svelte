@@ -73,6 +73,18 @@
   // ---------- workspace state ----------
   type RightTab = "overview" | "analyst" | "technical" | "context" | "evidence" | "theses" | "alerts" | "decisions";
   type BottomMode = "brain" | "attention" | "events" | "discovery" | "decisions" | "calibration" | "diagnostics";
+  type WorkflowAction = "attention" | "evidence" | "thesis" | "decision" | "tracking" | "overview";
+  type SymbolWorkflow = {
+    state: string;
+    tone: string;
+    reason: string;
+    primary: string;
+    action: WorkflowAction;
+    attention: string;
+    evidence: string;
+    thesis: string;
+    decision: string;
+  };
 
   let selectedSymbol = $state<string | null>(null);
   let rightTab = $state<RightTab>("overview");
@@ -608,6 +620,9 @@
   let openSymbolPositions = $derived<PositionRow[]>(
     (symbolPositions ?? []).filter((p) => !p.closed_at),
   );
+  let selectedSymbolAttention = $derived<AttentionItem[]>(
+    attention.filter((item) => item.symbol === selectedSymbol),
+  );
   let retiredSymbolTheses = $derived.by<ThesisDetail[]>(() =>
     [...(symbolTheses ?? [])]
       .filter((t) => ["closed", "disqualified"].includes(t.state))
@@ -820,6 +835,14 @@
     if (!bottomOpen) bottomPane?.expand();
   }
 
+  function openDecisionDrawer(action = "skip") {
+    if (currentSymbolThesis) decThesisId = currentSymbolThesis.thesis_id;
+    decAction = action;
+    if (action === "enter") decChoice = "confirmed";
+    bottomMode = "decisions";
+    if (!bottomOpen) bottomPane?.expand();
+  }
+
   function openBrainDrawer() {
     bottomMode = "brain";
     if (!bottomOpen) bottomPane?.expand();
@@ -918,6 +941,219 @@
   function attentionLabel(m: WatchlistMember): string {
     const n = m.open_attention ?? 0;
     return n === 1 ? "1 attention" : `${n} attention`;
+  }
+
+  function selectedAttentionCount(): number {
+    return selectedSymbolAttention.length || selectedTicker?.open_attention || 0;
+  }
+
+  function blockingEvidenceCount(): number {
+    return (symbolEvidence ?? []).filter((req) =>
+      req.priority === "blocking" && req.blocking_state !== "satisfied"
+    ).length;
+  }
+
+  function openEvidenceCount(): number {
+    return (symbolEvidence ?? []).filter((req) => req.blocking_state !== "satisfied").length;
+  }
+
+  function workflowEvidenceText(): string {
+    if (symbolEvidence === undefined || symbolBrain === undefined) return "loading evidence";
+    const blocking = blockingEvidenceCount();
+    const open = openEvidenceCount();
+    if (blocking > 0) return `${blocking} blocking evidence`;
+    if (open > 0) return `${open} open evidence`;
+    if (symbolBrain) return `${symbolBrain.evidence.rows} facts · ${symbolBrain.status}`;
+    return "evidence ready";
+  }
+
+  function workflowThesisText(): string {
+    if (symbolTheses === undefined || symbolDeclines === undefined) return "loading thesis";
+    if (currentSymbolThesis) {
+      const direction = thesisDirectionLabel(forecastDirectionFrom(currentSymbolThesis.forecast));
+      return `${currentSymbolThesis.state.replace(/_/g, " ")} · ${direction}`;
+    }
+    if ((symbolDeclines ?? []).length > 0) return "declined attempt";
+    return "no thesis";
+  }
+
+  function workflowDecisionText(): string {
+    if (symbolDecisions === undefined || symbolPositions === undefined) return "loading decisions";
+    if (openSymbolPositions.length > 0) return `${openSymbolPositions.length} open position`;
+    if ((symbolDecisions ?? []).length > 0) return `${symbolDecisions?.length ?? 0} decision`;
+    return "no decision";
+  }
+
+  function workflowAttentionText(): string {
+    const n = selectedAttentionCount();
+    if (n > 0) return n === 1 ? "1 attention" : `${n} attention`;
+    return "no attention";
+  }
+
+  function workflowLoading(): boolean {
+    return [
+      symbolContext,
+      symbolEvidence,
+      symbolEvidenceItems,
+      symbolResearch,
+      symbolTechnical,
+      symbolBrain,
+      symbolTheses,
+      symbolDeclines,
+      symbolDecisions,
+      symbolPositions,
+    ].some((value) => value === undefined);
+  }
+
+  function buildWorkflow(): SymbolWorkflow {
+    const defaultWorkflow: SymbolWorkflow = {
+      state: "No symbol",
+      tone: "missing",
+      reason: "Pick a ticker to inspect.",
+      primary: "Overview",
+      action: "overview",
+      attention: "no attention",
+      evidence: "no evidence",
+      thesis: "no thesis",
+      decision: "no decision",
+    };
+    if (!selectedSymbol) return defaultWorkflow;
+
+    const attentionText = workflowAttentionText();
+    const evidenceText = workflowEvidenceText();
+    const thesisText = workflowThesisText();
+    const decisionText = workflowDecisionText();
+    const inPool = pool.some((item) => item.symbol === selectedSymbol);
+
+    if (!selectedTicker && inPool) {
+      return {
+        state: "Pool candidate",
+        tone: "candidate",
+        reason: "Not promoted into the active universe yet.",
+        primary: "Review candidate",
+        action: "attention",
+        attention: attentionText,
+        evidence: evidenceText,
+        thesis: thesisText,
+        decision: decisionText,
+      };
+    }
+    if (workflowLoading()) {
+      return {
+        state: "Loading ticker",
+        tone: "monitoring",
+        reason: "Loading context, evidence, thesis, and decision state.",
+        primary: "Overview",
+        action: "overview",
+        attention: attentionText,
+        evidence: evidenceText,
+        thesis: thesisText,
+        decision: decisionText,
+      };
+    }
+    if (blockingEvidenceCount() > 0 || !symbolContext) {
+      return {
+        state: symbolContext ? "Enriching evidence" : "Context missing",
+        tone: "blocked",
+        reason: symbolBrain?.reason ?? "Evidence/context is not ready for thesis work.",
+        primary: "Open evidence",
+        action: "evidence",
+        attention: attentionText,
+        evidence: evidenceText,
+        thesis: thesisText,
+        decision: decisionText,
+      };
+    }
+    if (openSymbolPositions.length > 0) {
+      return {
+        state: "Position tracking",
+        tone: "tracking",
+        reason: "A position is open; conditions and exits matter now.",
+        primary: "Track position",
+        action: "tracking",
+        attention: attentionText,
+        evidence: evidenceText,
+        thesis: thesisText,
+        decision: decisionText,
+      };
+    }
+    if ((symbolDecisions ?? []).length > 0) {
+      return {
+        state: "Decision recorded",
+        tone: "tracking",
+        reason: "A decision exists; review replay and follow-up conditions.",
+        primary: "Track decision",
+        action: "tracking",
+        attention: attentionText,
+        evidence: evidenceText,
+        thesis: thesisText,
+        decision: decisionText,
+      };
+    }
+    if (currentSymbolThesis) {
+      const state = currentSymbolThesis.state;
+      const isActionable = ["actionable", "armed", "building_conviction"].includes(state);
+      return {
+        state: isActionable ? "Actionable thesis" : "Monitoring thesis",
+        tone: isActionable ? "actionable" : "monitoring",
+        reason: currentSymbolThesis.edge_rationale,
+        primary: isActionable ? "Record decision" : "Review thesis",
+        action: isActionable ? "decision" : "thesis",
+        attention: attentionText,
+        evidence: evidenceText,
+        thesis: thesisText,
+        decision: decisionText,
+      };
+    }
+    if ((symbolDeclines ?? []).length > 0) {
+      return {
+        state: "Declined thesis",
+        tone: "declined",
+        reason: symbolDeclines?.[0]?.reason ?? "The system declined to invent an edge.",
+        primary: "Review decline",
+        action: "thesis",
+        attention: attentionText,
+        evidence: evidenceText,
+        thesis: thesisText,
+        decision: decisionText,
+      };
+    }
+    return {
+      state: "Context ready",
+      tone: "ready",
+      reason: symbolBrain?.reason ?? "Context exists; cognition should draft or decline a thesis.",
+      primary: "Check cognition",
+      action: "overview",
+      attention: attentionText,
+      evidence: evidenceText,
+      thesis: thesisText,
+      decision: decisionText,
+    };
+  }
+
+  function runWorkflowAction(action: WorkflowAction) {
+    if (action === "attention") {
+      bottomMode = selectedSymbolAttention.length > 0 ? "attention" : "discovery";
+      if (!bottomOpen) bottomPane?.expand();
+      return;
+    }
+    if (action === "evidence") {
+      rightTab = "evidence";
+      return;
+    }
+    if (action === "thesis") {
+      rightTab = "theses";
+      return;
+    }
+    if (action === "decision") {
+      openDecisionDrawer("enter");
+      return;
+    }
+    if (action === "tracking") {
+      rightTab = "decisions";
+      return;
+    }
+    rightTab = "overview";
   }
 
   function pctCompact(value: number | null | undefined): string {
@@ -1410,6 +1646,7 @@
   });
 
   let selectedTicker = $derived(tickerFor(selectedSymbol));
+  let selectedWorkflow = $derived.by<SymbolWorkflow>(() => buildWorkflow());
   let selectedParentTheses = $derived<BrainThesis[]>(
     brainOverview?.sectors.filter((thesis) =>
       selectedSymbol ? thesis.tickers.some((t) => t.symbol === selectedSymbol) : false,
@@ -1479,6 +1716,43 @@
   {#if error}
     <div class="error error-bar">{error} <button class="x" onclick={() => (error = null)} aria-label="dismiss">✕</button></div>
   {/if}
+
+  <section class={`workflow-strip tone-${selectedWorkflow.tone}`} data-testid="workflow-strip">
+    <div class="workflow-main">
+      <div class="workflow-copy">
+        <span class="workflow-kicker">workflow</span>
+        <strong>{selectedSymbol ?? "No symbol"} · {selectedWorkflow.state}</strong>
+        <p title={selectedWorkflow.reason}>{selectedWorkflow.reason}</p>
+      </div>
+      <button
+        type="button"
+        class="workflow-primary"
+        data-testid="workflow-primary"
+        onclick={() => runWorkflowAction(selectedWorkflow.action)}
+      >
+        {selectedWorkflow.primary}
+      </button>
+    </div>
+
+    <div class="workflow-rail" aria-label="Selected ticker workflow">
+      <button type="button" class="workflow-step" onclick={() => runWorkflowAction("attention")}>
+        <span>Attention</span>
+        <strong>{selectedWorkflow.attention}</strong>
+      </button>
+      <button type="button" class="workflow-step" onclick={() => runWorkflowAction("evidence")}>
+        <span>Evidence</span>
+        <strong>{selectedWorkflow.evidence}</strong>
+      </button>
+      <button type="button" class="workflow-step" onclick={() => runWorkflowAction("thesis")}>
+        <span>Thesis</span>
+        <strong>{selectedWorkflow.thesis}</strong>
+      </button>
+      <button type="button" class="workflow-step" onclick={() => runWorkflowAction("tracking")}>
+        <span>Decision</span>
+        <strong>{selectedWorkflow.decision}</strong>
+      </button>
+    </div>
+  </section>
 
   <!-- Body: left column (chart + bottom drawer stacked) + vertical splitter + right panel (full height) -->
   <PaneGroup direction="horizontal" autoSaveId="ws.v3.outer" class="body">
@@ -2849,8 +3123,8 @@
     position: fixed;
     inset: 0;
     display: grid;
-    /* Top bar (44) / body (fills). Error bar overlays via position:absolute. */
-    grid-template-rows: 44px minmax(0, 1fr);
+    /* Top bar / symbol workflow / body. Error bar overlays via position:absolute. */
+    grid-template-rows: 44px auto minmax(0, 1fr);
     grid-template-columns: 1fr;
     background: #0b0e14;
     overflow: hidden;
@@ -2906,6 +3180,115 @@
     background: transparent; border: 1px solid currentColor; border-radius: 3px;
     color: inherit; cursor: pointer; padding: 0 .35rem;
   }
+
+  .workflow-strip {
+    display: grid;
+    grid-template-columns: minmax(280px, .95fr) minmax(420px, 1.45fr);
+    gap: .6rem;
+    align-items: stretch;
+    min-height: 76px;
+    padding: .5rem .75rem;
+    border-bottom: 1px solid #1f2733;
+    background: #0d121b;
+    min-width: 0;
+  }
+  .workflow-main,
+  .workflow-rail {
+    min-width: 0;
+  }
+  .workflow-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: .65rem;
+    align-items: center;
+    border-left: 3px solid #45567a;
+    background: #0a0d14;
+    border-radius: 4px;
+    padding: .45rem .55rem;
+  }
+  .workflow-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: .12rem;
+  }
+  .workflow-kicker {
+    color: #7f8aa3;
+    font-size: .68rem;
+    text-transform: uppercase;
+    letter-spacing: 0;
+  }
+  .workflow-copy strong,
+  .workflow-step strong {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .workflow-copy p {
+    margin: 0;
+    color: #9aa3b8;
+    font-size: .78rem;
+    line-height: 1.25;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .workflow-primary {
+    background: #1b2230;
+    color: #cdd6f4;
+    border: 1px solid #45567a;
+    border-radius: 4px;
+    padding: .32rem .7rem;
+    font: inherit;
+    font-size: .78rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .workflow-primary:hover {
+    background: #263144;
+  }
+  .workflow-rail {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: .35rem;
+  }
+  .workflow-step {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: .12rem;
+    min-width: 0;
+    border: 1px solid #1f2733;
+    border-radius: 4px;
+    background: #0a0d14;
+    color: #cdd6f4;
+    padding: .42rem .5rem;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+  }
+  .workflow-step:hover {
+    border-color: #45567a;
+    background: #111827;
+  }
+  .workflow-step span {
+    color: #7f8aa3;
+    font-size: .68rem;
+    text-transform: uppercase;
+    letter-spacing: 0;
+  }
+  .workflow-step strong {
+    font-size: .82rem;
+  }
+  .workflow-strip.tone-candidate .workflow-main { border-left-color: rgb(180,190,254); }
+  .workflow-strip.tone-blocked .workflow-main { border-left-color: rgb(243,139,168); }
+  .workflow-strip.tone-tracking .workflow-main { border-left-color: rgb(137,180,250); }
+  .workflow-strip.tone-actionable .workflow-main { border-left-color: rgb(166,227,161); }
+  .workflow-strip.tone-monitoring .workflow-main,
+  .workflow-strip.tone-ready .workflow-main { border-left-color: rgb(249,226,175); }
+  .workflow-strip.tone-declined .workflow-main,
+  .workflow-strip.tone-missing .workflow-main { border-left-color: #6c7693; }
 
   .chart-panel {
     overflow: auto;
@@ -3626,6 +4009,24 @@
      vertically: chart on top, drawer in middle, sidebar at bottom. paneforge
      gracefully degrades when the outer PaneGroup is flex-column. */
   @media (max-width: 760px) {
+    .workspace {
+      grid-template-rows: auto auto minmax(0, 1fr);
+    }
+    .workflow-strip {
+      grid-template-columns: 1fr;
+      min-height: 0;
+      padding: .4rem .5rem;
+    }
+    .workflow-main {
+      grid-template-columns: minmax(0, 1fr);
+      gap: .35rem;
+    }
+    .workflow-primary {
+      width: 100%;
+    }
+    .workflow-rail {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
     :global([data-pane-group][data-direction="horizontal"]) {
       flex-direction: column !important;
     }

@@ -848,8 +848,9 @@ test("theses tab lists declined thesis attempts with reasons", async ({ page }) 
 
   await page.getByRole("button", { name: "theses" }).click();
 
+  const detail = page.getByRole("complementary");
   await expect(page.getByText("Declined thesis attempts")).toBeVisible();
-  await expect(page.getByText("Context contains no non-consensus edge yet")).toBeVisible();
+  await expect(detail.getByText("Context contains no non-consensus edge yet")).toBeVisible();
   await expect(page.getByText("No thesis attempts")).toHaveCount(0);
 });
 
@@ -876,6 +877,38 @@ test("overview explains selected symbol brain status and stale source", async ({
   await expect(brain).toContainText("tasks fmp price target consensus queued");
   await expect(brain).toContainText("SLA 30m");
   await expect(brain).toContainText("v2");
+});
+
+test("workflow rail shows selected ticker state and routes to thesis review", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+
+  const strip = page.getByTestId("workflow-strip");
+  await expect(strip).toContainText("MSFT");
+  await expect(strip).toContainText("Declined thesis");
+  await expect(strip).toContainText("1 open evidence");
+  await expect(strip).toContainText("declined attempt");
+  await expect(page.getByTestId("workflow-primary")).toHaveText("Review decline");
+
+  await page.getByTestId("workflow-primary").click();
+
+  await expect(page.locator(".tabs button.active")).toHaveText("theses");
+});
+
+test("workflow rail surfaces open position tracking and routes to decisions", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/symbol/OKTA");
+
+  const strip = page.getByTestId("workflow-strip");
+  await expect(strip).toContainText("OKTA");
+  await expect(strip).toContainText("Position tracking");
+  await expect(strip).toContainText("1 attention");
+  await expect(strip).toContainText("forming · bull");
+  await expect(page.getByTestId("workflow-primary")).toHaveText("Track position");
+
+  await page.getByTestId("workflow-primary").click();
+
+  await expect(page.locator(".tabs button.active")).toHaveText("decisions");
 });
 
 test("brain tab shows macro and theme theses with linked tickers", async ({ page }) => {
@@ -953,7 +986,7 @@ test("evidence tab shows retrieved research sources", async ({ page }) => {
   await mockApi(page);
   await page.goto("/");
 
-  await page.getByRole("button", { name: "evidence" }).click();
+  await page.locator(".tabs").getByRole("button", { name: "evidence", exact: true }).click();
 
   const requirement = page.locator(".evidence-card").filter({ hasText: "product/theme web research" }).first();
   await expect(requirement.locator("strong")).toHaveText("web research");
@@ -970,7 +1003,7 @@ test("evidence tab shows source task acquisition state", async ({ page }) => {
   await mockApi(page);
   await page.goto("/");
 
-  await page.getByRole("button", { name: "evidence" }).click();
+  await page.locator(".tabs").getByRole("button", { name: "evidence", exact: true }).click();
 
   const requirement = page.locator(".evidence-card").filter({ hasText: "analyst estimate snapshots" }).first();
   await expect(requirement).toContainText("high priority");

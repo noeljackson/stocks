@@ -40,6 +40,7 @@ pub struct BrainDecisionInput {
     pub open_evidence: i64,
     pub blocking_evidence: i64,
     pub due_evidence: i64,
+    pub source_task_delta: bool,
     pub has_context: bool,
     pub context_stale: bool,
     pub has_open_thesis: bool,
@@ -83,6 +84,20 @@ pub fn decide(input: BrainDecisionInput) -> BrainDecision {
             status: "due",
             next_action: "refresh_context",
             reason: "ticker context has not been synthesized",
+        };
+    }
+    if input.source_task_delta {
+        if input.has_open_thesis {
+            return BrainDecision {
+                status: "due",
+                next_action: "reevaluate_after_source_update",
+                reason: "new source work is newer than the current thesis evaluation",
+            };
+        }
+        return BrainDecision {
+            status: "due",
+            next_action: "draft_after_source_update",
+            reason: "new source work is newer than the last no-thesis decision",
         };
     }
     if input.due_evidence > 0 {
@@ -179,6 +194,7 @@ mod tests {
             open_evidence: 0,
             blocking_evidence: 0,
             due_evidence: 0,
+            source_task_delta: false,
             has_context: false,
             context_stale: false,
             has_open_thesis: false,
@@ -198,6 +214,7 @@ mod tests {
             open_evidence: 0,
             blocking_evidence: 0,
             due_evidence: 0,
+            source_task_delta: false,
             has_context: true,
             context_stale: true,
             has_open_thesis: true,
@@ -210,6 +227,46 @@ mod tests {
     }
 
     #[test]
+    fn decision_asks_for_update_when_source_task_delta_arrives() {
+        let got = decide(BrainDecisionInput {
+            source_blocked: false,
+            evidence_rows: 7,
+            open_evidence: 0,
+            blocking_evidence: 0,
+            due_evidence: 0,
+            source_task_delta: true,
+            has_context: true,
+            context_stale: false,
+            has_open_thesis: true,
+            thesis_stale: false,
+            any_source_stale: false,
+        });
+
+        assert_eq!(got.status, "due");
+        assert_eq!(got.next_action, "reevaluate_after_source_update");
+    }
+
+    #[test]
+    fn decision_retries_no_thesis_when_source_task_delta_arrives() {
+        let got = decide(BrainDecisionInput {
+            source_blocked: false,
+            evidence_rows: 7,
+            open_evidence: 2,
+            blocking_evidence: 0,
+            due_evidence: 0,
+            source_task_delta: true,
+            has_context: true,
+            context_stale: false,
+            has_open_thesis: false,
+            thesis_stale: false,
+            any_source_stale: false,
+        });
+
+        assert_eq!(got.status, "due");
+        assert_eq!(got.next_action, "draft_after_source_update");
+    }
+
+    #[test]
     fn decision_waits_on_nonblocking_evidence_before_retrying_declined_symbol() {
         let got = decide(BrainDecisionInput {
             source_blocked: false,
@@ -217,6 +274,7 @@ mod tests {
             open_evidence: 6,
             blocking_evidence: 0,
             due_evidence: 0,
+            source_task_delta: false,
             has_context: true,
             context_stale: false,
             has_open_thesis: false,
@@ -236,6 +294,7 @@ mod tests {
             open_evidence: 0,
             blocking_evidence: 0,
             due_evidence: 0,
+            source_task_delta: false,
             has_context: true,
             context_stale: false,
             has_open_thesis: true,

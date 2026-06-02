@@ -445,5 +445,9 @@ position state      -> position
 outcome scoring     -> outcome
 ```
 
+Decision rows include structured disagreement feedback for skip/reject choices.
+Those reason codes are the canonical operator-feedback input for future
+classifier, discovery, freshness, LLM prompt, and risk tuning loops.
+
 Append-only tables remain append-only. State changes go through the canonical
 service/API path for that object.

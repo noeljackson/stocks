@@ -1293,6 +1293,7 @@ impl Store {
     pub async fn decisions_for_symbol(&self, symbol: &str) -> Result<Vec<serde_json::Value>> {
         let rows = sqlx::query(
             r#"SELECT d.decision_id, d.thesis_id, d.action, d.user_choice,
+                      d.disagreement_reason, d.disagreement_detail,
                       d.sizing, d.at, t.state AS thesis_state,
                       t.forecast->>'direction' AS thesis_direction,
                       COALESCE(d.sizing->>'side', '') AS side,
@@ -1316,6 +1317,8 @@ impl Store {
                     "thesis_id": r.try_get::<Option<uuid::Uuid>, _>("thesis_id")?,
                     "action": r.try_get::<String, _>("action")?,
                     "user_choice": r.try_get::<Option<String>, _>("user_choice")?,
+                    "disagreement_reason": r.try_get::<Option<String>, _>("disagreement_reason")?,
+                    "disagreement_detail": r.try_get::<Option<String>, _>("disagreement_detail")?,
                     "sizing": r.try_get::<Option<serde_json::Value>, _>("sizing")?,
                     "thesis_state": r.try_get::<String, _>("thesis_state")?,
                     "thesis_direction": r.try_get::<Option<String>, _>("thesis_direction")?,
@@ -1409,7 +1412,11 @@ impl Store {
                        THEN 'enter bullish'
                      ELSE d.action
                    END AS label,
-                   COALESCE(d.user_choice, '') AS detail
+                   concat_ws(
+                       ' · ',
+                       NULLIF(d.user_choice, ''),
+                       NULLIF(d.disagreement_reason, '')
+                   ) AS detail
               FROM decision d
               JOIN thesis t USING (thesis_id)
              WHERE t.symbol = $1 AND d.at > now() - ($2 || ' days')::interval

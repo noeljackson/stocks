@@ -862,6 +862,8 @@ export interface DecisionRow {
   thesis_id?: string | null;
   action: string;
   user_choice?: string | null;
+  disagreement_reason?: string | null;
+  disagreement_detail?: string | null;
   sizing?: Record<string, unknown> | null;
   thesis_state?: string | null;
   thesis_direction?: string | null;
@@ -930,6 +932,8 @@ export async function postDecision(d: {
   thesis_id?: string;
   action: string;
   user_choice: string;
+  disagreement_reason?: string;
+  disagreement_detail?: string;
   sizing?: unknown;
   manual_fill?: unknown;
   chart_range_seen?: string;

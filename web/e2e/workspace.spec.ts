@@ -820,6 +820,8 @@ async function mockApi(page: Page): Promise<Calls> {
           decision_id: "8b4c3f5b-8288-49ff-9282-b4398abe85ba",
           action: "skip",
           user_choice: "deferred",
+          disagreement_reason: "valuation_priced",
+          disagreement_detail: "Story is true, but the chart already reflects it.",
         },
         captured_at: "2026-06-01T00:02:00Z",
       });
@@ -832,6 +834,8 @@ async function mockApi(page: Page): Promise<Calls> {
         thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
         action: "skip",
         user_choice: "deferred",
+        disagreement_reason: "valuation_priced",
+        disagreement_detail: "Story is true, but the chart already reflects it.",
         sizing: { thesis_direction: "up" },
         thesis_state: "forming",
         thesis_direction: "up",
@@ -1295,6 +1299,28 @@ test("decisions tab shows positions and posts manual exit fills", async ({ page 
   });
 });
 
+test("decision form requires disagreement reason for skip decisions", async ({ page }) => {
+  const calls = await mockApi(page);
+  await page.goto("/symbol/OKTA");
+
+  await page.locator(".bottom-tabs").getByRole("button", { name: "decisions" }).click();
+  await page.getByRole("button", { name: "Submit" }).click();
+
+  await expect(page.getByText("choose why you disagree")).toBeVisible();
+
+  await page.getByLabel("Why").selectOption("valuation_priced");
+  await page.getByLabel("Detail").fill("Story is true, but the chart already reflects it.");
+  await page.getByRole("button", { name: "Submit" }).click();
+
+  await expect.poll(() => calls.decisionBody).toMatchObject({
+    thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+    action: "skip",
+    user_choice: "deferred",
+    disagreement_reason: "valuation_priced",
+    disagreement_detail: "Story is true, but the chart already reflects it.",
+  });
+});
+
 test("decisions tab opens decision replay snapshot", async ({ page }) => {
   await mockApi(page);
   await page.goto("/symbol/OKTA");
@@ -1310,6 +1336,7 @@ test("decisions tab opens decision replay snapshot", async ({ page }) => {
   await expect(replay).toContainText("64");
   await expect(replay).toContainText("ALL 1D");
   await expect(replay).toContainText("pass");
+  await expect(replay).toContainText("disagreement: valuation priced");
   await expect(replay).toContainText("confidence monitoring");
   await expect(replay).toContainText("OKTA customer deployment article supports consolidation demand");
 });

@@ -795,6 +795,13 @@ outcome.
    Confirm/reject/defer a candidate, transition a thesis, or accept/skip a
    trade proposal.
 
+   Skip/reject decisions require a structured disagreement reason. This is not
+   just form metadata: `wrong_cluster`, `not_my_edge`, `signal_too_weak`,
+   `valuation_priced`, `data_stale`, `llm_overreached`, and `risk_too_high`
+   feed the classifier, discovery thresholds, freshness checks, prompt tuning,
+   and risk overlay. Free-text detail is stored when the reason is `other` or
+   when the operator wants to preserve nuance.
+
 6. Position Monitor
    Track actual exposure, thesis conditions, risk state, and exit reasons.
 

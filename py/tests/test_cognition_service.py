@@ -11,9 +11,11 @@ from stocks.cognition_service import (
     _next_retry_from_evidence,
     _reclaim_running_cognition_runs,
     _reclaim_stale_cognition_runs,
+    _run_sweep_targets,
     _run_symbol_once,
     _select_sweep_targets,
     _status_for_thesis_result,
+    _sweep_concurrency,
     _sweep_trigger,
 )
 
@@ -223,6 +225,103 @@ def test_select_sweep_targets_preserves_order_when_no_bootstrap_work() -> None:
     selected = _select_sweep_targets(rows, limit=2, bootstrap_floor=1)
 
     assert [row["symbol"] for row in selected] == ["MU", "NVDA"]
+
+
+def _sweep_row(symbol: str) -> dict:
+    return {
+        "symbol": symbol,
+        "open_theses": 1,
+        "evidence_rows": 4,
+        "thesis_at": None,
+        "thesis_evaluated_at": None,
+        "source_task_at": None,
+        "thesis_id": f"thesis-{symbol}",
+        "sweep_reason": "open_thesis_due",
+        "context_version": 7,
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_sweep_targets_uses_bounded_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = FakePool(open_theses=1)
+    active = 0
+    max_active = 0
+    calls: list[tuple[str, dict]] = []
+
+    async def run_pipeline(pool_arg, symbol: str, *, source_ref: dict, candidate_id=None) -> None:
+        nonlocal active, max_active
+        assert pool_arg is pool
+        assert candidate_id is None
+        active += 1
+        max_active = max(max_active, active)
+        try:
+            await asyncio.sleep(0.02)
+            calls.append((symbol, source_ref))
+        finally:
+            active -= 1
+
+    monkeypatch.setenv("COGNITION_SWEEP_CONCURRENCY", "2")
+    monkeypatch.setattr(cognition_service, "_run_pipeline", run_pipeline)
+
+    await _run_sweep_targets(
+        pool,
+        [_sweep_row("MU"), _sweep_row("NVDA"), _sweep_row("AMD")],
+    )
+
+    assert max_active == 2
+    assert [symbol for symbol, _ in calls] == ["MU", "NVDA", "AMD"]
+    assert {ref["trigger"] for _, ref in calls} == {"open_thesis_update_loop"}
+    assert {ref["sweep_concurrency"] for _, ref in calls} == {2}
+
+
+def test_sweep_concurrency_defaults_to_two(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COGNITION_SWEEP_CONCURRENCY", raising=False)
+
+    assert _sweep_concurrency() == 2
+
+
+@pytest.mark.asyncio
+async def test_sweep_once_runs_ticker_targets_before_parent_brain_maintenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = FakePool(open_theses=1)
+    order: list[str] = []
+
+    async def reclaim(_pool, *, max_age_minutes: int) -> int:
+        assert max_age_minutes > 0
+        order.append("reclaim")
+        return 0
+
+    async def refresh_evidence(_pool, *, limit: int) -> int:
+        assert limit > 0
+        order.append("evidence")
+        return 0
+
+    async def sweep_targets(_pool, **kwargs) -> list[dict]:
+        assert kwargs["limit"] > 0
+        order.append("select")
+        return [_sweep_row("MU")]
+
+    async def run_targets(_pool, targets: list) -> None:
+        assert [row["symbol"] for row in targets] == ["MU"]
+        order.append("tickers")
+
+    async def refresh_brain(_pool, *, limit: int) -> int:
+        assert limit > 0
+        order.append("brain")
+        return 1
+
+    monkeypatch.setattr(cognition_service, "_reclaim_stale_cognition_runs", reclaim)
+    monkeypatch.setattr(cognition_service, "refresh_open_evidence_requirements", refresh_evidence)
+    monkeypatch.setattr(cognition_service, "_sweep_targets", sweep_targets)
+    monkeypatch.setattr(cognition_service, "_run_sweep_targets", run_targets)
+    monkeypatch.setattr(cognition_service, "refresh_brain_theses", refresh_brain)
+
+    await cognition_service._sweep_once(pool)
+
+    assert order == ["reclaim", "evidence", "select", "tickers", "brain"]
 
 
 def test_decline_assignment_waits_on_llm_missing_evidence() -> None:

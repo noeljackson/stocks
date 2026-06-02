@@ -22,6 +22,7 @@ Reads:
     COGNITION_DECLINE_RETRY_HOURS — default 6
     COGNITION_MAX_SYMBOLS_PER_SWEEP — default 20
     COGNITION_MIN_SYMBOLS_PER_SWEEP — default 20
+    COGNITION_SWEEP_CONCURRENCY — default 2
     COGNITION_EVIDENCE_SYNC_LIMIT — default 200
     BRAIN_THESIS_SWEEP_LIMIT — default 50
     COGNITION_ACK_PROGRESS_SECONDS — default 10
@@ -109,6 +110,10 @@ def _effective_sweep_limit() -> int:
 def _bootstrap_sweep_floor(limit: int) -> int:
     configured = max(1, _env_int("COGNITION_BOOTSTRAP_SYMBOLS_PER_SWEEP", 5))
     return min(limit, configured)
+
+
+def _sweep_concurrency() -> int:
+    return max(1, _env_int("COGNITION_SWEEP_CONCURRENCY", 2))
 
 
 def _effective_sweep_interval_seconds() -> int:
@@ -802,6 +807,55 @@ def _select_sweep_targets(
     return selected
 
 
+async def _run_sweep_targets(pool: asyncpg.Pool, targets: list) -> None:
+    if not targets:
+        return
+    concurrency = min(_sweep_concurrency(), len(targets))
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def run_target(row) -> None:
+        async with semaphore:
+            await _run_sweep_target(pool, row)
+
+    await asyncio.gather(*(run_target(row) for row in targets))
+
+
+async def _run_sweep_target(pool: asyncpg.Pool, row) -> None:
+    symbol = row["symbol"]
+    open_theses = int(row["open_theses"] or 0)
+    evidence_rows = int(row["evidence_rows"] or 0)
+    thesis_at = row["thesis_at"].isoformat() if row["thesis_at"] else None
+    thesis_evaluated_at = (
+        row["thesis_evaluated_at"].isoformat() if row["thesis_evaluated_at"] else None
+    )
+    source_task_at = row["source_task_at"].isoformat() if row["source_task_at"] else None
+    trigger = _sweep_trigger(evidence_rows, row["thesis_id"], row["sweep_reason"])
+
+    async def run_symbol() -> None:
+        await _run_pipeline(
+            pool,
+            symbol,
+            source_ref={
+                "reason": "no_edge",
+                "trigger": trigger,
+                "context_version": row["context_version"],
+                "thesis_id": str(row["thesis_id"]) if row["thesis_id"] else None,
+                "thesis_at": thesis_at,
+                "thesis_evaluated_at": thesis_evaluated_at,
+                "source_task_at": source_task_at,
+                "sweep_reason": row["sweep_reason"],
+                "sweep_concurrency": _sweep_concurrency(),
+            },
+        )
+
+    await _run_symbol_once(
+        symbol,
+        run_symbol,
+    )
+    if open_theses > 0:
+        log.info("cognition sweep: %s reconciled existing thesis", symbol)
+
+
 async def _sweep_once(pool: asyncpg.Pool) -> None:
     context_max_age_hours = _env_int("COGNITION_CONTEXT_MAX_AGE_HOURS", 12)
     open_thesis_max_age_minutes = _open_thesis_max_age_minutes()
@@ -817,9 +871,6 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
     )
     if reclaimed_runs:
         log.warning("cognition sweep: reclaimed %d stale running run(s)", reclaimed_runs)
-    brain_updated = await refresh_brain_theses(pool, limit=brain_thesis_limit)
-    if brain_updated:
-        log.info("cognition sweep: evaluated %d parent brain thesis row(s)", brain_updated)
     evidence_synced = await refresh_open_evidence_requirements(
         pool,
         limit=evidence_sync_limit,
@@ -840,48 +891,16 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
     )
     if not targets:
         log.info("cognition sweep: no stale active tickers")
-        return
-    log.info("cognition sweep: %d target(s)", len(targets))
-    for row in targets:
-        symbol = row["symbol"]
-        open_theses = int(row["open_theses"] or 0)
-        evidence_rows = int(row["evidence_rows"] or 0)
-        thesis_at = row["thesis_at"].isoformat() if row["thesis_at"] else None
-        thesis_evaluated_at = (
-            row["thesis_evaluated_at"].isoformat() if row["thesis_evaluated_at"] else None
+    else:
+        log.info(
+            "cognition sweep: %d target(s), concurrency=%d",
+            len(targets),
+            min(_sweep_concurrency(), len(targets)),
         )
-        source_task_at = row["source_task_at"].isoformat() if row["source_task_at"] else None
-        trigger = _sweep_trigger(evidence_rows, row["thesis_id"], row["sweep_reason"])
-
-        async def run_symbol(
-            symbol: str = symbol,
-            row: asyncpg.Record = row,
-            thesis_at: str | None = thesis_at,
-            thesis_evaluated_at: str | None = thesis_evaluated_at,
-            source_task_at: str | None = source_task_at,
-            trigger: str = trigger,
-        ) -> None:
-            await _run_pipeline(
-                pool,
-                symbol,
-                source_ref={
-                    "reason": "no_edge",
-                    "trigger": trigger,
-                    "context_version": row["context_version"],
-                    "thesis_id": str(row["thesis_id"]) if row["thesis_id"] else None,
-                    "thesis_at": thesis_at,
-                    "thesis_evaluated_at": thesis_evaluated_at,
-                    "source_task_at": source_task_at,
-                    "sweep_reason": row["sweep_reason"],
-                },
-            )
-
-        await _run_symbol_once(
-            symbol,
-            run_symbol,
-        )
-        if open_theses > 0:
-            log.info("cognition sweep: %s reconciled existing thesis", symbol)
+        await _run_sweep_targets(pool, targets)
+    brain_updated = await refresh_brain_theses(pool, limit=brain_thesis_limit)
+    if brain_updated:
+        log.info("cognition sweep: evaluated %d parent brain thesis row(s)", brain_updated)
 
 
 async def _sweep_loop(pool: asyncpg.Pool) -> None:
@@ -890,9 +909,10 @@ async def _sweep_loop(pool: asyncpg.Pool) -> None:
         log.info("cognition maintenance sweep disabled")
         return
     log.info(
-        "cognition maintenance sweep enabled: every %ss, max %s symbols",
+        "cognition maintenance sweep enabled: every %ss, max %s symbols, concurrency %s",
         interval,
         _effective_sweep_limit(),
+        _sweep_concurrency(),
     )
     await asyncio.sleep(5)
     while True:
@@ -919,7 +939,11 @@ async def _message_loop(pool: asyncpg.Pool, psub) -> None:
 
 async def run() -> None:
     cfg = config.load()
-    pool = await asyncpg.create_pool(cfg.database_url, min_size=1, max_size=3)
+    pool = await asyncpg.create_pool(
+        cfg.database_url,
+        min_size=1,
+        max_size=max(3, _sweep_concurrency() + 2),
+    )
     assert pool is not None
     reclaimed_runs = await _reclaim_running_cognition_runs(pool)
     if reclaimed_runs:

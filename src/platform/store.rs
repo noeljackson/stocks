@@ -15,8 +15,9 @@ use std::time::Duration;
 
 use crate::llm::prompts::{InvocationRecorder, InvocationRow};
 use crate::platform::domain::{
-    Alert, AlertKind, Condition, MarketStateRow, ThesisDetail, ThesisSubstance, ThesisVersionEvent,
-    TickerContextRow, TickerRow, Watchlist, WatchlistMember, WellFormedCondCounts,
+    Alert, AlertKind, Condition, MarketStateRow, ThesisDetail, ThesisFreshnessComponent,
+    ThesisSubstance, ThesisVersionEvent, TickerContextRow, TickerRow, Watchlist, WatchlistMember,
+    WellFormedCondCounts,
 };
 use crate::platform::technical::TechnicalBar;
 use crate::thesis::substance::{self, Thesis as SubstanceInput};
@@ -31,6 +32,147 @@ pub struct IntradayBarCoverage {
     pub oldest: Option<DateTime<Utc>>,
     pub latest: Option<DateTime<Utc>>,
     pub bars: i64,
+}
+
+#[derive(Debug, Clone)]
+struct ThesisFreshnessSummary {
+    score: f64,
+    status: String,
+    confidence_cap: Option<String>,
+    penalties: Vec<String>,
+    components: Vec<ThesisFreshnessComponent>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FreshnessThresholds {
+    fresh: ChronoDuration,
+    stale: ChronoDuration,
+    old: ChronoDuration,
+}
+
+fn age_component(
+    name: &str,
+    now: DateTime<Utc>,
+    last_at: Option<DateTime<Utc>>,
+    thresholds: FreshnessThresholds,
+    penalty: &str,
+) -> (ThesisFreshnessComponent, Option<String>) {
+    let Some(last_at) = last_at else {
+        return (
+            ThesisFreshnessComponent {
+                name: name.to_string(),
+                status: "missing".to_string(),
+                score: 0.3,
+                last_at: None,
+                reason: format!("{name} has no observed timestamp"),
+            },
+            Some(format!("{name}: missing")),
+        );
+    };
+    let age = now
+        .signed_duration_since(last_at)
+        .max(ChronoDuration::zero());
+    let (status, score, reason, component_penalty) = if age <= thresholds.fresh {
+        (
+            "fresh",
+            1.0,
+            format!("{name} checked within freshness target"),
+            None,
+        )
+    } else if age <= thresholds.stale {
+        (
+            "aging",
+            0.8,
+            format!("{name} is outside ideal freshness"),
+            None,
+        )
+    } else if age <= thresholds.old {
+        (
+            "stale",
+            0.6,
+            format!("{name} is stale"),
+            Some(format!("{name}: {penalty}")),
+        )
+    } else {
+        (
+            "old",
+            0.4,
+            format!("{name} is too old for high-confidence promotion"),
+            Some(format!("{name}: {penalty}")),
+        )
+    };
+    (
+        ThesisFreshnessComponent {
+            name: name.to_string(),
+            status: status.to_string(),
+            score,
+            last_at: Some(last_at),
+            reason,
+        },
+        component_penalty,
+    )
+}
+
+fn news_component(
+    recent_news_14d: i64,
+    last_at: Option<DateTime<Utc>>,
+) -> (ThesisFreshnessComponent, Option<String>) {
+    let (status, score, reason, penalty) = if recent_news_14d >= 3 {
+        (
+            "fresh",
+            1.0,
+            format!("{recent_news_14d} recent articles in the last 14 days"),
+            None,
+        )
+    } else if recent_news_14d > 0 {
+        (
+            "thin",
+            0.7,
+            format!("only {recent_news_14d} recent article(s) in the last 14 days"),
+            Some("news: narrative evidence is thin".to_string()),
+        )
+    } else {
+        (
+            "missing",
+            0.5,
+            "no recent articles in the last 14 days".to_string(),
+            Some("news: cannot rely on sentiment-shift evidence".to_string()),
+        )
+    };
+    (
+        ThesisFreshnessComponent {
+            name: "news".to_string(),
+            status: status.to_string(),
+            score,
+            last_at,
+            reason,
+        },
+        penalty,
+    )
+}
+
+fn freshness_status(score: f64) -> String {
+    if score >= 0.85 {
+        "fresh".to_string()
+    } else if score >= 0.50 {
+        "stale".to_string()
+    } else {
+        "limited".to_string()
+    }
+}
+
+fn confidence_cap(score: f64, components: &[ThesisFreshnessComponent]) -> Option<String> {
+    if score < 0.50 {
+        return Some("low".to_string());
+    }
+    if score < 0.85
+        || components
+            .iter()
+            .any(|c| c.name == "context" && matches!(c.status.as_str(), "stale" | "old"))
+    {
+        return Some("medium".to_string());
+    }
+    None
 }
 
 impl Store {
@@ -2082,6 +2224,116 @@ impl Store {
     /// Loads all theses for a symbol plus their version-history audit trail.
     /// Returns most-recently-updated first so the UI sees the latest thesis on
     /// top when there are multiple.
+    async fn thesis_freshness_for_symbol(&self, symbol: &str) -> Result<ThesisFreshnessSummary> {
+        let row = sqlx::query(
+            r#"SELECT
+                  (SELECT created_at
+                     FROM ticker_context
+                    WHERE symbol = $1
+                 ORDER BY version DESC
+                    LIMIT 1) AS context_at,
+                  (SELECT max(snapshot_at)
+                     FROM estimate_snapshot
+                    WHERE symbol = $1) AS estimates_at,
+                  (SELECT max(ingested_at)
+                     FROM news_article
+                    WHERE symbol = $1) AS news_at,
+                  (SELECT count(*)
+                     FROM news_article
+                    WHERE symbol = $1
+                      AND published_at >= now() - interval '14 days') AS recent_news_14d,
+                  (SELECT max(COALESCE(last_success_at, last_started_at, updated_at))
+                     FROM source_health
+                    WHERE source IN ('fred', 'cboe')) AS market_at"#,
+        )
+        .bind(symbol)
+        .fetch_one(&self.pool)
+        .await
+        .context("thesis freshness query")?;
+
+        let now = Utc::now();
+        let mut penalties = Vec::new();
+        let mut components = Vec::new();
+
+        let push = |components: &mut Vec<ThesisFreshnessComponent>,
+                    penalties: &mut Vec<String>,
+                    item: (ThesisFreshnessComponent, Option<String>)| {
+            components.push(item.0);
+            if let Some(penalty) = item.1 {
+                penalties.push(penalty);
+            }
+        };
+
+        push(
+            &mut components,
+            &mut penalties,
+            age_component(
+                "market",
+                now,
+                row.try_get("market_at").ok().flatten(),
+                FreshnessThresholds {
+                    fresh: ChronoDuration::hours(24),
+                    stale: ChronoDuration::days(7),
+                    old: ChronoDuration::days(30),
+                },
+                "market regime/crowd evidence is too old for high confidence",
+            ),
+        );
+        push(
+            &mut components,
+            &mut penalties,
+            age_component(
+                "context",
+                now,
+                row.try_get("context_at").ok().flatten(),
+                FreshnessThresholds {
+                    fresh: ChronoDuration::days(7),
+                    stale: ChronoDuration::days(30),
+                    old: ChronoDuration::days(90),
+                },
+                "narrative context is stale",
+            ),
+        );
+        push(
+            &mut components,
+            &mut penalties,
+            age_component(
+                "estimates",
+                now,
+                row.try_get("estimates_at").ok().flatten(),
+                FreshnessThresholds {
+                    fresh: ChronoDuration::days(14),
+                    stale: ChronoDuration::days(60),
+                    old: ChronoDuration::days(120),
+                },
+                "estimate-revision evidence is too old for actionable promotion",
+            ),
+        );
+        push(
+            &mut components,
+            &mut penalties,
+            news_component(
+                row.try_get("recent_news_14d").unwrap_or(0),
+                row.try_get("news_at").ok().flatten(),
+            ),
+        );
+
+        let score = components
+            .iter()
+            .fold(1.0_f64, |acc, component| acc * component.score)
+            .clamp(0.0, 1.0);
+        let status = freshness_status(score);
+        let confidence_cap = confidence_cap(score, &components);
+
+        Ok(ThesisFreshnessSummary {
+            score,
+            status,
+            confidence_cap,
+            penalties,
+            components,
+        })
+    }
+
     pub async fn theses_for_symbol(&self, symbol: &str) -> Result<Vec<ThesisDetail>> {
         let rows = sqlx::query(
             r#"SELECT thesis_id, symbol, cluster_id, cluster_thesis, state,
@@ -2105,6 +2357,7 @@ impl Store {
         .await
         .context("theses_for_symbol")?;
 
+        let freshness = self.thesis_freshness_for_symbol(symbol).await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             let thesis_id: uuid::Uuid = row.try_get("thesis_id")?;
@@ -2220,6 +2473,11 @@ impl Store {
                     invalidation: u32::try_from(wfc.invalidation).unwrap_or(0),
                     fulfillment: u32::try_from(wfc.fulfillment).unwrap_or(0),
                 },
+                freshness_score: freshness.score,
+                freshness_status: freshness.status.clone(),
+                confidence_cap: freshness.confidence_cap.clone(),
+                freshness_penalties: freshness.penalties.clone(),
+                freshness_components: freshness.components.clone(),
             };
 
             out.push(ThesisDetail {
@@ -3075,5 +3333,73 @@ impl InvocationRecorder for Store {
             row.response_summary,
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn freshness_components_penalize_stale_context() {
+        let now = Utc.with_ymd_and_hms(2026, 6, 2, 12, 0, 0).unwrap();
+        let (component, penalty) = age_component(
+            "context",
+            now,
+            Some(Utc.with_ymd_and_hms(2026, 4, 1, 12, 0, 0).unwrap()),
+            FreshnessThresholds {
+                fresh: ChronoDuration::days(7),
+                stale: ChronoDuration::days(30),
+                old: ChronoDuration::days(90),
+            },
+            "narrative context is stale",
+        );
+
+        assert_eq!(component.status, "stale");
+        assert_eq!(component.score, 0.6);
+        assert_eq!(
+            penalty,
+            Some("context: narrative context is stale".to_string())
+        );
+    }
+
+    #[test]
+    fn freshness_confidence_cap_blocks_sub_high_scores() {
+        let components = vec![
+            ThesisFreshnessComponent {
+                name: "market".to_string(),
+                status: "fresh".to_string(),
+                score: 1.0,
+                last_at: None,
+                reason: "fresh".to_string(),
+            },
+            ThesisFreshnessComponent {
+                name: "context".to_string(),
+                status: "stale".to_string(),
+                score: 0.6,
+                last_at: None,
+                reason: "stale".to_string(),
+            },
+        ];
+
+        assert_eq!(freshness_status(0.60), "stale");
+        assert_eq!(
+            confidence_cap(0.60, &components),
+            Some("medium".to_string())
+        );
+        assert_eq!(confidence_cap(0.40, &components), Some("low".to_string()));
+    }
+
+    #[test]
+    fn news_component_penalizes_missing_recent_coverage() {
+        let (component, penalty) = news_component(0, None);
+
+        assert_eq!(component.status, "missing");
+        assert_eq!(component.score, 0.5);
+        assert_eq!(
+            penalty,
+            Some("news: cannot rely on sentiment-shift evidence".to_string())
+        );
     }
 }

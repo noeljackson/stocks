@@ -280,6 +280,26 @@ async fn transition_thesis(
         };
         return (StatusCode::BAD_REQUEST, Json(body)).into_response();
     }
+    if matches!(req.to, crate::platform::domain::ThesisState::Actionable)
+        && t.substance
+            .as_ref()
+            .is_some_and(|s| s.freshness_score < 0.85)
+    {
+        let sub = t.substance.as_ref().expect("checked above");
+        let mut missing = vec![format!(
+            "freshness_score {:.0}% below actionable threshold",
+            sub.freshness_score * 100.0
+        )];
+        missing.extend(sub.freshness_penalties.clone());
+        let body = TransitionErr {
+            error: format!(
+                "blocked by stale evidence: confidence capped at {}",
+                sub.confidence_cap.as_deref().unwrap_or("medium")
+            ),
+            missing,
+        };
+        return (StatusCode::BAD_REQUEST, Json(body)).into_response();
+    }
 
     // 4. Apply the transition + write a thesis_state_history row.
     if let Err(e) = gw

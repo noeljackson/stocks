@@ -583,6 +583,24 @@ or normalized evidence newer than thesis evaluation
   -> invalidated: transition/disqualification review
 ```
 
+Thesis substance separates two questions:
+
+```text
+structural substance
+  -> are forecast, conditions, invalidation, trigger, sizing, and fulfillment present?
+
+input freshness
+  -> are market regime/crowd, ticker context, estimates, and news current enough
+     to trust the claim?
+```
+
+The thesis detail response carries `substance.freshness_score`,
+`substance.freshness_status`, component scores, penalties, and an optional
+`confidence_cap`. A thesis can be structurally complete while freshness caps it
+at medium/low. Promotion into `actionable` is blocked when the freshness score
+is below the high-confidence threshold, so stale evidence cannot silently become
+a trade recommendation.
+
 The system should never create multiple open theses for MU or any other symbol.
 New facts reconcile into the canonical current thesis and show as a timeline.
 

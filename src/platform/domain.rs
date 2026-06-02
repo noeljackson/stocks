@@ -237,6 +237,26 @@ pub struct ThesisSubstance {
     pub missing: Vec<String>,
     pub blocked_at: Option<ThesisState>,
     pub well_formed: WellFormedCondCounts,
+    #[serde(default)]
+    pub freshness_score: f64,
+    #[serde(default)]
+    pub freshness_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence_cap: Option<String>,
+    #[serde(default)]
+    pub freshness_penalties: Vec<String>,
+    #[serde(default)]
+    pub freshness_components: Vec<ThesisFreshnessComponent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThesisFreshnessComponent {
+    pub name: String,
+    pub status: String,
+    pub score: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_at: Option<DateTime<Utc>>,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]

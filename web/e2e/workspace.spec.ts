@@ -608,7 +608,21 @@ async function mockApi(page: Page): Promise<Calls> {
             added_by: "system",
           },
         ],
-        substance: null,
+        substance: {
+          score: 2,
+          max_score: 6,
+          missing: ["conviction_conditions", "trigger_conditions", "invalidation_conditions", "intended_size", "fulfillment_conditions"],
+          blocked_at: "building_conviction",
+          well_formed: { conviction: 0, trigger: 0, invalidation: 0, fulfillment: 0 },
+          freshness_score: 0.42,
+          freshness_status: "limited",
+          confidence_cap: "low",
+          freshness_penalties: ["context: narrative context is stale"],
+          freshness_components: [
+            { name: "market", status: "fresh", score: 1, last_at: "2026-06-01T00:00:00Z", reason: "market checked within freshness target" },
+            { name: "context", status: "old", score: 0.4, last_at: "2026-03-01T00:00:00Z", reason: "context is too old for high-confidence promotion" },
+          ],
+        },
       }] : []);
       return;
     }
@@ -1320,6 +1334,9 @@ test("theses tab renders current thesis despite duplicate history rows", async (
   await page.getByRole("button", { name: "theses" }).click();
 
   await expect(page.getByText("Identity platform consolidation can improve growth durability.")).toBeVisible();
+  await expect(page.getByText("freshness 42%")).toBeVisible();
+  await expect(page.getByText("confidence capped at low")).toBeVisible();
+  await expect(page.getByText("context: narrative context is stale")).toBeVisible();
   await expect(page.getByText("Linked evidence")).toBeVisible();
   await expect(page.getByText("OKTA customer deployment article supports consolidation demand")).toBeVisible();
   await expect(page.getByText(/weight 90/)).toBeVisible();

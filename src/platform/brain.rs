@@ -92,6 +92,13 @@ pub fn decide(input: BrainDecisionInput) -> BrainDecision {
             reason: "missing evidence is due for retry",
         };
     }
+    if !input.has_open_thesis && input.open_evidence > 0 {
+        return BrainDecision {
+            status: "waiting_on_evidence",
+            next_action: "wait_for_evidence_retry",
+            reason: "non-blocking evidence is still missing before another thesis attempt",
+        };
+    }
     if !input.has_open_thesis {
         return BrainDecision {
             status: "due",
@@ -200,6 +207,25 @@ mod tests {
 
         assert_eq!(got.status, "due");
         assert_eq!(got.next_action, "reevaluate_thesis");
+    }
+
+    #[test]
+    fn decision_waits_on_nonblocking_evidence_before_retrying_declined_symbol() {
+        let got = decide(BrainDecisionInput {
+            source_blocked: false,
+            evidence_rows: 7,
+            open_evidence: 6,
+            blocking_evidence: 0,
+            due_evidence: 0,
+            has_context: true,
+            context_stale: false,
+            has_open_thesis: false,
+            thesis_stale: false,
+            any_source_stale: false,
+        });
+
+        assert_eq!(got.status, "waiting_on_evidence");
+        assert_eq!(got.next_action, "wait_for_evidence_retry");
     }
 
     #[test]

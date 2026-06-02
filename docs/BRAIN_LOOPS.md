@@ -521,6 +521,16 @@ Each scheduled run records a `sweep_reason` such as `open_thesis_due`,
 `context_missing`, or `evidence_retry_due` into the pipeline source reference so
 the UI/audit trail can explain why the symbol was touched.
 
+The worker still reserves a small number of each sweep's slots for bootstrap
+work (`COGNITION_BOOTSTRAP_SYMBOLS_PER_SWEEP`, default 5), because otherwise a
+large set of stale open theses can starve new watchlist/discovery symbols and
+leave them stuck at `initialize_evidence`.
+
+Adding a ticker to a watchlist publishes the same `discovery.confirmed` kickoff
+as confirming a discovery candidate. Watchlists are part of the active operating
+universe, so a manual add should immediately start context/evidence/thesis work
+instead of waiting for the next broad sweep.
+
 Every event-driven or scheduled attempt writes `cognition_run`:
 
 ```text

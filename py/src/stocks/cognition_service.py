@@ -63,6 +63,14 @@ STREAM = "MARKET"
 SUBJECT = "discovery.confirmed"
 DURABLE = "cognition-consumer"
 _IN_FLIGHT_SYMBOLS: set[str] = set()
+BOOTSTRAP_SWEEP_REASONS = {
+    "context_missing",
+    "context_missing_market",
+    "evidence_state_missing",
+    "evidence_retry_due",
+    "evidence_satisfied_retry",
+    "thesis_retry_due",
+}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -92,6 +100,11 @@ def _effective_sweep_limit() -> int:
         )
         return floor
     return configured
+
+
+def _bootstrap_sweep_floor(limit: int) -> int:
+    configured = max(1, _env_int("COGNITION_BOOTSTRAP_SYMBOLS_PER_SWEEP", 5))
+    return min(limit, configured)
 
 
 def _effective_sweep_interval_seconds() -> int:
@@ -627,11 +640,58 @@ def _sweep_trigger(evidence_rows: int, thesis_id: object | None) -> str:
     return "maintenance_sweep"
 
 
+def _select_sweep_targets(
+    rows: list,
+    *,
+    limit: int,
+    bootstrap_floor: int,
+) -> list:
+    """Reserve some sweep capacity for symbols that have not bootstrapped yet.
+
+    Open theses are intentionally re-evaluated often, but when many are stale
+    they can occupy every sweep slot. New watchlist/discovery symbols then keep
+    showing "initialize evidence" indefinitely. This selector preserves the SQL
+    order while forcing a small number of no-thesis/bootstrap rows through each
+    pass whenever they exist.
+    """
+    if limit <= 0:
+        return []
+    bootstrap: list = []
+    selected: list = []
+    seen: set[str] = set()
+    for row in rows:
+        reason = str(row["sweep_reason"] or "")
+        symbol = str(row["symbol"])
+        if reason in BOOTSTRAP_SWEEP_REASONS and symbol not in seen:
+            bootstrap.append(row)
+        if len(bootstrap) >= bootstrap_floor:
+            break
+    for row in bootstrap[:bootstrap_floor]:
+        symbol = str(row["symbol"])
+        if symbol in seen:
+            continue
+        selected.append(row)
+        seen.add(symbol)
+        if len(selected) >= limit:
+            return selected
+    for row in rows:
+        symbol = str(row["symbol"])
+        if symbol in seen:
+            continue
+        selected.append(row)
+        seen.add(symbol)
+        if len(selected) >= limit:
+            return selected
+    return selected
+
+
 async def _sweep_once(pool: asyncpg.Pool) -> None:
     context_max_age_hours = _env_int("COGNITION_CONTEXT_MAX_AGE_HOURS", 12)
     open_thesis_max_age_minutes = _open_thesis_max_age_minutes()
     decline_retry_hours = _env_int("COGNITION_DECLINE_RETRY_HOURS", 6)
     limit = _effective_sweep_limit()
+    bootstrap_floor = _bootstrap_sweep_floor(limit)
+    fetch_limit = max(limit, limit * 5, limit + bootstrap_floor * 10)
     evidence_sync_limit = max(1, _env_int("COGNITION_EVIDENCE_SYNC_LIMIT", 200))
     brain_thesis_limit = max(1, _env_int("BRAIN_THESIS_SWEEP_LIMIT", 50))
     brain_updated = await refresh_brain_theses(pool, limit=brain_thesis_limit)
@@ -648,7 +708,12 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
         context_max_age_hours=context_max_age_hours,
         open_thesis_max_age_minutes=open_thesis_max_age_minutes,
         decline_retry_hours=decline_retry_hours,
+        limit=fetch_limit,
+    )
+    targets = _select_sweep_targets(
+        targets,
         limit=limit,
+        bootstrap_floor=bootstrap_floor,
     )
     if not targets:
         log.info("cognition sweep: no stale active tickers")

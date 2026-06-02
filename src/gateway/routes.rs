@@ -4034,7 +4034,24 @@ async fn add_watchlist_member(
         return (StatusCode::BAD_REQUEST, "symbol required").into_response();
     }
     match gw.store.add_to_watchlist(id, &symbol, &req.added_by).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(()) => {
+            let payload = serde_json::json!({
+                "symbol": symbol,
+                "watchlist_id": id,
+                "source": "watchlist.added",
+            });
+            if let Err(e) = gw
+                .bus
+                .publish(
+                    subjects::DISCOVERY_CONFIRMED,
+                    payload.to_string().as_bytes(),
+                )
+                .await
+            {
+                warn!(id = %id, symbol = %symbol, error = %e, "publish watchlist cognition kickoff failed (non-fatal)");
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => {
             warn!(id = %id, symbol = %symbol, error = %e, "add_watchlist_member failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
@@ -4204,7 +4221,7 @@ async fn trigger_refresh_context(
     Path(symbol): Path<String>,
 ) -> impl IntoResponse {
     let sym = symbol.to_ascii_uppercase();
-    if sym.is_empty() || sym.len() > 10 {
+    if sym.is_empty() || sym.len() > 14 {
         return (StatusCode::BAD_REQUEST, "invalid symbol").into_response();
     }
     let payload = serde_json::json!({"symbol": sym, "source": "ui-refresh"});

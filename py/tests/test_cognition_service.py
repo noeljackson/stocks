@@ -10,6 +10,7 @@ from stocks.cognition_service import (
     _effective_sweep_limit,
     _next_retry_from_evidence,
     _run_symbol_once,
+    _select_sweep_targets,
     _status_for_thesis_result,
     _sweep_trigger,
 )
@@ -151,6 +152,32 @@ def test_sweep_trigger_falls_back_to_maintenance_without_open_thesis() -> None:
     assert _sweep_trigger(4, None) == "maintenance_sweep"
 
 
+def test_select_sweep_targets_reserves_bootstrap_capacity() -> None:
+    rows = [
+        {"symbol": "MU", "sweep_reason": "open_thesis_due"},
+        {"symbol": "NVDA", "sweep_reason": "open_thesis_due"},
+        {"symbol": "CRDO", "sweep_reason": "open_thesis_due"},
+        {"symbol": "2454.TW", "sweep_reason": "evidence_state_missing"},
+        {"symbol": "LITE", "sweep_reason": "context_missing"},
+    ]
+
+    selected = _select_sweep_targets(rows, limit=3, bootstrap_floor=2)
+
+    assert [row["symbol"] for row in selected] == ["2454.TW", "LITE", "MU"]
+
+
+def test_select_sweep_targets_preserves_order_when_no_bootstrap_work() -> None:
+    rows = [
+        {"symbol": "MU", "sweep_reason": "open_thesis_due"},
+        {"symbol": "NVDA", "sweep_reason": "open_thesis_due"},
+        {"symbol": "CRDO", "sweep_reason": "maintenance_sweep"},
+    ]
+
+    selected = _select_sweep_targets(rows, limit=2, bootstrap_floor=1)
+
+    assert [row["symbol"] for row in selected] == ["MU", "NVDA"]
+
+
 def test_decline_assignment_waits_on_llm_missing_evidence() -> None:
     assert _decline_attention_assignment([], [{
         "requirement_key": "product_research",
@@ -184,6 +211,15 @@ def test_effective_sweep_limit_floors_stale_config(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("COGNITION_MIN_SYMBOLS_PER_SWEEP", "20")
 
     assert _effective_sweep_limit() == 20
+
+
+def test_effective_sweep_limit_uses_configured_value_above_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COGNITION_MAX_SYMBOLS_PER_SWEEP", "25")
+    monkeypatch.setenv("COGNITION_MIN_SYMBOLS_PER_SWEEP", "20")
+
+    assert _effective_sweep_limit() == 25
 
 
 def test_status_for_thesis_result_classifies_new_draft() -> None:

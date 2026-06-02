@@ -360,6 +360,11 @@ async def _load_evidence_items(
                       summary, strength, polarity, url
                  FROM evidence_item
                 WHERE symbol = $1
+                  AND NOT (
+                      kind = 'product_research'
+                      AND source = 'web_research'
+                      AND COALESCE((source_ref->'relevance'->>'accepted')::boolean, false) = false
+                  )
              ORDER BY observed_at DESC, id DESC
                 LIMIT $2""",
             symbol,
@@ -371,6 +376,11 @@ async def _load_evidence_items(
                       summary, strength, polarity, url
                  FROM evidence_item
                 WHERE symbol = $1 AND observed_at > $2
+                  AND NOT (
+                      kind = 'product_research'
+                      AND source = 'web_research'
+                      AND COALESCE((source_ref->'relevance'->>'accepted')::boolean, false) = false
+                  )
              ORDER BY observed_at DESC, id DESC
                 LIMIT $3""",
             symbol,

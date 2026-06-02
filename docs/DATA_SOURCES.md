@@ -129,6 +129,13 @@ deployments, benchmarks, and adoption?"
 | Product/theme web articles | Public evidence for roadmaps, benchmarks, deployment reports, customer adoption, and competitive claims that may not be tagged to a ticker by FMP/Massive | **GDELT Doc 2.0** + Bing News RSS fallback | free, no key | GDELT `/api/v2/doc/doc?query=&mode=ArtList&format=json`; Bing `/news/search?q=&format=rss` | wired — `py/src/stocks/research.py`, persisted to `research_evidence`, source health `web_research` |
 | Paid semantic search uplift | Better recall for niche engineering blogs, benchmark posts, and product docs | Exa / Tavily / Brave / SerpAPI | not chosen | provider abstraction planned | not wired (#130 follow-up if GDELT recall is insufficient) |
 
+Provider search results are relevance-gated before they become symbol-level
+research evidence. A result must match the requested ticker, a company alias
+such as `MediaTek` for `2454.TW`, or a specific configured product term such as
+`MI400`, `GB200`, `ROCm`, `CoWoS`, or `PowerEdge`. Generic theme terms alone do
+not promote a row, and unrelated ticker collisions are counted in
+`research_retrieval_run.source_ref` rather than inserted as evidence.
+
 ## 5. Crowd sentiment
 
 Free-first strategy: stack as many free signals as possible, add one paid feed

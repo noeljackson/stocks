@@ -290,6 +290,12 @@ should not claim "no public data" for a named
 product unless the `product_research` evidence requirement shows the retrieval
 state.
 
+Search-provider output is not trusted just because the query targeted a symbol.
+The research layer promotes only rows whose result text matches the ticker, a
+company alias, or a specific product term. Accepted rows carry
+`source_ref.relevance`; unvetted legacy web-research evidence is filtered out of
+context, thesis, and parent-brain evidence loaders.
+
 ### Thesis
 
 The thesis is the primary product object. It is not a note or a vibe; it is a

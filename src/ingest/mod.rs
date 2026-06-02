@@ -29,7 +29,7 @@ pub mod xbrl;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -94,6 +94,17 @@ pub struct Event {
     pub subject: String,  // NATS subject to publish on
     pub payload: Vec<u8>, // canonical JSON
     pub source_ts: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+struct FilingEvidenceFields {
+    symbol: String,
+    observed_at: DateTime<Utc>,
+    source_id: String,
+    source_ref: serde_json::Value,
+    summary: String,
+    strength: f64,
+    url: Option<String>,
 }
 
 impl Event {
@@ -261,6 +272,16 @@ async fn run_once(adapter: &dyn Adapter, store: &Store, bus: &Bus, name: &str) {
             continue; // already seen
         }
         stored += 1;
+        if let Some(fields) = filing_evidence_fields(&ev) {
+            if let Err(e) = upsert_filing_evidence_item(store, &fields).await {
+                error!(
+                    adapter = name,
+                    symbol = %ev.symbol,
+                    error = %e,
+                    "filing evidence_item upsert failed"
+                );
+            }
+        }
         if !ev.subject.is_empty() {
             if let Err(e) = bus.publish(&ev.subject, &ev.payload).await {
                 error!(adapter = name, subject = %ev.subject, error = %e, "publish failed");
@@ -300,6 +321,95 @@ async fn run_once(adapter: &dyn Adapter, store: &Store, bus: &Bus, name: &str) {
     }
 }
 
+fn filing_evidence_strength(form: &str) -> f64 {
+    let normalized = form.trim().to_ascii_uppercase();
+    match normalized.trim_end_matches("/A") {
+        "10-K" | "10-Q" | "8-K" | "S-1" | "S-3" | "S-4" => 0.65,
+        _ => 0.45,
+    }
+}
+
+fn filing_evidence_fields(ev: &Event) -> Option<FilingEvidenceFields> {
+    if ev.source != "edgar" || ev.symbol.is_empty() {
+        return None;
+    }
+    let payload: serde_json::Value = serde_json::from_slice(&ev.payload).ok()?;
+    let form = payload
+        .get("form")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&ev.kind);
+    let filing_date = payload
+        .get("filing_date")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty());
+    let accession = payload
+        .get("accession")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty());
+    let source_id = accession.map_or_else(
+        || format!("edgar_event:{}:{}", ev.symbol, ev.content_hash()),
+        |acc| format!("edgar_filing:{}:{acc}", ev.symbol),
+    );
+    let summary = filing_date.map_or_else(
+        || format!("{} {form} filed", ev.symbol),
+        |date| format!("{} {form} filed {date}", ev.symbol),
+    );
+    let source_ref = serde_json::json!({
+        "table": "ingest_event",
+        "source": "edgar",
+        "content_hash": ev.content_hash(),
+        "kind": ev.kind,
+        "cik": payload.get("cik").cloned(),
+        "form": form,
+        "accession": accession,
+        "filing_date": filing_date,
+        "primary_document": payload.get("primary_document").cloned(),
+        "url": payload.get("url").cloned(),
+    });
+    let url = payload
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    Some(FilingEvidenceFields {
+        symbol: ev.symbol.clone(),
+        observed_at: ev.source_ts.unwrap_or_else(Utc::now),
+        source_id,
+        source_ref,
+        summary,
+        strength: filing_evidence_strength(form),
+        url,
+    })
+}
+
+async fn upsert_filing_evidence_item(store: &Store, fields: &FilingEvidenceFields) -> Result<()> {
+    sqlx::query(
+        r#"INSERT INTO evidence_item
+             (symbol, kind, observed_at, source, source_id, source_ref,
+              summary, strength, polarity, url)
+           VALUES (
+             $1, 'filing', $2, 'edgar', $3, $4,
+             $5, $6, NULL, $7
+           )
+           ON CONFLICT (source, source_id) DO UPDATE SET
+             source_ref = evidence_item.source_ref || EXCLUDED.source_ref,
+             summary = EXCLUDED.summary,
+             strength = EXCLUDED.strength,
+             url = EXCLUDED.url"#,
+    )
+    .bind(&fields.symbol)
+    .bind(fields.observed_at)
+    .bind(&fields.source_id)
+    .bind(&fields.source_ref)
+    .bind(&fields.summary)
+    .bind(fields.strength)
+    .bind(&fields.url)
+    .execute(&store.pool)
+    .await
+    .context("upsert filing evidence_item")?;
+    Ok(())
+}
+
 fn is_rate_limit_error(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("429") || lower.contains("rate limit")
@@ -315,6 +425,7 @@ fn benchmark_task_for_adapter(name: &str) -> Option<(&'static str, &'static str)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     #[test]
     fn content_hash_dedups_across_runs() {
@@ -344,6 +455,64 @@ mod tests {
         let original = a.content_hash();
         a.symbol = "MU".into();
         assert_ne!(a.content_hash(), original);
+    }
+
+    #[test]
+    fn filing_evidence_fields_extracts_edgar_payload() {
+        let ev = Event {
+            source: "edgar".into(),
+            kind: "10-Q".into(),
+            symbol: "MU".into(),
+            subject: "ingest.filing".into(),
+            payload: br#"{
+              "ticker":"MU",
+              "cik":"0000723125",
+              "form":"10-Q",
+              "accession":"0000723125-26-000010",
+              "filing_date":"2026-05-20",
+              "primary_document":"mu-20260520.htm",
+              "url":"https://www.sec.gov/Archives/edgar/data/723125/000072312526000010/mu-20260520.htm"
+            }"#
+            .to_vec(),
+            source_ts: Some(Utc.with_ymd_and_hms(2026, 5, 20, 0, 0, 0).unwrap()),
+        };
+
+        let fields = filing_evidence_fields(&ev).expect("filing evidence");
+
+        assert_eq!(fields.symbol, "MU");
+        assert_eq!(fields.observed_at, ev.source_ts.unwrap());
+        assert_eq!(fields.source_id, "edgar_filing:MU:0000723125-26-000010");
+        assert_eq!(fields.summary, "MU 10-Q filed 2026-05-20");
+        assert_eq!(fields.strength, 0.65);
+        assert_eq!(
+            fields.url.as_deref(),
+            Some(
+                "https://www.sec.gov/Archives/edgar/data/723125/000072312526000010/mu-20260520.htm"
+            ),
+        );
+        assert_eq!(fields.source_ref["table"], "ingest_event");
+        assert_eq!(fields.source_ref["accession"], "0000723125-26-000010");
+    }
+
+    #[test]
+    fn filing_evidence_fields_ignores_non_edgar_events() {
+        let ev = Event {
+            source: "fmp".into(),
+            kind: "price".into(),
+            symbol: "MU".into(),
+            subject: String::new(),
+            payload: b"{}".to_vec(),
+            source_ts: None,
+        };
+
+        assert!(filing_evidence_fields(&ev).is_none());
+    }
+
+    #[test]
+    fn filing_evidence_strength_handles_common_amendments() {
+        assert_eq!(filing_evidence_strength("10-K/A"), 0.65);
+        assert_eq!(filing_evidence_strength(" 8-k "), 0.65);
+        assert_eq!(filing_evidence_strength("SC 13G"), 0.45);
     }
 
     #[test]

@@ -876,7 +876,9 @@ test("diagnostics tab shows source task backlog state", async ({ page }) => {
   await expect(evidence).toContainText("source tasks due");
   await expect(evidence).toContainText("stale fetching");
   await expect(evidence).toContainText("source fetching");
-  await expect(page.locator(".diag").filter({ hasText: "Source health" })).toContainText("stale running");
+  const sourceHealth = page.locator(".diag").filter({ hasText: "Source health" });
+  await expect(sourceHealth).toContainText("started");
+  await expect(sourceHealth).toContainText("stale running");
 });
 
 test("discovery tab shows candidate ranking reasons", async ({ page }) => {

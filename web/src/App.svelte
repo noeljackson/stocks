@@ -1843,13 +1843,14 @@
               <section class="diag wide">
                 <h5>Source health</h5>
                 <table class="diag-tbl">
-                  <thead><tr><th>source</th><th>status</th><th>last result</th><th>checked rows</th><th>new rows</th><th>symbols</th><th>retry</th></tr></thead>
+                  <thead><tr><th>source</th><th>status</th><th>started</th><th>last result</th><th>checked rows</th><th>new rows</th><th>symbols</th><th>retry</th></tr></thead>
                   <tbody>
                     {#each health as h (h.source)}
                       {@const effectiveStatus = h.effective_status ?? h.last_status}
                       <tr title={h.last_error ?? ""}>
                         <td><strong>{h.source}</strong></td>
                         <td><span class={`badge tiny health-${effectiveStatus}`}>{healthLabel(effectiveStatus, h.last_failure_kind)}</span></td>
+                        <td class="muted">{h.last_started_at ? relativeTime(h.last_started_at) : "—"}</td>
                         <td class="muted">{h.last_success_at ? relativeTime(h.last_success_at) : "—"}</td>
                         <td>{effectiveStatus === "running" && !h.last_success_at ? "checking" : h.rows_seen}</td>
                         <td>{effectiveStatus === "running" && !h.last_success_at ? "—" : h.rows_inserted}</td>

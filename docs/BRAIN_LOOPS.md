@@ -646,10 +646,12 @@ What works now:
   `COGNITION_RUNNING_RECLAIM_MINUTES` (default 30). Reclaimed rows become
   `failed` with an explicit `reclaimed_by` source reference instead of
   lingering as fake active work.
-- Diagnostics also separates source acquisition work into due source tasks and
-  stale `fetching` tasks. Due tasks are normal backlog; stale fetching tasks are
-  provider work that did not finish inside the reclaim window and should be
-  treated as a stuck worker/backoff problem, not as satisfied evidence.
+- Diagnostics also separates source acquisition work into due source tasks,
+  stale `fetching` tasks, and provider/action pressure. Due tasks are normal
+  backlog; stale fetching tasks are provider work that did not finish inside
+  the reclaim window; provider/action pressure shows whether the bottleneck is
+  broad `fmp_news` fetching, a single `sec_companyfacts_xbrl` failure, or a
+  provider-wide rate-limit pause.
 - The Source health diagnostics table renders stale `running` provider rows as
   `stale running`, so the operator can distinguish an active pass from a pass
   whose worker exceeded the reclaim window.
@@ -937,8 +939,11 @@ Current gaps:
 - #82: terminology still needs simplification across UI/docs.
 - #119: symbol alerts tab should not show unrelated global alerts.
 - #118: live event stream in Vite dev still has tracked rough edges.
-- #128: selected-symbol freshness status is visible, but the top-level
-  orchestrator is still not actively scheduling every stale source.
+- #128: selected-symbol freshness status is visible, and global Diagnostics
+  now expose provider/action source-task pressure with due counts, stale
+  fetching counts, next due time, and sample symbols. The remaining gap is that
+  the top-level orchestrator still does not actively schedule every stale
+  source.
 
 ## Current Status Summary
 

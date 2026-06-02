@@ -2235,6 +2235,69 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
             })
         })
         .collect();
+        let source_tasks_by_action: Vec<serde_json::Value> = sqlx::query(
+            r#"SELECT provider,
+                      action,
+                      state,
+                      COUNT(*) AS n,
+                      COUNT(*) FILTER (
+                          WHERE state IN ('queued', 'no_rows', 'failed', 'rate_limited', 'blocked', 'satisfied')
+                            AND due_at <= now()
+                      ) AS due_count,
+                      COUNT(*) FILTER (
+                          WHERE state = 'fetching'
+                            AND updated_at < now() - interval '15 minutes'
+                      ) AS stale_fetching_count,
+                      MIN(due_at) FILTER (
+                          WHERE state IN ('queued', 'no_rows', 'failed', 'rate_limited', 'blocked', 'satisfied')
+                            AND due_at <= now()
+                      ) AS next_due_at,
+                      MAX(updated_at) AS last_updated_at,
+                      (array_agg(target_id ORDER BY
+                          CASE priority
+                            WHEN 'blocking' THEN 0
+                            WHEN 'high' THEN 1
+                            WHEN 'medium' THEN 2
+                            ELSE 3
+                          END,
+                          due_at,
+                          target_id
+                       ))[1:5] AS sample_targets
+                 FROM source_task
+             GROUP BY provider, action, state
+             ORDER BY
+                      COUNT(*) FILTER (
+                          WHERE state IN ('queued', 'no_rows', 'failed', 'rate_limited', 'blocked', 'satisfied')
+                            AND due_at <= now()
+                      ) DESC,
+                      COUNT(*) FILTER (
+                          WHERE state = 'fetching'
+                            AND updated_at < now() - interval '15 minutes'
+                      ) DESC,
+                      COUNT(*) DESC,
+                      provider,
+                      action,
+                      state
+                LIMIT 30"#,
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            json!({
+                "provider": r.try_get::<String, _>("provider").unwrap_or_default(),
+                "action": r.try_get::<String, _>("action").unwrap_or_default(),
+                "state": r.try_get::<String, _>("state").unwrap_or_default(),
+                "count": r.try_get::<i64, _>("n").unwrap_or(0),
+                "due_count": r.try_get::<i64, _>("due_count").unwrap_or(0),
+                "stale_fetching_count": r.try_get::<i64, _>("stale_fetching_count").unwrap_or(0),
+                "next_due_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("next_due_at").ok().flatten(),
+                "last_updated_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("last_updated_at").ok().flatten(),
+                "sample_targets": r.try_get::<Vec<String>, _>("sample_targets").unwrap_or_default(),
+            })
+        })
+        .collect();
         let source_tasks_due: i64 = sqlx::query_scalar(
             r#"SELECT COUNT(*) FROM source_task
                 WHERE state IN ('queued', 'no_rows', 'failed', 'rate_limited', 'blocked')
@@ -2258,6 +2321,7 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
             "source_tasks_due": source_tasks_due,
             "source_tasks_stale_fetching": source_tasks_stale_fetching,
             "source_tasks_by_state": source_tasks_by_state,
+            "source_tasks_by_action": source_tasks_by_action,
         })
     };
 

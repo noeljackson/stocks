@@ -336,6 +336,13 @@ thesis instead of waiting for the 30-minute clock. If a symbol has no thesis,
 the same source-task outcome can retry the thesis path when it is newer than the
 last no-thesis decline.
 
+Normalized evidence facts are cognition triggers too. When a new
+`evidence_item` row is available after the current thesis was last evaluated,
+the next bounded sweep records `sweep_reason=evidence_item_changed`, refreshes
+context, and reconciles the canonical thesis. If the symbol has no thesis, an
+evidence item newer than the last no-thesis decline records
+`evidence_item_changed_retry` and retries the draft path.
+
 Product/theme web research is a high-priority evidence requirement. Context
 refresh runs targeted retrieval before the LLM pass, persists rows in
 `research_evidence`, and passes those sources into the narrative band. A thesis
@@ -384,6 +391,10 @@ active ticker where evidence became satisfied after a decline
   -> retry thesis immediately in the next bounded sweep
 
 active ticker where source_task outcome is newer than thesis evaluation
+  -> refresh context/evidence
+  -> reconcile current thesis and update last_evaluated_at
+
+active ticker where evidence_item is newer than thesis evaluation
   -> refresh context/evidence
   -> reconcile current thesis and update last_evaluated_at
 ```

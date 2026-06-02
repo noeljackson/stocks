@@ -189,6 +189,14 @@ def test_sweep_trigger_marks_source_task_delta_for_no_thesis_retry() -> None:
     assert _sweep_trigger(4, None, "source_task_changed_retry") == "source_task_delta"
 
 
+def test_sweep_trigger_marks_evidence_delta_for_open_thesis() -> None:
+    assert _sweep_trigger(4, "thesis-id", "evidence_item_changed") == "evidence_delta"
+
+
+def test_sweep_trigger_marks_evidence_delta_for_no_thesis_retry() -> None:
+    assert _sweep_trigger(4, None, "evidence_item_changed_retry") == "evidence_delta"
+
+
 def test_sweep_trigger_keeps_open_thesis_update_auditable_when_evidence_bootstraps() -> None:
     assert _sweep_trigger(0, "thesis-id") == "open_thesis_update_loop"
 
@@ -235,6 +243,7 @@ def _sweep_row(symbol: str) -> dict:
         "thesis_at": None,
         "thesis_evaluated_at": None,
         "source_task_at": None,
+        "evidence_item_at": None,
         "thesis_id": f"thesis-{symbol}",
         "sweep_reason": "open_thesis_due",
         "context_version": 7,
@@ -274,6 +283,32 @@ async def test_run_sweep_targets_uses_bounded_concurrency(
     assert [symbol for symbol, _ in calls] == ["MU", "NVDA", "AMD"]
     assert {ref["trigger"] for _, ref in calls} == {"open_thesis_update_loop"}
     assert {ref["sweep_concurrency"] for _, ref in calls} == {2}
+
+
+@pytest.mark.asyncio
+async def test_run_sweep_target_marks_evidence_delta_source_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = FakePool(open_theses=1)
+    calls: list[tuple[str, dict]] = []
+    row = _sweep_row("MU")
+    row["sweep_reason"] = "evidence_item_changed"
+    row["evidence_item_at"] = "2026-06-02T12:00:00+00:00"
+
+    async def run_pipeline(pool_arg, symbol: str, *, source_ref: dict, candidate_id=None) -> None:
+        assert pool_arg is pool
+        assert candidate_id is None
+        calls.append((symbol, source_ref))
+
+    monkeypatch.setattr(cognition_service, "_run_pipeline", run_pipeline)
+
+    await cognition_service._run_sweep_target(pool, row)
+
+    assert calls == [("MU", calls[0][1])]
+    ref = calls[0][1]
+    assert ref["trigger"] == "evidence_delta"
+    assert ref["sweep_reason"] == "evidence_item_changed"
+    assert ref["evidence_item_at"] == "2026-06-02T12:00:00+00:00"
 
 
 def test_sweep_concurrency_defaults_to_two(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -3,7 +3,9 @@
 Subscribes to `discovery.confirmed` and runs context_maintainer → thesis_engine
 → sharpen → challenge for the symbol the operator just promoted. It also runs a
 maintenance sweep over active tickers so the system does not depend on manual
-`make refresh-context SYMBOL=X` or opening a UI tab.
+`make refresh-context SYMBOL=X` or opening a UI tab. The sweep reacts to stale
+views, provider source-task completions, and newly available normalized
+`evidence_item` facts.
 
 Honest decline path: thesis_engine may return edge_present=false. We still
 persist the context refresh (already valuable) and emit a single 'no_thesis'
@@ -75,6 +77,10 @@ BOOTSTRAP_SWEEP_REASONS = {
 SOURCE_TASK_DELTA_SWEEP_REASONS = {
     "source_task_changed",
     "source_task_changed_retry",
+}
+EVIDENCE_DELTA_SWEEP_REASONS = {
+    "evidence_item_changed",
+    "evidence_item_changed_retry",
 }
 
 
@@ -602,6 +608,17 @@ async def _sweep_targets(
                 WHERE scope = 'symbol'
                   AND target_id <> ''
              GROUP BY target_id
+           ), latest_evidence_item AS (
+               SELECT symbol,
+                      max(created_at) AS latest_evidence_item_at,
+                      count(*) AS normalized_evidence_rows
+                 FROM evidence_item
+                WHERE NOT (
+                    kind = 'product_research'
+                    AND source = 'web_research'
+                    AND COALESCE((source_ref->'relevance'->>'accepted')::boolean, false) = false
+                )
+             GROUP BY symbol
            )
            SELECT t.symbol,
                   lc.version AS context_version,
@@ -616,6 +633,8 @@ async def _sweep_targets(
                   se.at AS evidence_satisfied_at,
                   COALESCE(es.evidence_rows, 0) AS evidence_rows,
                   lst.latest_source_task_at AS source_task_at,
+                  lei.latest_evidence_item_at AS evidence_item_at,
+                  COALESCE(lei.normalized_evidence_rows, 0) AS normalized_evidence_rows,
                   CASE
                     WHEN lot.thesis_id IS NOT NULL
                      AND lst.latest_source_task_at IS NOT NULL
@@ -626,10 +645,23 @@ async def _sweep_targets(
                              '-infinity'::timestamptz
                          )
                       THEN 'source_task_changed'
+                    WHEN lot.thesis_id IS NOT NULL
+                     AND lei.latest_evidence_item_at IS NOT NULL
+                     AND lei.latest_evidence_item_at
+                         > COALESCE(
+                             lot.last_evaluated_at,
+                             lot.updated_at,
+                             '-infinity'::timestamptz
+                         )
+                      THEN 'evidence_item_changed'
                     WHEN COALESCE(ot.n, 0) = 0
                      AND lst.latest_source_task_at IS NOT NULL
                      AND (ld.at IS NULL OR lst.latest_source_task_at > ld.at)
                       THEN 'source_task_changed_retry'
+                    WHEN COALESCE(ot.n, 0) = 0
+                     AND lei.latest_evidence_item_at IS NOT NULL
+                     AND (ld.at IS NULL OR lei.latest_evidence_item_at > ld.at)
+                      THEN 'evidence_item_changed_retry'
                     WHEN lot.thesis_id IS NOT NULL
                      AND COALESCE(lot.last_evaluated_at, lot.updated_at)
                          < now() - ($2::text || ' minutes')::interval
@@ -666,6 +698,7 @@ async def _sweep_targets(
              LEFT JOIN newly_satisfied_evidence se ON se.symbol = t.symbol
              LEFT JOIN evidence_state es ON es.symbol = t.symbol
              LEFT JOIN latest_source_task lst ON lst.symbol = t.symbol
+             LEFT JOIN latest_evidence_item lei ON lei.symbol = t.symbol
             WHERE t.status = 'active'
               AND (
                     lc.created_at IS NULL
@@ -688,9 +721,24 @@ async def _sweep_targets(
                           )
                     )
                  OR (
+                      lot.thesis_id IS NOT NULL
+                      AND lei.latest_evidence_item_at IS NOT NULL
+                      AND lei.latest_evidence_item_at
+                          > COALESCE(
+                              lot.last_evaluated_at,
+                              lot.updated_at,
+                              '-infinity'::timestamptz
+                          )
+                    )
+                 OR (
                       COALESCE(ot.n, 0) = 0
                       AND lst.latest_source_task_at IS NOT NULL
                       AND (ld.at IS NULL OR lst.latest_source_task_at > ld.at)
+                    )
+                 OR (
+                      COALESCE(ot.n, 0) = 0
+                      AND lei.latest_evidence_item_at IS NOT NULL
+                      AND (ld.at IS NULL OR lei.latest_evidence_item_at > ld.at)
                     )
                  OR (
                       COALESCE(ot.n, 0) = 0
@@ -725,17 +773,28 @@ async def _sweep_targets(
                          '-infinity'::timestamptz
                      ) THEN 0
                 WHEN lot.thesis_id IS NOT NULL
+                 AND lei.latest_evidence_item_at IS NOT NULL
+                 AND lei.latest_evidence_item_at
+                     > COALESCE(
+                         lot.last_evaluated_at,
+                         lot.updated_at,
+                         '-infinity'::timestamptz
+                     ) THEN 1
+                WHEN lot.thesis_id IS NOT NULL
                  AND COALESCE(lot.last_evaluated_at, lot.updated_at)
-                     < now() - ($2::text || ' minutes')::interval THEN 1
-                WHEN lc.created_at IS NULL THEN 2
-                WHEN lc.market = '{}'::jsonb THEN 3
-                WHEN COALESCE(es.evidence_rows, 0) = 0 THEN 4
-                WHEN COALESCE(ot.n, 0) = 0 AND de.at IS NOT NULL THEN 5
+                     < now() - ($2::text || ' minutes')::interval THEN 2
+                WHEN lc.created_at IS NULL THEN 3
+                WHEN lc.market = '{}'::jsonb THEN 4
+                WHEN COALESCE(es.evidence_rows, 0) = 0 THEN 5
+                WHEN COALESCE(ot.n, 0) = 0 AND de.at IS NOT NULL THEN 6
                 WHEN COALESCE(ot.n, 0) = 0
                  AND lst.latest_source_task_at IS NOT NULL
-                 AND (ld.at IS NULL OR lst.latest_source_task_at > ld.at) THEN 6
-                WHEN lc.created_at < now() - ($1::text || ' hours')::interval THEN 7
-                ELSE 8
+                 AND (ld.at IS NULL OR lst.latest_source_task_at > ld.at) THEN 7
+                WHEN COALESCE(ot.n, 0) = 0
+                 AND lei.latest_evidence_item_at IS NOT NULL
+                 AND (ld.at IS NULL OR lei.latest_evidence_item_at > ld.at) THEN 8
+                WHEN lc.created_at < now() - ($1::text || ' hours')::interval THEN 9
+                ELSE 10
               END,
               COALESCE(lot.last_evaluated_at, lot.updated_at, lc.created_at) ASC NULLS FIRST,
               t.tier ASC,
@@ -755,6 +814,8 @@ def _sweep_trigger(
 ) -> str:
     if sweep_reason in SOURCE_TASK_DELTA_SWEEP_REASONS:
         return "source_task_delta"
+    if sweep_reason in EVIDENCE_DELTA_SWEEP_REASONS:
+        return "evidence_delta"
     if thesis_id:
         return "open_thesis_update_loop"
     if evidence_rows == 0:
@@ -829,6 +890,11 @@ async def _run_sweep_target(pool: asyncpg.Pool, row) -> None:
         row["thesis_evaluated_at"].isoformat() if row["thesis_evaluated_at"] else None
     )
     source_task_at = row["source_task_at"].isoformat() if row["source_task_at"] else None
+    evidence_item_at = (
+        row["evidence_item_at"].isoformat()
+        if hasattr(row["evidence_item_at"], "isoformat")
+        else row["evidence_item_at"]
+    )
     trigger = _sweep_trigger(evidence_rows, row["thesis_id"], row["sweep_reason"])
 
     async def run_symbol() -> None:
@@ -843,6 +909,7 @@ async def _run_sweep_target(pool: asyncpg.Pool, row) -> None:
                 "thesis_at": thesis_at,
                 "thesis_evaluated_at": thesis_evaluated_at,
                 "source_task_at": source_task_at,
+                "evidence_item_at": evidence_item_at,
                 "sweep_reason": row["sweep_reason"],
                 "sweep_concurrency": _sweep_concurrency(),
             },

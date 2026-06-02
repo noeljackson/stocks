@@ -3,6 +3,7 @@ import datetime as dt
 from stocks.brain_maintainer import (
     _brain_llm_due,
     _default_expression_role,
+    build_dislocation_map,
     build_macro_update,
     build_theme_update,
     merge_llm_update,
@@ -234,6 +235,139 @@ def test_macro_update_clears_derived_internal_requirements() -> None:
     assert update["state"] == "active"
     assert update["direction"] == "risk_on"
     assert update["missing_evidence"] == []
+
+
+def test_dislocation_map_classifies_loved_ignored_and_hated_sectors() -> None:
+    now = dt.datetime(2026, 6, 1, 15, 0, tzinfo=dt.UTC)
+    got = build_dislocation_map({
+        "as_of": now.isoformat(),
+        "regime": "neutral",
+        "capitulation": False,
+        "indicators": {
+            "sector_relative_strength": {
+                "sectors": [
+                    {
+                        "sector": "Technology",
+                        "symbol_count": 20,
+                        "return_20d": 0.12,
+                        "return_60d": 0.22,
+                        "return_120d": 0.31,
+                    },
+                    {
+                        "sector": "Industrials",
+                        "symbol_count": 14,
+                        "return_20d": 0.02,
+                        "return_60d": 0.01,
+                        "return_120d": 0.03,
+                    },
+                    {
+                        "sector": "Financial Services",
+                        "symbol_count": 18,
+                        "return_20d": -0.02,
+                        "return_60d": -0.16,
+                        "return_120d": -0.22,
+                    },
+                ],
+            },
+            "earnings_breadth": {
+                "sectors": {
+                    "Technology": {"signals": 20, "up": 14, "down": 3},
+                    "Industrials": {"signals": 12, "up": 8, "down": 2},
+                    "Financial Services": {"signals": 10, "up": 6, "down": 2},
+                },
+            },
+            "sector_news_sentiment": {
+                "sectors": {
+                    "Technology": {
+                        "articles_14d": 42,
+                        "avg_polarity": 0.35,
+                        "attention_ratio": 2.1,
+                    },
+                    "Industrials": {
+                        "articles_14d": 3,
+                        "avg_polarity": 0.05,
+                        "attention_ratio": 0.45,
+                    },
+                    "Financial Services": {
+                        "articles_14d": 9,
+                        "avg_polarity": -0.35,
+                        "attention_ratio": 0.9,
+                    },
+                },
+            },
+        },
+        "subsector_rs": {},
+    })
+
+    assert got is not None
+    sectors = got["sector_classifications"]
+    assert sectors["Technology"]["classification"] == "loved_mania"
+    assert sectors["Industrials"]["classification"] == "ignored_indifference"
+    assert sectors["Financial Services"]["classification"] == "hated_avoided"
+    assert "news attention is elevated" in sectors["Technology"]["reasons"]
+    assert "news attention is low" in sectors["Industrials"]["reasons"]
+    assert "news tone is negative" in sectors["Financial Services"]["reasons"]
+
+
+def test_macro_update_stores_dislocation_map_in_maintainer_payload() -> None:
+    now = dt.datetime(2026, 6, 1, 15, 0, tzinfo=dt.UTC)
+    update = build_macro_update(
+        {
+            "state": "forming",
+            "direction": "neutral",
+            "missing_evidence": [],
+            "evidence": [],
+            "source_ref": {},
+        },
+        {
+            "fred": {
+                "source": "fred",
+                "last_status": "no_new_rows",
+                "last_success_at": now,
+                "rows_seen": 4,
+                "rows_inserted": 0,
+            },
+            "cboe": {
+                "source": "cboe",
+                "last_status": "no_new_rows",
+                "last_success_at": now,
+                "rows_seen": 2,
+                "rows_inserted": 0,
+            },
+        },
+        {
+            "as_of": now.isoformat(),
+            "regime": "neutral",
+            "capitulation": False,
+            "indicators": {
+                "market_breadth_internals": {"symbol_count": 500},
+                "sector_relative_strength": {
+                    "sectors": [{
+                        "sector": "Technology",
+                        "return_20d": 0.1,
+                        "return_60d": 0.2,
+                    }],
+                },
+                "earnings_breadth": {"signals": 100, "sectors": {}},
+                "sector_news_sentiment": {
+                    "sectors": {
+                        "Technology": {
+                            "articles_14d": 30,
+                            "avg_polarity": 0.25,
+                            "attention_ratio": 2.0,
+                        },
+                    },
+                },
+                "credit_internals_trend": {"latest_hy_oas_pct": 2.72},
+            },
+            "subsector_rs": {},
+        },
+        now=now,
+    )
+
+    dislocation = update["source_ref"]["maintainer"]["dislocation_map"]
+    assert dislocation["sector_classifications"]["Technology"]["classification"] == "loved_mania"
+    assert any(item["kind"] == "macro_dislocation_map" for item in update["evidence"])
 
 
 def test_brain_llm_due_on_changed_deterministic_fingerprint() -> None:

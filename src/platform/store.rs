@@ -2545,9 +2545,13 @@ impl Store {
                          COALESCE(dcl.proposed_lists, '[]'::jsonb) AS proposed_lists,
                          dcl.suggested_new_list,
                          COALESCE(parent.parent_themes, '[]'::jsonb) AS parent_themes,
-                         parent.parent_theme_fit
+                         parent.parent_theme_fit,
+                         dislocation.dislocation_classification
                     FROM discovery_candidate dc
                     LEFT JOIN discovery_classification dcl ON dcl.candidate_id = dc.id
+                    LEFT JOIN discovery_pool dp
+                           ON dp.symbol = dc.symbol
+                          AND dp.dropped_at IS NULL
                     LEFT JOIN LATERAL (
                         SELECT max(COALESCE(btt.conviction, 50))::double precision
                                   AS parent_theme_fit,
@@ -2568,6 +2572,20 @@ impl Store {
                            AND bt.active = true
                            AND bt.scope IN ('sector', 'theme')
                     ) parent ON true
+                    LEFT JOIN LATERAL (
+                        SELECT bt.source_ref #>> ARRAY[
+                                   'maintainer',
+                                   'dislocation_map',
+                                   'sector_classifications',
+                                   COALESCE(dp.sector, ''),
+                                   'classification'
+                               ] AS dislocation_classification
+                          FROM brain_thesis bt
+                         WHERE bt.active = true
+                           AND bt.scope = 'macro'
+                      ORDER BY bt.updated_at DESC, bt.created_at DESC
+                         LIMIT 1
+                    ) dislocation ON true
                    WHERE dc.status = 'proposed'
                 ORDER BY dc.symbol, dc.signal_name, dc.proposed_at DESC
                ) latest
@@ -2583,6 +2601,8 @@ impl Store {
                 let proposed_lists: serde_json::Value = r.try_get("proposed_lists")?;
                 let parent_themes: serde_json::Value = r.try_get("parent_themes")?;
                 let parent_theme_fit: Option<f64> = r.try_get("parent_theme_fit").ok().flatten();
+                let dislocation_classification: Option<String> =
+                    r.try_get("dislocation_classification").ok().flatten();
                 let suggested_new_list = r
                     .try_get::<Option<serde_json::Value>, _>("suggested_new_list")
                     .unwrap_or(None);
@@ -2592,6 +2612,7 @@ impl Store {
                     signal_value,
                     r.try_get::<Option<f64>, _>("domain_fit").ok().flatten(),
                     parent_theme_fit,
+                    dislocation_classification.as_deref(),
                     r.try_get::<i32, _>("proposed_tier").unwrap_or(2),
                     &proposed_lists,
                     suggested_new_list.is_some(),
@@ -2607,6 +2628,7 @@ impl Store {
                         "domain_fit": r.try_get::<Option<f64>, _>("domain_fit").ok().flatten(),
                         "parent_theme_fit": parent_theme_fit,
                         "parent_themes": parent_themes,
+                        "dislocation_classification": dislocation_classification,
                         "proposed_tier": r.try_get::<i32, _>("proposed_tier").unwrap_or(2),
                         "reasoning": r.try_get::<Option<String>, _>("reasoning").ok(),
                         "proposed_at": proposed_at,

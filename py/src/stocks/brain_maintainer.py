@@ -62,6 +62,7 @@ THEME_PROXY_SYMBOLS = {
     "copper_industrial_metals": {"CPER", "XME"},
     "wheat_agriculture_food": {"WEAT"},
 }
+DISLOCATION_BUCKETS = ("loved_mania", "ignored_indifference", "hated_avoided")
 
 
 def _parse_dt(value: Any) -> dt.datetime | None:
@@ -101,6 +102,15 @@ def _round_float(value: Any, digits: int = 4) -> float | None:
         return round(float(value), digits)
     except (TypeError, ValueError):
         return None
+
+
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def normalize_symbol(value: Any) -> str | None:
@@ -500,6 +510,204 @@ def _macro_missing_evidence(
     return _dedupe(missing)
 
 
+def _sector_revision_stats(indicators: dict[str, Any], sector: str) -> dict[str, Any]:
+    earnings = indicators.get("earnings_breadth")
+    sectors = earnings.get("sectors") if isinstance(earnings, dict) else None
+    stats = sectors.get(sector) if isinstance(sectors, dict) else None
+    return stats if isinstance(stats, dict) else {}
+
+
+def _sector_news_stats(indicators: dict[str, Any], sector: str) -> dict[str, Any]:
+    news = indicators.get("sector_news_sentiment")
+    sectors = news.get("sectors") if isinstance(news, dict) else None
+    stats = sectors.get(sector) if isinstance(sectors, dict) else None
+    return stats if isinstance(stats, dict) else {}
+
+
+def _revision_net(stats: dict[str, Any]) -> float:
+    signals = _as_float(stats.get("signals"))
+    if signals <= 0:
+        return 0.0
+    return (_as_float(stats.get("up")) - _as_float(stats.get("down"))) / signals
+
+
+def _sector_dislocation_item(
+    sector_row: dict[str, Any],
+    indicators: dict[str, Any],
+    *,
+    rank_20d: int,
+    sector_count: int,
+) -> dict[str, Any]:
+    sector = str(sector_row.get("sector") or "Unknown")
+    return_20d = _as_float(sector_row.get("return_20d"))
+    return_60d = _as_float(sector_row.get("return_60d"))
+    return_120d = _as_float(sector_row.get("return_120d"))
+    revision_stats = _sector_revision_stats(indicators, sector)
+    news_stats = _sector_news_stats(indicators, sector)
+    revision_net = _revision_net(revision_stats)
+    news_polarity = _as_float(news_stats.get("avg_polarity"))
+    articles_14d = int(_as_float(news_stats.get("articles_14d")))
+    attention_ratio = _as_float(news_stats.get("attention_ratio"), 1.0)
+
+    loved_reasons: list[str] = []
+    ignored_reasons: list[str] = []
+    hated_reasons: list[str] = []
+    loved = 0.0
+    ignored = 0.0
+    hated = 0.0
+
+    if rank_20d <= max(1, sector_count // 4):
+        loved += 18.0
+        loved_reasons.append("top-quartile 20d sector relative strength")
+    if return_20d >= 0.08:
+        loved += 18.0
+        loved_reasons.append(f"20d sector return {_round_float(return_20d * 100, 1)}%")
+    if return_60d >= 0.16:
+        loved += 14.0
+        loved_reasons.append(f"60d sector return {_round_float(return_60d * 100, 1)}%")
+    if attention_ratio >= 1.5 or articles_14d >= 25:
+        loved += 14.0
+        loved_reasons.append("news attention is elevated")
+    if news_polarity >= 0.2:
+        loved += 10.0
+        loved_reasons.append("news tone is positive")
+
+    if -0.03 <= return_20d <= 0.06 and return_60d >= -0.03:
+        ignored += 16.0
+        ignored_reasons.append("price action is not chased")
+    if revision_net >= 0.12:
+        ignored += 20.0
+        ignored_reasons.append("estimate revision breadth is improving")
+    if attention_ratio <= 0.8 and articles_14d <= 12:
+        ignored += 18.0
+        ignored_reasons.append("news attention is low")
+    if return_120d >= -0.02:
+        ignored += 8.0
+        ignored_reasons.append("longer-window trend is not broken")
+
+    if return_60d <= -0.10:
+        hated += 16.0
+        hated_reasons.append(f"60d sector return {_round_float(return_60d * 100, 1)}%")
+    if return_20d <= -0.05:
+        hated += 12.0
+        hated_reasons.append(f"20d sector return {_round_float(return_20d * 100, 1)}%")
+    if news_polarity <= -0.2:
+        hated += 14.0
+        hated_reasons.append("news tone is negative")
+    if revision_net >= 0.08 or return_20d > return_60d:
+        hated += 14.0
+        hated_reasons.append("evidence is less bad than price/sentiment")
+
+    scores = {
+        "loved_mania": loved,
+        "ignored_indifference": ignored,
+        "hated_avoided": hated,
+    }
+    classification = max(scores, key=scores.get)
+    score = scores[classification]
+    if score < 18.0:
+        classification = "neutral"
+    reasons_by_bucket = {
+        "loved_mania": loved_reasons,
+        "ignored_indifference": ignored_reasons,
+        "hated_avoided": hated_reasons,
+        "neutral": [],
+    }
+    bucket_reason = {
+        "loved_mania": (
+            "Loved/mania: strong attention or momentum can make true stories poor entries."
+        ),
+        "ignored_indifference": (
+            "Ignored/indifference: improving evidence is not yet receiving much attention."
+        ),
+        "hated_avoided": (
+            "Hated/avoided: weak sentiment or price action may be masking an improving setup."
+        ),
+        "neutral": "No clear love/hate/indifference dislocation from current internals.",
+    }[classification]
+    return {
+        "scope": "sector",
+        "name": sector,
+        "classification": classification,
+        "score": _round_float(score, 1),
+        "metrics": {
+            "rank_20d": rank_20d,
+            "sector_count": sector_count,
+            "return_20d": _round_float(return_20d),
+            "return_60d": _round_float(return_60d),
+            "return_120d": _round_float(return_120d),
+            "revision_net": _round_float(revision_net),
+            "articles_14d": articles_14d,
+            "news_attention_ratio": _round_float(attention_ratio),
+            "news_polarity": _round_float(news_polarity),
+        },
+        "reasons": _dedupe(reasons_by_bucket[classification])[:6],
+        "interpretation": bucket_reason,
+    }
+
+
+def build_dislocation_map(market_state: dict[str, Any] | None) -> dict[str, Any] | None:
+    indicators = (market_state or {}).get("indicators") or {}
+    if not isinstance(indicators, dict):
+        return None
+    sector_rs = indicators.get("sector_relative_strength")
+    sector_rows = sector_rs.get("sectors") if isinstance(sector_rs, dict) else None
+    if not isinstance(sector_rows, list) or not sector_rows:
+        return None
+    sectors = [
+        item
+        for item in sector_rows
+        if isinstance(item, dict) and item.get("sector")
+    ]
+    sectors.sort(key=lambda item: _as_float(item.get("return_20d")), reverse=True)
+    if not sectors:
+        return None
+    classified = [
+        _sector_dislocation_item(
+            item,
+            indicators,
+            rank_20d=index + 1,
+            sector_count=len(sectors),
+        )
+        for index, item in enumerate(sectors)
+    ]
+    buckets: dict[str, list[dict[str, Any]]] = {bucket: [] for bucket in DISLOCATION_BUCKETS}
+    sector_classifications: dict[str, dict[str, Any]] = {}
+    for item in classified:
+        name = str(item["name"])
+        sector_classifications[name] = item
+        classification = item["classification"]
+        if classification in buckets:
+            buckets[classification].append(item)
+    for bucket in buckets:
+        buckets[bucket] = sorted(
+            buckets[bucket],
+            key=lambda item: _as_float(item.get("score")),
+            reverse=True,
+        )[:5]
+    return {
+        "as_of": (market_state or {}).get("as_of"),
+        "source": "price_bar+estimate_revision+news_article",
+        "buckets": buckets,
+        "sector_classifications": sector_classifications,
+        "watch": [
+            "Bullish thesis does not mean good entry when the sector is loved/extended.",
+            (
+                "Prioritize ignored or hated groups when revisions or relative strength "
+                "begin improving."
+            ),
+            (
+                "Require ticker-specific evidence before promoting a parent dislocation "
+                "into a trade thesis."
+            ),
+        ],
+        "counts": {
+            "sectors": len(classified),
+            **{bucket: len(buckets[bucket]) for bucket in DISLOCATION_BUCKETS},
+        },
+    }
+
+
 def build_macro_update(
     thesis: dict[str, Any],
     source_health: dict[str, dict[str, Any]],
@@ -516,6 +724,7 @@ def build_macro_update(
     regime = (market_state or {}).get("regime")
     direction = regime if regime in {"risk_on", "risk_off", "neutral"} else "neutral"
     state = "active" if not missing and market_state else "forming"
+    dislocation_map = build_dislocation_map(market_state)
     fingerprint_payload = {
         "state": state,
         "direction": direction,
@@ -529,9 +738,21 @@ def build_macro_update(
             for key, value in sources.items()
         },
         "market_state_regime": regime,
+        "dislocation_map": {
+            "counts": (dislocation_map or {}).get("counts"),
+            "sector_classifications": {
+                key: {
+                    "classification": value.get("classification"),
+                    "score": value.get("score"),
+                }
+                for key, value in (
+                    (dislocation_map or {}).get("sector_classifications") or {}
+                ).items()
+            },
+        },
     }
     fingerprint = _stable_fingerprint(fingerprint_payload)
-    evidence = _generated_evidence(thesis.get("evidence")) + [
+    generated_evidence = [
         {
             "generated_by": "brain_maintainer",
             "kind": "macro_source_freshness",
@@ -540,6 +761,14 @@ def build_macro_update(
             "market_state": market_state,
         }
     ]
+    if dislocation_map:
+        generated_evidence.append({
+            "generated_by": "brain_maintainer",
+            "kind": "macro_dislocation_map",
+            "as_of": now.isoformat(),
+            "dislocation_map": dislocation_map,
+        })
+    evidence = _generated_evidence(thesis.get("evidence")) + generated_evidence
     source_ref = dict(_json(thesis.get("source_ref"), {}) or {})
     source_ref["maintainer"] = {
         "kind": "macro_coverage",
@@ -548,6 +777,7 @@ def build_macro_update(
         "deterministic_fingerprint": fingerprint,
         "sources": sources,
         "market_state": market_state,
+        "dislocation_map": dislocation_map,
     }
     return {
         "state": state,
@@ -750,6 +980,64 @@ async def _load_earnings_breadth(pool: asyncpg.Pool) -> dict[str, Any] | None:
     }
 
 
+async def _load_sector_news_sentiment(pool: asyncpg.Pool) -> dict[str, Any] | None:
+    rows = await pool.fetch(
+        """WITH universe AS (
+               SELECT DISTINCT symbol, COALESCE(NULLIF(sector, ''), 'Unknown') AS sector
+                 FROM discovery_pool
+                WHERE dropped_at IS NULL
+           ), recent AS (
+               SELECT u.sector,
+                      count(*) AS articles_14d,
+                      avg(na.sentiment_polarity) FILTER (
+                        WHERE na.sentiment_polarity IS NOT NULL
+                      ) AS avg_polarity
+                 FROM news_article na
+                 JOIN universe u ON u.symbol = na.symbol
+                WHERE na.published_at > now() - interval '14 days'
+             GROUP BY u.sector
+           ), prior AS (
+               SELECT u.sector,
+                      count(*) AS articles_60d_prior
+                 FROM news_article na
+                 JOIN universe u ON u.symbol = na.symbol
+                WHERE na.published_at > now() - interval '74 days'
+                  AND na.published_at <= now() - interval '14 days'
+             GROUP BY u.sector
+           )
+           SELECT COALESCE(recent.sector, prior.sector) AS sector,
+                  COALESCE(recent.articles_14d, 0) AS articles_14d,
+                  recent.avg_polarity,
+                  COALESCE(prior.articles_60d_prior, 0) AS articles_60d_prior
+             FROM recent
+        FULL JOIN prior ON prior.sector = recent.sector
+         ORDER BY sector""",
+    )
+    sectors: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        sector = row["sector"]
+        if not sector:
+            continue
+        recent = int(row["articles_14d"] or 0)
+        prior = int(row["articles_60d_prior"] or 0)
+        baseline_14d = prior / (60.0 / 14.0) if prior > 0 else 0.0
+        attention_ratio = recent / baseline_14d if baseline_14d > 0 else (1.0 if recent else 0.0)
+        sectors[sector] = {
+            "articles_14d": recent,
+            "articles_60d_prior": prior,
+            "avg_polarity": _round_float(row["avg_polarity"]),
+            "attention_ratio": _round_float(attention_ratio),
+        }
+    if not sectors:
+        return None
+    return {
+        "window_days": 14,
+        "baseline_days": 60,
+        "sectors": sectors,
+        "source": "news_article",
+    }
+
+
 async def _load_credit_internals_trend(pool: asyncpg.Pool) -> dict[str, Any] | None:
     row = await pool.fetchrow(
         """WITH obs AS (
@@ -794,10 +1082,11 @@ async def _load_credit_internals_trend(pool: asyncpg.Pool) -> dict[str, Any] | N
 
 
 async def _load_macro_internals(pool: asyncpg.Pool) -> dict[str, Any]:
-    breadth, sector_rs, earnings, credit = await asyncio.gather(
+    breadth, sector_rs, earnings, news, credit = await asyncio.gather(
         _load_market_breadth_internals(pool),
         _load_sector_relative_strength(pool),
         _load_earnings_breadth(pool),
+        _load_sector_news_sentiment(pool),
         _load_credit_internals_trend(pool),
     )
     out: dict[str, Any] = {}
@@ -807,6 +1096,8 @@ async def _load_macro_internals(pool: asyncpg.Pool) -> dict[str, Any]:
         out["sector_relative_strength"] = sector_rs
     if earnings:
         out["earnings_breadth"] = earnings
+    if news:
+        out["sector_news_sentiment"] = news
     if credit:
         out["credit_internals_trend"] = credit
     return out

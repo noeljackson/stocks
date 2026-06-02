@@ -510,6 +510,53 @@
     return chips;
   }
 
+  type DislocationBucketKey = "loved_mania" | "ignored_indifference" | "hated_avoided";
+  type DislocationItem = {
+    name?: string;
+    score?: number | null;
+    reasons?: unknown[];
+    interpretation?: string;
+    metrics?: Record<string, unknown>;
+  };
+
+  function macroDislocationMap(macro: BrainThesis): Record<string, unknown> | null {
+    const maintainerMap = asRecord(brainMaintainer(macro.source_ref)?.dislocation_map);
+    if (maintainerMap) return maintainerMap;
+    for (const item of macro.evidence ?? []) {
+      const evidence = asRecord(item);
+      if (evidence?.kind !== "macro_dislocation_map") continue;
+      const map = asRecord(evidence.dislocation_map);
+      if (map) return map;
+    }
+    return null;
+  }
+
+  function dislocationBuckets(macro: BrainThesis): { key: DislocationBucketKey; label: string; items: DislocationItem[] }[] {
+    const map = macroDislocationMap(macro);
+    const buckets = asRecord(map?.buckets);
+    const labels: Record<DislocationBucketKey, string> = {
+      loved_mania: "Loved / mania",
+      ignored_indifference: "Ignored",
+      hated_avoided: "Hated / avoided",
+    };
+    return (Object.keys(labels) as DislocationBucketKey[]).map((key) => ({
+      key,
+      label: labels[key],
+      items: Array.isArray(buckets?.[key])
+        ? (buckets[key] as unknown[]).filter((item): item is DislocationItem =>
+          !!item && typeof item === "object" && !Array.isArray(item)
+        )
+        : [],
+    })).filter((bucket) => bucket.items.length > 0);
+  }
+
+  function dislocationReason(item: DislocationItem): string {
+    const reasons = Array.isArray(item.reasons)
+      ? item.reasons.filter((reason): reason is string => typeof reason === "string")
+      : [];
+    return reasons.slice(0, 2).join(" · ") || item.interpretation || "";
+  }
+
   function evidenceActions(req: EvidenceRequirement): string[] {
     const actions = req.source_ref?.fetch_actions;
     return Array.isArray(actions)
@@ -2001,6 +2048,7 @@
                 {@const macro = brainOverview.macro}
                 {@const macroSources = brainSourceText(macro.source_ref)}
                 {@const macroMetrics = macroMetricChips(macro)}
+                {@const dislocationGroups = dislocationBuckets(macro)}
                 <section class="brain-theme macro-theme freshness-{macro.freshness}">
                   <div class="brain-theme-hdr">
                     <div>
@@ -2028,6 +2076,27 @@
                           <strong>{metric.label}</strong> {metric.value}
                           {#if metric.detail}<small>{metric.detail}</small>{/if}
                         </span>
+                      {/each}
+                    </div>
+                  {/if}
+                  {#if dislocationGroups.length}
+                    <div class="dislocation-map">
+                      <strong>Dislocation Map</strong>
+                      {#each dislocationGroups as bucket (bucket.key)}
+                        <div class="dislocation-bucket bucket-{bucket.key}">
+                          <span class="muted">{bucket.label}</span>
+                          {#each bucket.items.slice(0, 3) as item}
+                            <span class="brain-token" title={item.interpretation ?? ""}>
+                              {item.name}
+                              {#if item.score !== null && item.score !== undefined}
+                                <small>{Math.round(Number(item.score))}</small>
+                              {/if}
+                              {#if dislocationReason(item)}
+                                <small>{dislocationReason(item)}</small>
+                              {/if}
+                            </span>
+                          {/each}
+                        </div>
                       {/each}
                     </div>
                   {/if}
@@ -3914,6 +3983,35 @@
     gap: .25rem;
   }
   .macro-metric small {
+    color: #7f8aa3;
+    font-size: .68rem;
+  }
+  .dislocation-map {
+    border: 1px solid #1f2733;
+    background: #0c1019;
+    border-radius: 4px;
+    padding: .45rem .55rem;
+    display: flex;
+    flex-direction: column;
+    gap: .35rem;
+  }
+  .dislocation-bucket {
+    display: flex;
+    align-items: baseline;
+    gap: .35rem;
+    flex-wrap: wrap;
+  }
+  .dislocation-bucket > .muted {
+    min-width: 7.4rem;
+    font-size: .72rem;
+    text-transform: uppercase;
+  }
+  .dislocation-bucket .brain-token {
+    display: inline-flex;
+    align-items: baseline;
+    gap: .25rem;
+  }
+  .dislocation-bucket small {
     color: #7f8aa3;
     font-size: .68rem;
   }

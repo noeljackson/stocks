@@ -286,7 +286,6 @@ async def _run_pipeline(
     symbol: str,
     *,
     candidate_id: int | None = None,
-    draft_when_thesis_exists: bool = True,
     source_ref: dict | None = None,
 ) -> None:
     symbol = symbol.upper()
@@ -318,7 +317,7 @@ async def _run_pipeline(
             final_reason = "context refresh failed"
             log.exception("cognition: context refresh failed for %s", symbol)
 
-        if not draft_when_thesis_exists and await _open_thesis_count(pool, symbol) > 0:
+        if await _open_thesis_count(pool, symbol) > 0:
             log.info("cognition: %s already has an open thesis; draft will reconcile", symbol)
 
         open_evidence = await load_open_evidence_requirements(pool, symbol)
@@ -446,7 +445,6 @@ async def _on_confirmed(pool: asyncpg.Pool, msg) -> None:
                 pool,
                 symbol,
                 candidate_id=candidate_id,
-                draft_when_thesis_exists=False,
                 source_ref={"reason": "no_edge", "trigger": "discovery.confirmed"},
             ),
         ),
@@ -676,7 +674,6 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
             await _run_pipeline(
                 pool,
                 symbol,
-                draft_when_thesis_exists=False,
                 source_ref={
                     "reason": "no_edge",
                     "trigger": trigger,

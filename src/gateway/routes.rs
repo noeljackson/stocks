@@ -2219,11 +2219,20 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
         .fetch_one(pool)
         .await
         .unwrap_or(0);
+        let source_tasks_stale_fetching: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*) FROM source_task
+                WHERE state = 'fetching'
+                  AND updated_at < now() - interval '15 minutes'"#,
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
         json!({
             "open_requirements": open,
             "by_state": by_state,
             "by_reason": by_reason,
             "source_tasks_due": source_tasks_due,
+            "source_tasks_stale_fetching": source_tasks_stale_fetching,
             "source_tasks_by_state": source_tasks_by_state,
         })
     };

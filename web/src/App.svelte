@@ -1816,7 +1816,7 @@
             {@const ing = (sysStatus.ingest ?? {}) as Record<string, { last_at: string|null; count_24h: number; symbols_24h?: number }>}
             {@const disc = sysStatus.discovery as { last_pass_at: string|null; open_candidates: number; by_signal: { signal: string; count: number }[]; pool_size: number }}
             {@const cog = sysStatus.cognition as { contexts_24h: number; contexts_total_symbols: number; thesis_by_state: { state: string; count: number }[]; runs_24h?: number; runs_by_status?: { status: string; count: number }[]; latest_runs?: CognitionRun[] }}
-            {@const ev = sysStatus.evidence as { open_requirements: number; by_state: { state: string; count: number }[]; by_reason?: { reason: string; count: number }[] }}
+            {@const ev = sysStatus.evidence as { open_requirements: number; source_tasks_due?: number; source_tasks_stale_fetching?: number; by_state: { state: string; count: number }[]; by_reason?: { reason: string; count: number }[]; source_tasks_by_state?: { state: string; count: number }[] }}
             {@const att = sysStatus.attention as { open_items: number; deferred_items?: number; by_kind: { kind: string; count: number }[]; by_state?: { state: string; count: number }[]; by_owner?: { owner: string; count: number }[] }}
             {@const llm = sysStatus.llm as { calls_24h: number; avg_latency_ms: number|null; by_prompt: { prompt: string; count: number; avg_ms: number|null; last_at: string|null }[] }}
             {@const health = (sysStatus.source_health ?? []) as { source: string; last_status: string; last_started_at: string|null; last_success_at: string|null; last_failure_at: string|null; last_failure_kind?: string|null; last_error?: string|null; retry_after_at?: string|null; rows_seen: number; rows_inserted: number; symbols_attempted: number; symbols_failed: number }[]}
@@ -1927,6 +1927,8 @@
                 <h5>Evidence</h5>
                 <dl class="meta-list inline">
                   <dt>open requirements</dt><dd>{ev.open_requirements}</dd>
+                  <dt>source tasks due</dt><dd>{ev.source_tasks_due ?? 0}</dd>
+                  <dt>stale fetching</dt><dd>{ev.source_tasks_stale_fetching ?? 0}</dd>
                 </dl>
                 {#if ev.by_state?.length}
                   <ul class="chips">
@@ -1939,6 +1941,13 @@
                   <ul class="chips">
                     {#each ev.by_reason as s (s.reason)}
                       <li class="chip">{s.reason.replace(/_/g, " ")}: <strong>{s.count}</strong></li>
+                    {/each}
+                  </ul>
+                {/if}
+                {#if ev.source_tasks_by_state?.length}
+                  <ul class="chips">
+                    {#each ev.source_tasks_by_state as s (s.state)}
+                      <li class="chip">source {s.state}: <strong>{s.count}</strong></li>
                     {/each}
                   </ul>
                 {/if}

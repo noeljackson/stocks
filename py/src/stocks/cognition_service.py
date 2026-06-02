@@ -71,6 +71,10 @@ BOOTSTRAP_SWEEP_REASONS = {
     "evidence_satisfied_retry",
     "thesis_retry_due",
 }
+SOURCE_TASK_DELTA_SWEEP_REASONS = {
+    "source_task_changed",
+    "source_task_changed_retry",
+}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -527,6 +531,15 @@ async def _sweep_targets(
                SELECT symbol, count(*) AS evidence_rows
                  FROM evidence_requirement
              GROUP BY symbol
+           ), latest_source_task AS (
+               SELECT target_id AS symbol,
+                      max(updated_at) FILTER (
+                          WHERE state IN ('satisfied', 'no_rows')
+                      ) AS latest_source_task_at
+                 FROM source_task
+                WHERE scope = 'symbol'
+                  AND target_id <> ''
+             GROUP BY target_id
            )
            SELECT t.symbol,
                   lc.version AS context_version,
@@ -540,7 +553,21 @@ async def _sweep_targets(
                   de.at AS due_evidence_at,
                   se.at AS evidence_satisfied_at,
                   COALESCE(es.evidence_rows, 0) AS evidence_rows,
+                  lst.latest_source_task_at AS source_task_at,
                   CASE
+                    WHEN lot.thesis_id IS NOT NULL
+                     AND lst.latest_source_task_at IS NOT NULL
+                     AND lst.latest_source_task_at
+                         > COALESCE(
+                             lot.last_evaluated_at,
+                             lot.updated_at,
+                             '-infinity'::timestamptz
+                         )
+                      THEN 'source_task_changed'
+                    WHEN COALESCE(ot.n, 0) = 0
+                     AND lst.latest_source_task_at IS NOT NULL
+                     AND (ld.at IS NULL OR lst.latest_source_task_at > ld.at)
+                      THEN 'source_task_changed_retry'
                     WHEN lot.thesis_id IS NOT NULL
                      AND COALESCE(lot.last_evaluated_at, lot.updated_at)
                          < now() - ($2::text || ' minutes')::interval
@@ -576,6 +603,7 @@ async def _sweep_targets(
              LEFT JOIN due_evidence de ON de.symbol = t.symbol
              LEFT JOIN newly_satisfied_evidence se ON se.symbol = t.symbol
              LEFT JOIN evidence_state es ON es.symbol = t.symbol
+             LEFT JOIN latest_source_task lst ON lst.symbol = t.symbol
             WHERE t.status = 'active'
               AND (
                     lc.created_at IS NULL
@@ -586,6 +614,21 @@ async def _sweep_targets(
                       lot.thesis_id IS NOT NULL
                       AND COALESCE(lot.last_evaluated_at, lot.updated_at)
                           < now() - ($2::text || ' minutes')::interval
+                    )
+                 OR (
+                      lot.thesis_id IS NOT NULL
+                      AND lst.latest_source_task_at IS NOT NULL
+                      AND lst.latest_source_task_at
+                          > COALESCE(
+                              lot.last_evaluated_at,
+                              lot.updated_at,
+                              '-infinity'::timestamptz
+                          )
+                    )
+                 OR (
+                      COALESCE(ot.n, 0) = 0
+                      AND lst.latest_source_task_at IS NOT NULL
+                      AND (ld.at IS NULL OR lst.latest_source_task_at > ld.at)
                     )
                  OR (
                       COALESCE(ot.n, 0) = 0
@@ -612,14 +655,25 @@ async def _sweep_targets(
          ORDER BY
               CASE
                 WHEN lot.thesis_id IS NOT NULL
+                 AND lst.latest_source_task_at IS NOT NULL
+                 AND lst.latest_source_task_at
+                     > COALESCE(
+                         lot.last_evaluated_at,
+                         lot.updated_at,
+                         '-infinity'::timestamptz
+                     ) THEN 0
+                WHEN lot.thesis_id IS NOT NULL
                  AND COALESCE(lot.last_evaluated_at, lot.updated_at)
-                     < now() - ($2::text || ' minutes')::interval THEN 0
-                WHEN lc.created_at IS NULL THEN 1
-                WHEN lc.market = '{}'::jsonb THEN 2
-                WHEN COALESCE(es.evidence_rows, 0) = 0 THEN 3
-                WHEN COALESCE(ot.n, 0) = 0 AND de.at IS NOT NULL THEN 4
-                WHEN lc.created_at < now() - ($1::text || ' hours')::interval THEN 5
-                ELSE 6
+                     < now() - ($2::text || ' minutes')::interval THEN 1
+                WHEN lc.created_at IS NULL THEN 2
+                WHEN lc.market = '{}'::jsonb THEN 3
+                WHEN COALESCE(es.evidence_rows, 0) = 0 THEN 4
+                WHEN COALESCE(ot.n, 0) = 0 AND de.at IS NOT NULL THEN 5
+                WHEN COALESCE(ot.n, 0) = 0
+                 AND lst.latest_source_task_at IS NOT NULL
+                 AND (ld.at IS NULL OR lst.latest_source_task_at > ld.at) THEN 6
+                WHEN lc.created_at < now() - ($1::text || ' hours')::interval THEN 7
+                ELSE 8
               END,
               COALESCE(lot.last_evaluated_at, lot.updated_at, lc.created_at) ASC NULLS FIRST,
               t.tier ASC,
@@ -632,7 +686,13 @@ async def _sweep_targets(
     )
 
 
-def _sweep_trigger(evidence_rows: int, thesis_id: object | None) -> str:
+def _sweep_trigger(
+    evidence_rows: int,
+    thesis_id: object | None,
+    sweep_reason: str | None = None,
+) -> str:
+    if sweep_reason in SOURCE_TASK_DELTA_SWEEP_REASONS:
+        return "source_task_delta"
     if thesis_id:
         return "open_thesis_update_loop"
     if evidence_rows == 0:
@@ -727,13 +787,15 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
         thesis_evaluated_at = (
             row["thesis_evaluated_at"].isoformat() if row["thesis_evaluated_at"] else None
         )
-        trigger = _sweep_trigger(evidence_rows, row["thesis_id"])
+        source_task_at = row["source_task_at"].isoformat() if row["source_task_at"] else None
+        trigger = _sweep_trigger(evidence_rows, row["thesis_id"], row["sweep_reason"])
 
         async def run_symbol(
             symbol: str = symbol,
             row: asyncpg.Record = row,
             thesis_at: str | None = thesis_at,
             thesis_evaluated_at: str | None = thesis_evaluated_at,
+            source_task_at: str | None = source_task_at,
             trigger: str = trigger,
         ) -> None:
             await _run_pipeline(
@@ -746,6 +808,7 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
                     "thesis_id": str(row["thesis_id"]) if row["thesis_id"] else None,
                     "thesis_at": thesis_at,
                     "thesis_evaluated_at": thesis_evaluated_at,
+                    "source_task_at": source_task_at,
                     "sweep_reason": row["sweep_reason"],
                 },
             )

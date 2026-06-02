@@ -329,6 +329,13 @@ requirements satisfied when rows have arrived. It does not call an LLM. If a
 previous no-thesis decline is older than the newly satisfied evidence, the same
 sweep can retry the ticker.
 
+Completed source-task outcomes are also cognition triggers. When a provider
+check records `satisfied` or `no_rows` after the current thesis was last
+evaluated, the next bounded sweep refreshes context and reconciles the current
+thesis instead of waiting for the 30-minute clock. If a symbol has no thesis,
+the same source-task outcome can retry the thesis path when it is newer than the
+last no-thesis decline.
+
 Product/theme web research is a high-priority evidence requirement. Context
 refresh runs targeted retrieval before the LLM pass, persists rows in
 `research_evidence`, and passes those sources into the narrative band. A thesis
@@ -375,6 +382,10 @@ active ticker with no evidence checklist rows
 
 active ticker where evidence became satisfied after a decline
   -> retry thesis immediately in the next bounded sweep
+
+active ticker where source_task outcome is newer than thesis evaluation
+  -> refresh context/evidence
+  -> reconcile current thesis and update last_evaluated_at
 ```
 
 For open theses, `updated_at` means the thesis content/version changed.

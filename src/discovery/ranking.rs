@@ -13,6 +13,7 @@ pub fn rank_candidate(
     signal_value: Option<f64>,
     domain_fit: Option<f64>,
     parent_theme_fit: Option<f64>,
+    dislocation_classification: Option<&str>,
     proposed_tier: i32,
     proposed_lists: &Value,
     has_suggested_new_list: bool,
@@ -55,6 +56,24 @@ pub fn rank_candidate(
                 "parent theme fit {}",
                 parent_theme_fit.round() as i64
             ));
+        }
+    }
+
+    if let Some(classification) = dislocation_classification {
+        match classification {
+            "ignored_indifference" => {
+                score += 8.0;
+                reasons.push("ignored improving dislocation".to_string());
+            }
+            "hated_avoided" => {
+                score += 6.0;
+                reasons.push("hated but improving dislocation".to_string());
+            }
+            "loved_mania" => {
+                score -= 8.0;
+                reasons.push("loved/extended chase risk".to_string());
+            }
+            _ => {}
         }
     }
 
@@ -165,6 +184,7 @@ mod tests {
             Some(4.0),
             Some(92.0),
             None,
+            None,
             1,
             &serde_json::json!([{"confidence": "high"}]),
             false,
@@ -186,6 +206,7 @@ mod tests {
             Some(1.5),
             Some(40.0),
             None,
+            None,
             3,
             &serde_json::json!([]),
             false,
@@ -201,6 +222,7 @@ mod tests {
             "research_nomination",
             None,
             Some(85.0),
+            None,
             None,
             2,
             &serde_json::json!([{"confidence": "medium"}]),
@@ -219,6 +241,7 @@ mod tests {
             Some(4.0),
             Some(88.0),
             None,
+            None,
             1,
             &serde_json::json!([]),
             false,
@@ -227,6 +250,7 @@ mod tests {
             "research_nomination",
             Some(2.0),
             Some(35.0),
+            None,
             None,
             3,
             &serde_json::json!([]),
@@ -246,6 +270,7 @@ mod tests {
             Some(3.0),
             Some(55.0),
             Some(82.0),
+            None,
             2,
             &serde_json::json!([]),
             false,
@@ -255,6 +280,42 @@ mod tests {
         assert!(
             got.reasons
                 .contains(&"active parent theme fit 82".to_string())
+        );
+    }
+
+    #[test]
+    fn dislocation_boosts_ignored_and_penalizes_loved_chase() {
+        let ignored = rank_candidate(
+            "research_nomination",
+            Some(3.0),
+            Some(60.0),
+            None,
+            Some("ignored_indifference"),
+            2,
+            &serde_json::json!([]),
+            false,
+        );
+        let loved = rank_candidate(
+            "research_nomination",
+            Some(3.0),
+            Some(60.0),
+            None,
+            Some("loved_mania"),
+            2,
+            &serde_json::json!([]),
+            false,
+        );
+
+        assert!(ignored.score > loved.score + 10.0);
+        assert!(
+            ignored
+                .reasons
+                .contains(&"ignored improving dislocation".to_string())
+        );
+        assert!(
+            loved
+                .reasons
+                .contains(&"loved/extended chase risk".to_string())
         );
     }
 }

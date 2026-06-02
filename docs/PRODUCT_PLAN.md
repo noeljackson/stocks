@@ -1088,17 +1088,32 @@ by the cognition sweep. The maintainer refreshes macro/source and linked ticker
 coverage, turns beneficiary/proxy lists into active ticker mappings, updates
 `last_evaluated_at`, writes version history when parent coverage materially
 changes, and runs a bounded parent-thesis LLM pass when evidence changes or the
-parent view is stale. That pass rewrites the parent summary, core claim,
-evidence, open questions, invalidation conditions, and beneficiary/loser lists
-from normalized linked evidence. Reflection now snapshots the active parent
-macro/sector/theme links into ticker prediction claims when a thesis becomes
-actionable, so parent-theme expression calibration can be reported separately
-from global ticker-thesis calibration. Macro internals now derive from local
-data: market breadth from daily price bars, sector relative strength from
-sector baskets, earnings breadth from estimate revisions, and HY OAS trend from
-FRED observations. The remaining Phase 3 work is broader external factor
-coverage: normalized commodity fundamentals, inventories, fund flows, and deeper
-credit-quality buckets.
+deterministic fingerprint changes or the parent view is stale. That pass
+rewrites the parent summary, core claim, evidence, open questions, invalidation
+conditions, and beneficiary/loser lists from normalized linked evidence.
+Reflection now snapshots the active parent macro/sector/theme links into ticker
+prediction claims when a thesis becomes actionable, so parent-theme expression
+calibration can be reported separately from global ticker-thesis calibration.
+Macro internals now derive from local data: market breadth from daily price
+bars, sector relative strength from sector baskets, earnings breadth from
+estimate revisions, and HY OAS trend from FRED observations. The macro
+maintainer also computes a Dislocation Map:
+
+```text
+loved / mania        crowded momentum and attention; beware chase entries
+ignored              improving evidence with low attention
+hated / avoided      negative sentiment/price where evidence may be turning
+```
+
+Ticker cognition receives the relevant sector dislocation context, and
+discovery ranking uses it to promote ignored/hated improving setups while
+penalizing loved/extended chase setups. This is how the brain searches for
+"undervalued indifference" and emotionally wrong markets instead of only
+classifying risk-on/risk-off.
+
+The remaining Phase 3 work is broader external factor coverage: normalized
+commodity fundamentals, inventories, fund flows, and deeper credit-quality
+buckets.
 
 ### Phase 4: Improve Discovery Ranking
 

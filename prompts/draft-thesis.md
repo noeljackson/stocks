@@ -25,6 +25,7 @@ The user message contains:
 - `context` — the latest 3-band `ticker_context` for {{symbol}}
 - `missing_evidence` — first-class evidence requirements that are not yet satisfied, including `source_type`, `priority`, `blocking_state`, `reason`, and retry/fetch metadata
 - `parent_theses` — active macro/sector/theme brain theses linked to {{symbol}}, including role, direction, missing evidence, and invalidation conditions
+- `dislocation_context` — macro brain classification for the symbol's sector/theme when available: loved/mania, ignored/indifference, hated/avoided, evidence reasons, and watch rules
 - `evidence_items` — normalized source facts with timestamp, strength, polarity, source, and raw-row pointer. These are the canonical facts the thesis should cite before leaning on prose summaries.
 - `cluster_thesis` — compact parent-theme summary for the ticker's cluster (may be empty)
 - `prior_thesis` — any prior thesis we've drafted (may be null)
@@ -137,12 +138,20 @@ forward claim; otherwise it belongs in monitoring/no-edge rationale.
 17. **Forecast direction is not technical state.** A symbol may have an `up`
 forecast and still be technically extended. Use `forecast.technical_state` to
 separate the fundamental/narrative thesis from current chart regime.
-18. **Respect overextension without pretending it invalidates the thesis.** If
+18. **Use `dislocation_context` to separate opportunity from timing.** A
+`loved_mania` sector can still have bullish ticker theses, but entry quality
+may be poor unless the ticker has fresh, specific evidence that is not already
+diffused. An `ignored_indifference` or `hated_avoided` sector can improve
+research priority, but it is not proof: require ticker-specific evidence before
+calling an actionable edge. Say "bullish but loved/extended", "ignored with
+fresh evidence", or "hated but improving" when the supplied evidence supports
+that distinction.
+19. **Respect overextension without pretending it invalidates the thesis.** If
 `context.market.price_snapshot` shows price more than 20% above the 200-day
 SMA, within 2% of the available-window high, or RSI 14 above 70, mark
 `technical_state.state` as `extended` unless the supplied context gives a
 better technical reason. Explain what that implies for timing/decision quality.
 Always name the SMA window.
-19. **Do not say there is no public data about a named product/theme unless `missing_evidence` includes `product_research` or the context shows an empty/failed research retrieval pass.** If retrieved research sources are present, either use them or explain why they are not relevant.
+20. **Do not say there is no public data about a named product/theme unless `missing_evidence` includes `product_research` or the context shows an empty/failed research retrieval pass.** If retrieved research sources are present, either use them or explain why they are not relevant.
 
 Output the JSON. Nothing else.

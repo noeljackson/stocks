@@ -251,11 +251,11 @@ async function mockApi(
           open_questions: ["Refresh FRED macro series"],
           missing_evidence: [],
           source_ref: {
-	            maintainer: {
-	              sources: {
-	                fred: { source: "fred", freshness: "fresh", status: "no_new_rows" },
-	                cboe: { source: "cboe", freshness: "fresh", status: "no_new_rows" },
-	              },
+            maintainer: {
+              sources: {
+                fred: { source: "fred", freshness: "fresh", status: "no_new_rows" },
+                cboe: { source: "cboe", freshness: "fresh", status: "no_new_rows" },
+              },
               market_state: {
                 regime: "neutral",
                 indicators: {
@@ -279,8 +279,30 @@ async function mockApi(
                   },
                 },
               },
-	            },
-	          },
+              dislocation_map: {
+                buckets: {
+                  loved_mania: [{
+                    name: "Technology",
+                    score: 74,
+                    interpretation: "Loved/mania: strong attention or momentum can make true stories poor entries.",
+                    reasons: ["top-quartile 20d sector relative strength", "news attention is elevated"],
+                  }],
+                  ignored_indifference: [{
+                    name: "Industrials",
+                    score: 56,
+                    interpretation: "Ignored/indifference: improving evidence is not yet receiving much attention.",
+                    reasons: ["estimate revision breadth is improving", "news attention is low"],
+                  }],
+                  hated_avoided: [{
+                    name: "Financial Services",
+                    score: 49,
+                    interpretation: "Hated/avoided: weak sentiment or price action may be masking an improving setup.",
+                    reasons: ["news tone is negative", "evidence is less bad than price/sentiment"],
+                  }],
+                },
+              },
+            },
+          },
           freshness_target_minutes: 720,
           last_evaluated_at: null,
           version: 1,
@@ -1174,6 +1196,13 @@ test("brain tab shows macro and theme theses with linked tickers", async ({ page
   await expect(page.locator(".macro-theme")).toContainText("655 symbols");
   await expect(page.locator(".macro-theme")).toContainText("Technology / Healthcare / Industrials");
   await expect(page.locator(".macro-theme")).toContainText("HY OAS 2.72%");
+  await expect(page.locator(".macro-theme")).toContainText("Dislocation Map");
+  await expect(page.locator(".macro-theme")).toContainText("Loved / mania");
+  await expect(page.locator(".macro-theme")).toContainText("Technology");
+  await expect(page.locator(".macro-theme")).toContainText("Ignored");
+  await expect(page.locator(".macro-theme")).toContainText("Industrials");
+  await expect(page.locator(".macro-theme")).toContainText("Hated / avoided");
+  await expect(page.locator(".macro-theme")).toContainText("Financial Services");
 
   const theme = page.locator(".brain-theme").filter({ hasText: "AI Compute Infrastructure" });
   await expect(theme).toContainText("AI capex remains the parent theme");

@@ -9,8 +9,8 @@ Purpose:
 
 Inputs:
 - `brain_thesis`: the current parent thesis row.
-- `deterministic_update`: source freshness, coverage, missing evidence, and linked ticker counts computed by the system.
-- `source_ref`: source health and maintainer diagnostics.
+- `deterministic_update`: source freshness, coverage, missing evidence, linked ticker counts, and macro dislocation classifications computed by the system.
+- `source_ref`: source health, maintainer diagnostics, and the deterministic `dislocation_map` when this is the macro row.
 - `parent_context`: linked ticker roles, current ticker thesis states, and normalized evidence facts.
 
 Rules:
@@ -21,6 +21,10 @@ Rules:
 - A theme can be `mixed` when leaders and suppliers disagree, when price action is extended, or when linked ticker theses conflict.
 - Preserve uncertainty. Open questions are product requirements for the next acquisition/cognition loop.
 - Beneficiaries and losers must be symbols already present in the supplied parent thesis or linked ticker context.
+- When `source_ref.maintainer.dislocation_map` is present, use it to explain
+  where the market is loved/mania, ignored/indifferent, or hated/avoided. Do
+  not convert dislocation into a trade recommendation by itself; it is a parent
+  map that should guide discovery and child ticker timing.
 
 JSON schema:
 {

@@ -108,6 +108,56 @@ async def _load_parent_theses(pool: asyncpg.Pool, symbol: str) -> list[dict]:
     return out
 
 
+async def _load_dislocation_context(pool: asyncpg.Pool, symbol: str) -> dict | None:
+    row = await pool.fetchrow(
+        """SELECT dp.sector, bt.source_ref
+             FROM discovery_pool dp
+        LEFT JOIN LATERAL (
+                  SELECT source_ref
+                    FROM brain_thesis
+                   WHERE active = true
+                     AND scope = 'macro'
+                ORDER BY updated_at DESC, created_at DESC
+                   LIMIT 1
+             ) bt ON TRUE
+            WHERE dp.symbol = $1
+              AND dp.dropped_at IS NULL
+         ORDER BY dp.last_seen_at DESC NULLS LAST
+            LIMIT 1""",
+        symbol,
+    )
+    if row is None:
+        return None
+    source_ref = row["source_ref"]
+    if isinstance(source_ref, str):
+        source_ref = json.loads(source_ref)
+    if not isinstance(source_ref, dict):
+        return None
+    maintainer = source_ref.get("maintainer")
+    if not isinstance(maintainer, dict):
+        return None
+    dislocation_map = maintainer.get("dislocation_map")
+    if not isinstance(dislocation_map, dict):
+        return None
+    sector = row["sector"]
+    classifications = dislocation_map.get("sector_classifications")
+    sector_view = (
+        classifications.get(sector)
+        if isinstance(classifications, dict) and sector
+        else None
+    )
+    watch = dislocation_map.get("watch")
+    counts = dislocation_map.get("counts")
+    return {
+        "sector": sector,
+        "sector_dislocation": sector_view if isinstance(sector_view, dict) else None,
+        "watch": watch if isinstance(watch, list) else [],
+        "counts": counts if isinstance(counts, dict) else {},
+        "source": dislocation_map.get("source"),
+        "as_of": dislocation_map.get("as_of"),
+    }
+
+
 async def _load_evidence_items(
     pool: asyncpg.Pool,
     symbol: str,
@@ -969,6 +1019,7 @@ async def draft(symbol: str) -> dict:
                 }
         prior = await _load_prior_thesis(pool, symbol)
         parent_theses = await _load_parent_theses(pool, symbol)
+        dislocation_context = await _load_dislocation_context(pool, symbol)
         missing_evidence = await load_open_evidence_requirements(pool, symbol)
         evidence_items = await _load_evidence_items(pool, symbol)
         if prior is not None:
@@ -991,6 +1042,7 @@ async def draft(symbol: str) -> dict:
                 "context": context,
                 "missing_evidence": missing_evidence,
                 "parent_theses": parent_theses,
+                "dislocation_context": dislocation_context,
                 "evidence_items": evidence_items,
                 "cluster_thesis": parent_theses[0]["summary"] if parent_theses else None,
                 "prior_thesis": _summarize_prior(prior) if prior else None,

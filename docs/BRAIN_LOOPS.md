@@ -121,6 +121,23 @@ These metrics clear the canonical macro requirements
 headline values so the operator can audit why the macro thesis is active,
 neutral, risk-on, or risk-off.
 
+The macro maintainer also builds a deterministic **Dislocation Map** from the
+same internals plus sector news attention/sentiment:
+
+```text
+Loved / mania       strong RS or attention; true stories may be poor entries
+Ignored             improving revisions/RS with low attention
+Hated / avoided     weak price/sentiment where evidence is becoming less bad
+```
+
+The map is stored in `brain_thesis.source_ref.maintainer.dislocation_map` on the
+macro row and versioned through normal parent-thesis history. It is not a trade
+recommendation. It tells downstream loops where the market may be emotionally
+wrong or inattentive. Discovery ranking boosts ignored/hated improving sectors
+and penalizes loved/extended chase setups; ticker thesis drafting receives the
+symbol's sector dislocation context so it can say "bullish but loved/extended"
+or "ignored with fresh evidence" without confusing direction with entry timing.
+
 ## Data Acquisition Loops
 
 These loops feed the brain. They should be broad enough to cover:

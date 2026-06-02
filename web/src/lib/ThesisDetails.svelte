@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Condition, EvidenceItem, ThesisDetail } from "./api";
+  import type { Condition, EvidenceItem, KnownUnknown, ThesisDetail } from "./api";
 
   let { thesis }: { thesis: ThesisDetail } = $props();
 
@@ -40,6 +40,7 @@
   let forecastHorizon = $derived(forecastField("horizon_event"));
   let forecastTechnicalState = $derived(forecastTechnicalStateFields());
   let linkedEvidence = $derived(thesis.evidence_items ?? []);
+  let knownUnknowns = $derived(thesis.known_unknowns ?? []);
 
   // Substance checklist (#10): which structural slots are filled.
   let sub = $derived(thesis.substance);
@@ -120,6 +121,16 @@
       const polarity = item.polarity > 0 ? `+${item.polarity.toFixed(2)}` : item.polarity.toFixed(2);
       parts.push(`polarity ${polarity}`);
     }
+    return parts.join(" · ");
+  }
+
+  function knownUnknownMeta(item: KnownUnknown): string {
+    const parts = [];
+    if (item.status) parts.push(item.status);
+    if (item.priority) parts.push(`${item.priority} priority`);
+    if (item.requirement_key) parts.push(item.requirement_key.replace(/_/g, " "));
+    if (item.evidence_source) parts.push(item.evidence_source);
+    if (item.deadline_at) parts.push(`check ${shortTs(item.deadline_at)}`);
     return parts.join(" · ");
   }
 </script>
@@ -248,6 +259,21 @@
     </ul>
   {/if}
 
+  {#if knownUnknowns.length > 0}
+    <h4>Known unknowns</h4>
+    <ul class="known-unknowns">
+      {#each knownUnknowns as item, i (`${item.question}-${i}`)}
+        <li>
+          <strong>{item.question}</strong>
+          <p>{item.watch_for}</p>
+          {#if knownUnknownMeta(item)}
+            <span class="muted">{knownUnknownMeta(item)}</span>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  {/if}
+
   <div class="two-col">
     {#if thesis.bull_case}
       <div>
@@ -320,6 +346,7 @@
       conviction_conditions: thesis.conviction_conditions,
       trigger_conditions: thesis.trigger_conditions,
       fulfillment_conditions: thesis.fulfillment_conditions,
+      known_unknowns: thesis.known_unknowns,
       intended_size: thesis.intended_size,
     }, null, 2)}</pre>
   </details>
@@ -428,6 +455,19 @@
   .evidence-row a { color: #89b4fa; text-decoration: none; }
   .evidence-row a:hover { text-decoration: underline; }
   .linked-evidence p { margin: 0; font-size: 0.8rem; }
+
+  .known-unknowns {
+    list-style: none; padding: 0; margin: 0.25rem 0 0.75rem 0;
+    display: grid; gap: 0.35rem;
+  }
+  .known-unknowns li {
+    background: rgba(249, 226, 175, 0.05);
+    border: 1px solid rgba(249, 226, 175, 0.22);
+    border-left: 3px solid rgb(249, 226, 175);
+    border-radius: 4px; padding: 0.45rem 0.6rem;
+  }
+  .known-unknowns p { margin: 0.2rem 0; font-size: 0.86rem; }
+  .known-unknowns span { font-size: 0.78rem; }
 
   .hist { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
   .hist li {

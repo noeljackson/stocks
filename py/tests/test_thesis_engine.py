@@ -1,6 +1,11 @@
 import pytest
 
-from stocks.thesis_engine import _evidence_weight, _extract_json, classify_reconciliation
+from stocks.thesis_engine import (
+    _evidence_weight,
+    _extract_json,
+    _normalize_known_unknowns,
+    classify_reconciliation,
+)
 
 
 def test_classify_reconciliation_flags_dropped_invalidation_as_weakened() -> None:
@@ -69,6 +74,78 @@ def test_classify_reconciliation_detects_no_change() -> None:
     }
 
     assert classify_reconciliation(prior, draft) == ("no_change", False)
+
+
+def test_classify_reconciliation_versions_known_unknown_changes() -> None:
+    prior = {
+        "edge_rationale": "same edge",
+        "forecast": {"direction": "neutral"},
+        "invalidation_conditions": [{"name": "demand_break"}],
+        "known_unknowns": [],
+        "conviction_tier": "low",
+    }
+    draft = {
+        "edge_rationale": "same edge",
+        "forecast": {"direction": "neutral"},
+        "invalidation_conditions": [{"name": "demand_break"}],
+        "known_unknowns": [{
+            "question": "Will demand break?",
+            "watch_for": "next earnings call",
+            "status": "open",
+        }],
+        "conviction_tier": "low",
+    }
+
+    assert classify_reconciliation(prior, draft) == ("confirmed_existing_view", False)
+
+
+def test_normalize_known_unknowns_keeps_explicit_questions() -> None:
+    out = _normalize_known_unknowns(
+        "MU",
+        {
+            "known_unknowns": [{
+                "question": "Is HBM pricing still tightening?",
+                "watch_for": "contract pricing commentary",
+                "deadline_at": "2026-08-01T00:00:00Z",
+                "evidence_source": "news:contract_pricing",
+            }],
+        },
+    )
+
+    assert out == [{
+        "question": "Is HBM pricing still tightening?",
+        "watch_for": "contract pricing commentary",
+        "status": "open",
+        "deadline_at": "2026-08-01T00:00:00Z",
+        "evidence_source": "news:contract_pricing",
+    }]
+
+
+def test_normalize_known_unknowns_derives_from_missing_evidence() -> None:
+    out = _normalize_known_unknowns(
+        "DELL",
+        {
+            "missing_evidence": [{
+                "requirement_key": "product_research",
+                "source_type": "web_research",
+                "priority": "high",
+                "reason": "Need customer win evidence before making AI server demand claims.",
+            }],
+        },
+    )
+
+    assert out[0]["question"] == "What does product research show for DELL?"
+    assert out[0]["watch_for"] == (
+        "Need customer win evidence before making AI server demand claims."
+    )
+    assert out[0]["requirement_key"] == "product_research"
+
+
+def test_normalize_known_unknowns_has_default_for_empty_draft() -> None:
+    out = _normalize_known_unknowns("NVDA", {})
+
+    assert out[0]["question"] == "What fresh evidence would materially change the NVDA thesis?"
+    assert out[0]["evidence_source"] == "normalized evidence_item stream"
 
 
 def test_evidence_weight_prefers_strength_and_clamps() -> None:

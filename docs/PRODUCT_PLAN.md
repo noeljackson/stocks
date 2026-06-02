@@ -696,6 +696,13 @@ last_evaluated_at
 version history
 ```
 
+`known_unknowns` is first-class thesis state, not loose prose. Draft/reconcile
+runs must declare the material unanswered questions that would change
+confidence, what evidence to watch for, and the source/check date when known.
+If the model omits them, the engine derives a bounded list from
+`missing_evidence` rather than leaving the operator with a blank uncertainty
+surface. The thesis detail panel shows these questions next to linked evidence.
+
 State transition principle:
 
 ```text

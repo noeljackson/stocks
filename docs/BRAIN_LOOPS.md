@@ -763,6 +763,10 @@ What works now:
 - The UI shows one current thesis and a separate retired-history section.
 - The UI shows linked evidence facts for the current thesis, ordered by
   evidence weight and recency.
+- Draft/reconcile runs persist `known_unknowns` on the thesis: explicit
+  material unanswered questions, what to watch for, and the evidence source or
+  check date when known. If the model omits them, the engine derives them from
+  missing evidence so an active ticker is not silently uncertainty-free.
 - Consensus crossings without a thesis now create `thesis_incomplete`
   attention instead of fake `thesis.updated` events.
 - The draft-thesis prompt now asks for `forecast.technical_state` so fresh
@@ -775,7 +779,6 @@ Current gaps:
 - The technical-state package is not persisted yet and is not automatically
   attached to thesis/context/chat prompt inputs.
 - #141: reconciliation history needs a clearer operator-facing timeline.
-- #96: theses should declare known unknowns.
 - #97: thesis detail now computes deterministic input freshness from market
   source checks, ticker context age, estimate age, and recent-news coverage.
   The score, component penalties, and confidence cap are shown beside the

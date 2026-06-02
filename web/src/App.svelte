@@ -411,6 +411,75 @@
       .join(" · ");
   }
 
+  function asRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null;
+  }
+
+  function num(value: unknown): number | null {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function pct01(value: unknown): string {
+    const n = num(value);
+    return n === null ? "n/a" : `${(n * 100).toFixed(0)}%`;
+  }
+
+  function macroIndicators(macro: BrainThesis): Record<string, unknown> {
+    const maintainerState = asRecord(brainMaintainer(macro.source_ref)?.market_state);
+    const fromMaintainer = asRecord(maintainerState?.indicators);
+    if (fromMaintainer) return fromMaintainer;
+    for (const item of macro.evidence ?? []) {
+      const evidence = asRecord(item);
+      if (evidence?.kind !== "macro_source_freshness") continue;
+      const marketState = asRecord(evidence.market_state);
+      const indicators = asRecord(marketState?.indicators);
+      if (indicators) return indicators;
+    }
+    return {};
+  }
+
+  function macroMetricChips(macro: BrainThesis): { label: string; value: string; detail?: string }[] {
+    const indicators = macroIndicators(macro);
+    const breadth = asRecord(indicators.market_breadth_internals);
+    const earnings = asRecord(indicators.earnings_breadth);
+    const credit = asRecord(indicators.credit_internals_trend);
+    const sector = asRecord(indicators.sector_relative_strength);
+    const chips: { label: string; value: string; detail?: string }[] = [];
+    if (breadth) {
+      chips.push({
+        label: "breadth",
+        value: `${pct01(breadth.pct_above_200d)} >200D`,
+        detail: `${Number(breadth.advancers ?? 0)} up / ${Number(breadth.decliners ?? 0)} down`,
+      });
+    }
+    if (earnings) {
+      chips.push({
+        label: "earnings",
+        value: `${Number(earnings.symbol_count ?? 0)} symbols`,
+        detail: `net ${pct01(earnings.net_revision_breadth)}`,
+      });
+    }
+    if (sector) {
+      const leaders = Array.isArray(sector.leaders_20d)
+        ? sector.leaders_20d.filter((item): item is string => typeof item === "string")
+        : [];
+      if (leaders.length) {
+        chips.push({ label: "sector RS", value: leaders.slice(0, 3).join(" / ") });
+      }
+    }
+    if (credit) {
+      chips.push({
+        label: "credit",
+        value: String(credit.trend ?? "unknown"),
+        detail: `HY OAS ${Number(credit.latest_hy_oas_pct ?? 0).toFixed(2)}%`,
+      });
+    }
+    return chips;
+  }
+
   function evidenceActions(req: EvidenceRequirement): string[] {
     const actions = req.source_ref?.fetch_actions;
     return Array.isArray(actions)
@@ -1876,6 +1945,7 @@
               {#if brainOverview.macro}
                 {@const macro = brainOverview.macro}
                 {@const macroSources = brainSourceText(macro.source_ref)}
+                {@const macroMetrics = macroMetricChips(macro)}
                 <section class="brain-theme macro-theme freshness-{macro.freshness}">
                   <div class="brain-theme-hdr">
                     <div>
@@ -1894,6 +1964,16 @@
                     <div class="brain-line">
                       <span class="muted">sources</span>
                       <span class="brain-token">{macroSources}</span>
+                    </div>
+                  {/if}
+                  {#if macroMetrics.length}
+                    <div class="macro-metrics">
+                      {#each macroMetrics as metric (metric.label)}
+                        <span class="brain-token macro-metric">
+                          <strong>{metric.label}</strong> {metric.value}
+                          {#if metric.detail}<small>{metric.detail}</small>{/if}
+                        </span>
+                      {/each}
                     </div>
                   {/if}
                   {#if macro.missing_evidence.length}
@@ -3720,6 +3800,7 @@
   .brain-theme.freshness-missing { border-left-color: rgb(249,226,175); }
   .brain-theme-hdr,
   .brain-badges,
+  .macro-metrics,
   .brain-line {
     display: flex;
     align-items: center;
@@ -3739,6 +3820,15 @@
     border-radius: 4px;
     padding: .12rem .35rem;
     font-size: .74rem;
+  }
+  .macro-metric {
+    display: inline-flex;
+    align-items: baseline;
+    gap: .25rem;
+  }
+  .macro-metric small {
+    color: #7f8aa3;
+    font-size: .68rem;
   }
   .brain-token.action {
     cursor: pointer;

@@ -201,37 +201,92 @@ async function mockApi(
     if (path === "/api/brain") {
       await json(route, {
         as_of: "2026-06-01T00:00:00Z",
-        market_state: { regime: "neutral", capitulation: false, indicators: {}, as_of: "2026-06-01T00:00:00Z" },
+        market_state: {
+          regime: "neutral",
+          capitulation: false,
+          indicators: {},
+          as_of: "2026-06-01T00:00:00Z",
+        },
         macro: {
           id: "d29d2f1d-7467-45ca-9f1e-1243923c94aa",
           scope: "macro",
           key: "macro_regime",
           name: "Macro Regime",
-          state: "forming",
+          state: "active",
           direction: "neutral",
           summary: "Macro posture is neutral until breadth and rates confirm a stronger view.",
           core_claim: "Ticker conviction should respect the top-down risk regime.",
           why_now: null,
-          evidence: [],
+          evidence: [{
+            generated_by: "brain_maintainer",
+            kind: "macro_source_freshness",
+            as_of: "2026-06-01T00:00:00Z",
+            market_state: {
+              regime: "neutral",
+              indicators: {
+                market_breadth_internals: {
+                  symbol_count: 1147,
+                  advancers: 484,
+                  decliners: 650,
+                  pct_above_200d: 0.5597,
+                },
+                earnings_breadth: {
+                  signals: 6527,
+                  symbol_count: 655,
+                  net_revision_breadth: 0.0032,
+                },
+                sector_relative_strength: {
+                  leaders_20d: ["Technology", "Healthcare", "Industrials"],
+                },
+                credit_internals_trend: {
+                  latest_hy_oas_pct: 2.72,
+                  trend: "stable",
+                },
+              },
+            },
+          }],
           invalidation_conditions: [],
           beneficiaries: [],
           losers: [],
           open_questions: ["Refresh FRED macro series"],
-          missing_evidence: ["fred_macro", "market_breadth"],
+          missing_evidence: [],
           source_ref: {
-            maintainer: {
-              sources: {
-                fred: { source: "fred", freshness: "fresh", status: "no_new_rows" },
-                cboe: { source: "cboe", freshness: "fresh", status: "no_new_rows" },
+	            maintainer: {
+	              sources: {
+	                fred: { source: "fred", freshness: "fresh", status: "no_new_rows" },
+	                cboe: { source: "cboe", freshness: "fresh", status: "no_new_rows" },
+	              },
+              market_state: {
+                regime: "neutral",
+                indicators: {
+                  market_breadth_internals: {
+                    symbol_count: 1147,
+                    advancers: 484,
+                    decliners: 650,
+                    pct_above_200d: 0.5597,
+                  },
+                  earnings_breadth: {
+                    signals: 6527,
+                    symbol_count: 655,
+                    net_revision_breadth: 0.0032,
+                  },
+                  sector_relative_strength: {
+                    leaders_20d: ["Technology", "Healthcare", "Industrials"],
+                  },
+                  credit_internals_trend: {
+                    latest_hy_oas_pct: 2.72,
+                    trend: "stable",
+                  },
+                },
               },
-            },
-          },
+	            },
+	          },
           freshness_target_minutes: 720,
           last_evaluated_at: null,
           version: 1,
           created_at: "2026-06-01T00:00:00Z",
           updated_at: "2026-06-01T00:00:00Z",
-          freshness: "missing",
+          freshness: "fresh",
           tickers: [],
           watchlists: [],
           nominations: [],
@@ -1057,7 +1112,10 @@ test("brain tab shows macro and theme theses with linked tickers", async ({ page
   await expect(page.locator(".brain-topline")).toContainText("2 active");
   await expect(page.locator(".macro-theme")).toContainText("Macro Regime");
   await expect(page.locator(".macro-theme")).toContainText("fred fresh");
-  await expect(page.locator(".macro-theme")).toContainText("fred_macro");
+  await expect(page.locator(".macro-theme")).toContainText("56% >200D");
+  await expect(page.locator(".macro-theme")).toContainText("655 symbols");
+  await expect(page.locator(".macro-theme")).toContainText("Technology / Healthcare / Industrials");
+  await expect(page.locator(".macro-theme")).toContainText("HY OAS 2.72%");
 
   const theme = page.locator(".brain-theme").filter({ hasText: "AI Compute Infrastructure" });
   await expect(theme).toContainText("AI capex remains the parent theme");

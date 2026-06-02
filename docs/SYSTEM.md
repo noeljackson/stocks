@@ -164,6 +164,10 @@ existing open thesis reconciles into the canonical thesis and appends
 `thesis_version_history`; it should not create a second open thesis. The
 database enforces this with a partial unique index on open thesis rows per
 symbol.
+Selected sweep targets run with bounded concurrency
+(`COGNITION_SWEEP_CONCURRENCY`, default 2), because the context/thesis/sharpen
+pipeline can wait on LLM calls and a serial 20-symbol sweep can miss the
+30-minute freshness target.
 
 The scan universe for cheap data should be consistent:
 

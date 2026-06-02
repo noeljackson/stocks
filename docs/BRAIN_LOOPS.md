@@ -513,6 +513,9 @@ run the same cognition pipeline for selected tickers
         |
         v
 write cognition_run with status, reason, blockers, retry
+        |
+        v
+refresh parent brain theses after ticker SLA work
 ```
 
 Current defaults:
@@ -524,6 +527,7 @@ COGNITION_OPEN_THESIS_MAX_AGE_MINUTES  30
 COGNITION_DECLINE_RETRY_HOURS          6
 COGNITION_MAX_SYMBOLS_PER_SWEEP        20
 COGNITION_MIN_SYMBOLS_PER_SWEEP        20
+COGNITION_SWEEP_CONCURRENCY            2
 COGNITION_EVIDENCE_SYNC_LIMIT          200
 ```
 
@@ -532,6 +536,16 @@ are capped at half the open-thesis freshness window, with an upper cap of 300s
 and lower cap of 60s. Batch size is floored by
 `COGNITION_MIN_SYMBOLS_PER_SWEEP`. This prevents stale environment config like
 `900s/5 symbols` from silently breaking the 30-minute product SLA.
+
+Sweep execution is bounded-concurrent, not serial.
+`COGNITION_SWEEP_CONCURRENCY` controls how many selected symbols may run the
+context/thesis/sharpen/challenge pipeline at once. The default is 2 because a
+single symbol can spend real time in LLM and source-refresh work; serially
+processing 20 stale theses can already exceed the 30-minute target.
+
+Parent brain/theme thesis maintenance runs after ticker target execution inside
+the sweep. It is important context, but it should not block stale open ticker
+theses from entering the update loop.
 
 Sweep priority is opinion-first. Fresh provider outcomes for an open thesis
 come first, then stale open theses, then bootstrap work. A provider outcome is
@@ -601,8 +615,9 @@ What works now:
   concrete source rows.
 - Malformed draft JSON is retried through the same audited prompt path instead
   of crashing the cognition update loop on the first bad model response.
-- Dev cognition sweep runs every 5 minutes over up to 20 active symbols by
-  default, so a larger universe is not starved behind a five-symbol batch.
+- Dev cognition sweep runs every 5 minutes over up to 20 active symbols with
+  bounded concurrency 2 by default, so a larger universe is not starved behind
+  a serial five-symbol batch or a single slow LLM call.
 - Each sweep now refreshes open evidence requirements from the latest source
   health before selecting cognition targets. That lets provider success,
   failures, no-new-row passes, and newly satisfied rows move tickers forward

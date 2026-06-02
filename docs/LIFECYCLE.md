@@ -400,10 +400,13 @@ Runtime knobs:
 - `COGNITION_DECLINE_RETRY_HOURS` (default 6)
 - `COGNITION_MAX_SYMBOLS_PER_SWEEP` (default 20)
 - `COGNITION_MIN_SYMBOLS_PER_SWEEP` (default 20)
+- `COGNITION_SWEEP_CONCURRENCY` (default 2)
 
 The worker caps nonzero sweep intervals at half the open-thesis freshness window
 and floors batch size at `COGNITION_MIN_SYMBOLS_PER_SWEEP`, so stale runtime
 config cannot silently starve the open-thesis update loop.
+Sweep target execution is also bounded-concurrent; otherwise slow LLM/context
+passes can make a 20-symbol sweep exceed the 30-minute thesis freshness target.
 
 ## State Ownership
 

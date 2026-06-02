@@ -602,7 +602,8 @@ async def _sweep_targets(
            ), latest_source_task AS (
                SELECT target_id AS symbol,
                       max(updated_at) FILTER (
-                          WHERE state IN ('satisfied', 'no_rows')
+                          WHERE state = 'satisfied'
+                            AND source_ref->>'result' = 'rows_seen'
                       ) AS latest_source_task_at
                  FROM source_task
                 WHERE scope = 'symbol'

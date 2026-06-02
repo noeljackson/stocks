@@ -16,6 +16,7 @@ from stocks.cognition_service import (
     _select_sweep_targets,
     _status_for_thesis_result,
     _sweep_concurrency,
+    _sweep_targets,
     _sweep_trigger,
 )
 
@@ -53,6 +54,15 @@ class ReclaimPool:
     async def fetchval(self, sql: str, *args):
         self.calls.append((sql, args))
         return self.count
+
+
+class QueryCapturePool:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple]] = []
+
+    async def fetch(self, sql: str, *args):
+        self.calls.append((sql, args))
+        return []
 
 
 @pytest.mark.asyncio
@@ -233,6 +243,23 @@ def test_select_sweep_targets_preserves_order_when_no_bootstrap_work() -> None:
     selected = _select_sweep_targets(rows, limit=2, bootstrap_floor=1)
 
     assert [row["symbol"] for row in selected] == ["MU", "NVDA"]
+
+
+@pytest.mark.asyncio
+async def test_sweep_targets_only_treats_rows_seen_source_tasks_as_material() -> None:
+    pool = QueryCapturePool()
+
+    await _sweep_targets(
+        pool,
+        context_max_age_hours=12,
+        open_thesis_max_age_minutes=30,
+        decline_retry_hours=6,
+        limit=10,
+    )
+
+    sql, _args = pool.calls[0]
+    assert "source_ref->>'result' = 'rows_seen'" in sql
+    assert "state = 'satisfied'" in sql
 
 
 def _sweep_row(symbol: str) -> dict:

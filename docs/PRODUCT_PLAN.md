@@ -575,6 +575,7 @@ Open theses are on a maintenance loop:
 ```text
 open thesis older than freshness target
 or normalized evidence newer than thesis evaluation
+or source_task `rows_seen` result newer than thesis evaluation
   -> outrank no-context and broad evidence-bootstrap work in the scheduler
   -> re-evaluate against latest context
   -> no_change: update last_evaluated_at only

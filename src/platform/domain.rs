@@ -273,6 +273,8 @@ pub struct ThesisDetail {
     pub symbol: String,
     pub cluster_id: Option<String>,
     pub cluster_thesis: Option<String>,
+    #[serde(default)]
+    pub parent_themes: serde_json::Value,
     pub state: ThesisState,
     pub edge_rationale: String,
     pub bull_case: Option<String>,

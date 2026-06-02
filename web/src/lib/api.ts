@@ -127,6 +127,7 @@ export interface ThesisDetail {
   symbol: string;
   cluster_id?: string | null;
   cluster_thesis?: string | null;
+  parent_themes?: WatchlistParentTheme[];
   state: string;
   edge_rationale: string;
   bull_case?: string | null;
@@ -630,6 +631,10 @@ export interface WatchlistParentTheme {
   direction: string;
   role: string;
   conviction?: number | null;
+  rationale?: string | null;
+  summary?: string | null;
+  core_claim?: string | null;
+  why_now?: string | null;
 }
 
 export interface WatchlistMember {

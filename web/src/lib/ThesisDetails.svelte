@@ -41,6 +41,7 @@
   let forecastTechnicalState = $derived(forecastTechnicalStateFields());
   let linkedEvidence = $derived(thesis.evidence_items ?? []);
   let knownUnknowns = $derived(thesis.known_unknowns ?? []);
+  let parentThemes = $derived(thesis.parent_themes ?? []);
   let systemConfidence = $derived(thesis.system_confidence ?? thesis.conviction_tier ?? null);
 
   // Substance checklist (#10): which structural slots are filled.
@@ -134,6 +135,20 @@
     if (item.deadline_at) parts.push(`check ${shortTs(item.deadline_at)}`);
     return parts.join(" · ");
   }
+
+  function themeMeta(theme: NonNullable<ThesisDetail["parent_themes"]>[number]): string {
+    const parts = [
+      theme.scope?.replace(/_/g, " "),
+      theme.role?.replace(/_/g, " "),
+      theme.direction?.replace(/_/g, " "),
+    ].filter(Boolean);
+    if (theme.conviction !== null && theme.conviction !== undefined) parts.push(`${theme.conviction}% fit`);
+    return parts.join(" · ");
+  }
+
+  function themeNote(theme: NonNullable<ThesisDetail["parent_themes"]>[number]): string | null {
+    return theme.rationale ?? theme.why_now ?? theme.summary ?? theme.core_claim ?? null;
+  }
 </script>
 
 <div class="thesis">
@@ -181,6 +196,23 @@
       {#if forecastTechnicalState.timingImplication}
         <span class="muted">{forecastTechnicalState.timingImplication}</span>
       {/if}
+    </div>
+  {/if}
+
+  {#if parentThemes.length > 0}
+    <div class="parent-theme-strip">
+      <strong>Parent themes</strong>
+      <div class="parent-theme-list">
+        {#each parentThemes as theme (`${theme.key}:${theme.role}`)}
+          <div class={`parent-theme-chip dir-${theme.direction ?? "unknown"}`}>
+            <span class="theme-name">{theme.name}</span>
+            <span class="muted">{themeMeta(theme)}</span>
+            {#if themeNote(theme)}
+              <span>{themeNote(theme)}</span>
+            {/if}
+          </div>
+        {/each}
+      </div>
     </div>
   {/if}
 
@@ -401,6 +433,26 @@
     color: #cdd6f4; background: rgba(249, 226, 175, 0.04);
     font-size: 0.82rem;
   }
+  .parent-theme-strip {
+    display: grid; gap: 0.45rem;
+    border: 1px solid #1f2733; border-left: 3px solid #89b4fa;
+    border-radius: 4px; padding: 0.55rem 0.65rem; margin-bottom: 0.75rem;
+    background: rgba(137, 180, 250, 0.05); color: #cdd6f4;
+    font-size: 0.82rem;
+  }
+  .parent-theme-list { display: grid; gap: 0.35rem; }
+  .parent-theme-chip {
+    display: grid; gap: 0.12rem;
+    background: #11161f; border: 1px solid #1f2733; border-radius: 4px;
+    padding: 0.35rem 0.5rem;
+  }
+  .parent-theme-chip.dir-up { border-left: 3px solid rgb(166, 227, 161); }
+  .parent-theme-chip.dir-down { border-left: 3px solid rgb(243, 139, 168); }
+  .parent-theme-chip.dir-mixed,
+  .parent-theme-chip.dir-neutral {
+    border-left: 3px solid rgb(249, 226, 175);
+  }
+  .theme-name { font-weight: 600; color: #cdd6f4; }
   .meta { font-size: 0.8rem; color: #bac2de; }
   .muted { color: #6c7086; }
   h4 { font-size: 0.85rem; color: #bac2de; margin: 0.75rem 0 0.25rem 0; }

@@ -410,11 +410,13 @@ Current status and gaps:
   commodities, financials, energy, staples, and housing/rates. Reflection
   snapshots the relevant macro/sector/theme links into ticker prediction claims
   when a thesis becomes actionable, so calibration can report parent-theme
-  expression results separately from global ticker-thesis calibration. Local
-  macro internals now cover breadth, sector relative strength, earnings revision
-  breadth, and HY OAS trend; remaining work is richer external factor coverage
-  for inventories, flows, commodity fundamentals, and deeper credit quality
-  buckets.
+  expression results separately from global ticker-thesis calibration. Ticker
+  thesis detail responses also expose their linked parent themes, roles,
+  direction, conviction, and rationale so the UI can show the macro/theme ->
+  ticker chain without forcing an operator to switch tabs. Local macro internals
+  now cover breadth, sector relative strength, earnings revision breadth, and HY
+  OAS trend; richer external factor coverage for inventories, flows, commodity
+  fundamentals, and deeper credit quality buckets is separate data-source work.
 - Discovery ranking reads `brain_thesis_ticker` fit today; it still needs
   active parent-thesis direction and contradiction penalties.
 
@@ -985,9 +987,10 @@ Current gaps:
   freshness, nominations, contradictions, and maintainer coverage. The
   cognition sweep evaluates parent rows from linked ticker/source coverage and
   records material changes in `brain_thesis_version_history`.
-- #129 remaining work: parent theses now have a bounded LLM rewrite pass from
-  normalized linked evidence; the remaining gap is broader macro/factor data
-  coverage and more direct commodity/breadth feeds.
+- #129 implemented: parent theses have deterministic maintenance, a bounded LLM
+  rewrite pass from normalized linked evidence, calibration snapshots, and
+  selected-ticker thesis detail links. Remaining macro/factor/commodity breadth
+  belongs to data-source coverage work, not the parent-thesis product model.
 - #89: review packet pattern for every attention-resolution flow.
 - #126: explicit workflow rail.
 - #82: terminology still needs simplification across UI/docs.
@@ -1063,6 +1066,7 @@ missing
   broader macro/factor/commodity data coverage for parent thesis generation
   persisted technical_state history and prompt-loop ingestion
   chat analyst routed prompt loop
+  daily Brain Journal overview (#254)
   paid semantic research provider if GDELT recall is insufficient
   real broker/position execution state
   review packets
@@ -1073,6 +1077,6 @@ missing
 
 1. #128: make freshness orchestration real.
 2. #147: finish producer adoption for waiting/retry/blocked attention states.
-3. #143/#129: add macro and sector theses.
+3. #254: add the daily Brain Journal so the Brain explains what changed today.
 4. Remaining #130 uplift: improve product/theme evidence recall for real forward views.
 5. #131/#25/#5: link decisions to real positions/fills.

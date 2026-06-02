@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use serde_json::json;
 use sqlx::{Row, postgres::PgPool};
 use tracing::{info, warn};
 
@@ -301,7 +302,7 @@ async fn persist(pool: &PgPool, hit: &ComposedSignal, config_version: &str) -> R
     .await?;
     if let Some(row) = row {
         let id: i64 = row.try_get("id")?;
-        let source_ref = serde_json::json!({
+        let source_ref = json!({
             "candidate_id": id,
             "signal_value": hit.value,
             "interpretation_kind": hit.kind,
@@ -309,6 +310,13 @@ async fn persist(pool: &PgPool, hit: &ComposedSignal, config_version: &str) -> R
             "price_extension": hit.price_extension,
             "config_version": config_version,
         });
+        upsert_price_action_evidence_item(
+            pool,
+            hit,
+            &format!("discovery_candidate:{id}"),
+            source_ref.clone(),
+        )
+        .await?;
         let (fsm_state, owner) =
             initial_assignment(kind::CANDIDATE_REVIEW, severity::REVIEW, source::DISCOVERY);
         if let Err(e) = sqlx::query(
@@ -348,13 +356,21 @@ async fn persist_existing_thesis_trigger(
         initial_assignment, kind, severity, source, title_for_thesis_actionable,
     };
     supersede_stale_open_candidates(pool, hit).await?;
-    let source_ref = serde_json::json!({
+    let source_ref = json!({
+        "thesis_id": thesis_id,
         "signal_value": hit.value,
         "interpretation_kind": hit.kind,
         "raw_signals": hit.raw_signals,
         "price_extension": hit.price_extension,
         "config_version": config_version,
     });
+    upsert_price_action_evidence_item(
+        pool,
+        hit,
+        &format!("discovery_thesis_trigger:{thesis_id}:{}", hit.signal_name),
+        source_ref.clone(),
+    )
+    .await?;
     let (fsm_state, owner) = initial_assignment(
         kind::THESIS_ACTIONABLE,
         severity::DECISION,
@@ -404,6 +420,57 @@ async fn persist_existing_thesis_trigger(
     .execute(pool)
     .await
     .context("refresh existing thesis trigger attention")?;
+    Ok(())
+}
+
+fn price_action_strength(hit: &ComposedSignal) -> f64 {
+    if hit.value.is_finite() {
+        (hit.value.abs() / 100.0).clamp(0.25, 1.0)
+    } else {
+        0.25
+    }
+}
+
+fn price_action_polarity(kind: composer::DiscoveryInterpretationKind) -> f64 {
+    match kind {
+        composer::DiscoveryInterpretationKind::EarlyAccumulation => 0.45,
+        composer::DiscoveryInterpretationKind::BreakoutConfirmation => 0.65,
+        composer::DiscoveryInterpretationKind::ExtendedMomentum => 0.25,
+        composer::DiscoveryInterpretationKind::ConsensusArrival => 0.0,
+        composer::DiscoveryInterpretationKind::PossibleExhaustion => -0.65,
+        composer::DiscoveryInterpretationKind::ExistingThesisTrigger => 0.0,
+        composer::DiscoveryInterpretationKind::LowQualityNoise => 0.0,
+    }
+}
+
+async fn upsert_price_action_evidence_item(
+    pool: &PgPool,
+    hit: &ComposedSignal,
+    source_id: &str,
+    source_ref: serde_json::Value,
+) -> Result<()> {
+    sqlx::query(
+        r#"INSERT INTO evidence_item
+             (symbol, kind, observed_at, source, source_id, source_ref,
+              summary, strength, polarity, url)
+           VALUES ($1, 'price_action', now(), 'discovery', $2, $3::jsonb,
+                   left($4, 500), $5, $6, NULL)
+           ON CONFLICT (source, source_id) DO UPDATE SET
+             observed_at = EXCLUDED.observed_at,
+             source_ref = evidence_item.source_ref || EXCLUDED.source_ref,
+             summary = EXCLUDED.summary,
+             strength = EXCLUDED.strength,
+             polarity = EXCLUDED.polarity"#,
+    )
+    .bind(&hit.symbol)
+    .bind(source_id)
+    .bind(source_ref)
+    .bind(&hit.reasoning)
+    .bind(price_action_strength(hit))
+    .bind(price_action_polarity(hit.kind))
+    .execute(pool)
+    .await
+    .context("upsert discovery price_action evidence_item")?;
     Ok(())
 }
 
@@ -730,5 +797,64 @@ pub async fn run(pool: PgPool, bus: Bus, interval: Duration) -> Result<()> {
             Ok(_) => {}
             Err(e) => warn!(error = %e, "discovery pass failed"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hit(kind: composer::DiscoveryInterpretationKind, value: f64) -> ComposedSignal {
+        ComposedSignal {
+            symbol: "MU".to_string(),
+            kind,
+            signal_name: kind.signal_name().to_string(),
+            value,
+            reasoning: "MU: breakout confirmation".to_string(),
+            raw_signals: vec!["base_breakout".to_string()],
+            price_extension: None,
+            thesis_id: None,
+        }
+    }
+
+    #[test]
+    fn price_action_strength_normalizes_discovery_values() {
+        assert_eq!(
+            price_action_strength(&hit(
+                composer::DiscoveryInterpretationKind::BreakoutConfirmation,
+                72.0,
+            )),
+            0.72
+        );
+        assert_eq!(
+            price_action_strength(&hit(
+                composer::DiscoveryInterpretationKind::BreakoutConfirmation,
+                3.0,
+            )),
+            0.25
+        );
+        assert_eq!(
+            price_action_strength(&hit(
+                composer::DiscoveryInterpretationKind::BreakoutConfirmation,
+                140.0,
+            )),
+            1.0
+        );
+    }
+
+    #[test]
+    fn price_action_polarity_distinguishes_entry_from_exhaustion() {
+        assert_eq!(
+            price_action_polarity(composer::DiscoveryInterpretationKind::BreakoutConfirmation),
+            0.65
+        );
+        assert_eq!(
+            price_action_polarity(composer::DiscoveryInterpretationKind::PossibleExhaustion),
+            -0.65
+        );
+        assert_eq!(
+            price_action_polarity(composer::DiscoveryInterpretationKind::ConsensusArrival),
+            0.0
+        );
     }
 }

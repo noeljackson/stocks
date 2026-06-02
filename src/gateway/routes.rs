@@ -2754,6 +2754,20 @@ async fn get_brain_status(
               (SELECT count(*) FROM evidence_requirement
                 WHERE symbol = $1 AND blocking_state <> 'satisfied'
                   AND (next_retry_at IS NULL OR next_retry_at <= now())) AS due_evidence,
+              (SELECT max(updated_at) FROM evidence_item
+                WHERE symbol = $1
+                  AND NOT (
+                    kind = 'product_research'
+                    AND source = 'web_research'
+                    AND COALESCE((source_ref->'relevance'->>'accepted')::boolean, false) = false
+                  )) AS latest_evidence_item_at,
+              (SELECT count(*) FROM evidence_item
+                WHERE symbol = $1
+                  AND NOT (
+                    kind = 'product_research'
+                    AND source = 'web_research'
+                    AND COALESCE((source_ref->'relevance'->>'accepted')::boolean, false) = false
+                  )) AS normalized_evidence_items,
               (SELECT count(*) FROM attention_item
                 WHERE symbol = $1 AND status = 'open'
                   AND (
@@ -2875,10 +2889,13 @@ async fn get_brain_status(
     let thesis_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("open_thesis_at").ok();
     let latest_decline_at: Option<chrono::DateTime<chrono::Utc>> =
         row.try_get("latest_decline_at").ok();
+    let latest_evidence_item_at: Option<chrono::DateTime<chrono::Utc>> =
+        row.try_get("latest_evidence_item_at").ok();
     let evidence_rows: i64 = row.try_get("evidence_rows").unwrap_or(0);
     let open_evidence: i64 = row.try_get("open_evidence").unwrap_or(0);
     let blocking_evidence: i64 = row.try_get("blocking_evidence").unwrap_or(0);
     let due_evidence: i64 = row.try_get("due_evidence").unwrap_or(0);
+    let normalized_evidence_items: i64 = row.try_get("normalized_evidence_items").unwrap_or(0);
 
     let price_status = match price_session {
         Some(d) if d >= expected_price_session => "fresh",
@@ -2887,6 +2904,8 @@ async fn get_brain_status(
     };
     let context_freshness = age_freshness(now, context_at, ChronoDuration::hours(12));
     let thesis_freshness = age_freshness(now, thesis_at, ChronoDuration::minutes(30));
+    let evidence_freshness =
+        age_freshness(now, latest_evidence_item_at, ChronoDuration::minutes(30));
     let source_blocked = [
         &price_health,
         &news_health,
@@ -2922,6 +2941,15 @@ async fn get_brain_status(
             None => true,
         }
     });
+    let evidence_delta = latest_evidence_item_at.is_some_and(|at| {
+        if let Some(thesis_at) = thesis_at {
+            return at > thesis_at;
+        }
+        match latest_decline_at {
+            Some(decline_at) => at > decline_at,
+            None => true,
+        }
+    });
 
     let decision = decide(BrainDecisionInput {
         evidence_rows,
@@ -2929,6 +2957,7 @@ async fn get_brain_status(
         blocking_evidence,
         due_evidence,
         source_task_delta,
+        evidence_delta,
         has_context: context_at.is_some(),
         context_stale: context_freshness.as_str() == "stale",
         has_open_thesis: thesis_at.is_some(),
@@ -3034,6 +3063,18 @@ async fn get_brain_status(
                 &["sec_edgar_submissions"],
             ), json!({})),
             json!({
+                "source": "evidence",
+                "status": evidence_freshness.as_str(),
+                "last_changed_at": latest_evidence_item_at,
+                "last_checked_at": latest_evidence_item_at,
+                "max_age_minutes": 30,
+                "detail": {
+                    "normalized_items": normalized_evidence_items,
+                    "evidence_delta": evidence_delta,
+                    "latest_item_at": latest_evidence_item_at,
+                },
+            }),
+            json!({
                 "source": "context",
                 "status": context_freshness.as_str(),
                 "last_changed_at": context_at,
@@ -3060,6 +3101,9 @@ async fn get_brain_status(
             "open": open_evidence,
             "blocking": blocking_evidence,
             "due": due_evidence,
+            "items": normalized_evidence_items,
+            "latest_item_at": latest_evidence_item_at,
+            "delta": evidence_delta,
         },
         "attention": {
             "open": row.try_get::<i64, _>("open_attention").unwrap_or(0),

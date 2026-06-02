@@ -390,14 +390,21 @@ async function mockApi(page: Page): Promise<Calls> {
     }
     if (path === "/api/brain-status") {
       const symbol = url.searchParams.get("symbol") ?? "MSFT";
+      const evidenceDriven = symbol === "CRDO";
       await json(route, {
         symbol,
         as_of: "2026-06-01T00:00:00Z",
         active_ticker: true,
         status: symbol === "OKTA" ? "fresh" : "due",
-        next_action: symbol === "OKTA" ? "monitor" : "reevaluate_thesis",
+        next_action: symbol === "OKTA"
+          ? "monitor"
+          : evidenceDriven
+            ? "reevaluate_after_evidence_update"
+            : "reevaluate_thesis",
         reason: symbol === "OKTA"
           ? "brain loop is current for this symbol"
+          : evidenceDriven
+            ? "normalized evidence is newer than the current thesis evaluation"
           : "open thesis is past the re-evaluation window",
         freshness_target_minutes: 30,
         sources: [
@@ -453,6 +460,18 @@ async function mockApi(page: Page): Promise<Calls> {
             }],
           },
           {
+            source: "evidence",
+            status: evidenceDriven ? "fresh" : "stale",
+            last_changed_at: evidenceDriven ? "2026-06-01T00:01:00Z" : "2026-05-31T23:00:00Z",
+            last_checked_at: evidenceDriven ? "2026-06-01T00:01:00Z" : "2026-05-31T23:00:00Z",
+            max_age_minutes: 30,
+            detail: {
+              normalized_items: evidenceDriven ? 8 : 4,
+              evidence_delta: evidenceDriven,
+              latest_item_at: evidenceDriven ? "2026-06-01T00:01:00Z" : "2026-05-31T23:00:00Z",
+            },
+          },
+          {
             source: "thesis",
             status: symbol === "OKTA" ? "fresh" : "stale",
             last_changed_at: "2026-05-31T23:00:00Z",
@@ -463,7 +482,15 @@ async function mockApi(page: Page): Promise<Calls> {
             direction: "up",
           },
         ],
-        evidence: { rows: 4, open: 0, blocking: 0, due: 0 },
+        evidence: {
+          rows: 4,
+          open: 0,
+          blocking: 0,
+          due: 0,
+          items: evidenceDriven ? 8 : 4,
+          latest_item_at: evidenceDriven ? "2026-06-01T00:01:00Z" : "2026-05-31T23:00:00Z",
+          delta: evidenceDriven,
+        },
         attention: { open: symbol === "OKTA" ? 0 : 1, by_kind: [] },
         cognition: {
           last_run: symbol === "OKTA" ? {
@@ -913,6 +940,20 @@ test("overview labels evidence-delta cognition runs", async ({ page }) => {
   await expect(brain).toContainText("evidence newer than thesis");
   await expect(brain).toContainText("evidence");
   await expect(brain).toContainText("classification strengthened_view");
+});
+
+test("overview explains evidence-updated brain action", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/symbol/CRDO");
+
+  const brain = page.locator(".brain-card.brain-due");
+  await expect(brain).toContainText("re-evaluate after evidence update");
+  await expect(brain).toContainText("normalized evidence is newer than the current thesis evaluation");
+
+  const evidence = brain.locator(".brain-sources li").filter({ hasText: "evidence" });
+  await expect(evidence).toContainText("fresh");
+  await expect(evidence).toContainText("8 items");
+  await expect(evidence).toContainText("newer than thesis");
 });
 
 test("workflow rail shows selected ticker state and routes to thesis review", async ({ page }) => {

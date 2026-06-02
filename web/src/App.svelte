@@ -219,6 +219,8 @@
   function brainActionLabel(action: string): string {
     if (action === "reevaluate_after_source_update") return "re-evaluate after source update";
     if (action === "draft_after_source_update") return "draft after source update";
+    if (action === "reevaluate_after_evidence_update") return "re-evaluate after evidence update";
+    if (action === "draft_after_evidence_update") return "draft after evidence update";
     return action.replace(/_/g, " ");
   }
 
@@ -312,6 +314,8 @@
     const expectedSession = detail.expected_session ?? detail.expected_price_session ?? detail.expected_latest_session;
     const publishedAt = detail.latest_published_at ?? detail.latest_news_published_at;
     const contextAge = detail.context_age_minutes;
+    const normalizedItems = detail.normalized_items;
+    const evidenceDelta = detail.evidence_delta;
     const rowsSeen = sourceHealth.rows_seen;
     const rowsInserted = sourceHealth.rows_inserted;
     const opinionCounts = [
@@ -328,6 +332,8 @@
     if (publishedAt) parts.push(`published ${relativeTime(String(publishedAt))}`);
     if (opinionCounts.length) parts.push(opinionCounts.join(" · "));
     if (typeof contextAge === "number") parts.push(`context ${Math.round(contextAge)}m old`);
+    if (typeof normalizedItems === "number") parts.push(`${normalizedItems} items`);
+    if (evidenceDelta === true) parts.push("newer than thesis");
     if (typeof rowsSeen === "number" || typeof rowsInserted === "number") {
       parts.push(`${Number(rowsInserted ?? 0)} new / ${Number(rowsSeen ?? 0)} seen`);
     }

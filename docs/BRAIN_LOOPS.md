@@ -686,6 +686,10 @@ symbol overview
      - symbol-scoped source_task rows for each source group
      - analyst opinion freshness: price target snapshots, recommendation mix,
        and recent target-change events
+  -> normalized evidence freshness
+     - latest evidence_item.updated_at for the symbol
+     - whether that evidence is newer than the open thesis evaluation
+     - whether that evidence is newer than the last no-thesis decline
   -> evidence rows/open/blocking/due
   -> context age
   -> thesis age
@@ -699,9 +703,15 @@ brain loop legible: every ticker should say `fresh`, `due`, `stale`,
 `waiting_on_evidence`, or `blocked`, plus the next system action. A provider may
 be globally fresh while a symbol still has queued or rate-limited work; the
 selected-symbol Brain card therefore shows both the provider freshness row and
-the ticker's local source tasks. The remaining #128 work is to make the same
-decision object drive active source fetches and cognition jobs instead of only
-explaining what should happen next.
+the ticker's local source tasks. Normalized evidence has its own row because a
+source can be checked successfully while the important operator question is
+"did a fact change after the thesis last digested this symbol?" If the latest
+`evidence_item.updated_at` is newer than the open thesis evaluation, the next
+action is `reevaluate_after_evidence_update`; if there is no thesis and the
+latest evidence is newer than the last declined attempt, the next action is
+`draft_after_evidence_update`. That mirrors the cognition sweep's
+`evidence_delta` trigger so the operator explanation and the scheduler's work
+selection use the same freshness signal.
 
 ## Thesis Loop
 

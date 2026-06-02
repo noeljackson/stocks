@@ -371,6 +371,65 @@ export async function fetchTickerContext(symbol: string): Promise<TickerContext 
   return (await r.json()) as TickerContext;
 }
 
+export interface SmaPoint {
+  window: number;
+  value?: number | null;
+  pct_vs?: number | null;
+}
+
+export interface IntervalTechnical {
+  interval: string;
+  bars: number;
+  as_of?: string | null;
+  close?: number | null;
+  rsi14?: number | null;
+  rsi_zone: string;
+  rsi_zone_bars: number;
+  rsi_zone_since?: string | null;
+}
+
+export interface DailyTechnical {
+  as_of: string;
+  close: number;
+  sma: SmaPoint[];
+  pct_vs_252d_high?: number | null;
+  pct_vs_252d_low?: number | null;
+}
+
+export interface CrossEvent {
+  window: number;
+  direction: string;
+  at: string;
+  close: number;
+  sma: number;
+}
+
+export interface AnalogEvent {
+  kind: string;
+  at: string;
+  close: number;
+  rsi14: number;
+  forward_return_20d_pct?: number | null;
+  max_drawdown_20d_pct?: number | null;
+}
+
+export interface TechnicalState {
+  symbol: string;
+  as_of?: string | null;
+  state: string;
+  summary: string;
+  daily?: DailyTechnical | null;
+  intervals: IntervalTechnical[];
+  last_crosses: CrossEvent[];
+  analog_events: AnalogEvent[];
+}
+
+export async function fetchTechnicalState(symbol: string): Promise<TechnicalState> {
+  const r = await fetch(`/api/technical-state?symbol=${encodeURIComponent(symbol)}`);
+  if (!r.ok) throw new Error(`technical-state ${r.status}`);
+  return (await r.json()) as TechnicalState;
+}
+
 export interface Calibration {
   predictions_total: number;
   outcomes_scored: number;

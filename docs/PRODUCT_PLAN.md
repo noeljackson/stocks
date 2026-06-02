@@ -521,12 +521,15 @@ intervals: 30m, 2h, 4h, 1d, 1w
 sma: 20/50/100/200-day for daily context
 rsi14 by interval
 distance from 52-week high/low
-extension percentile
 last_crosses: 50-day/200-day SMA up/down
 analog_events: similar RSI/extension regimes with forward paths
 state: constructive | extended | base_building | deteriorating | unknown
-timing_implication
 ```
+
+Current implementation: `/api/technical-state?symbol=SYMBOL` derives the
+package on demand from stored daily and intraday bars and the symbol detail
+panel shows it as a first-class Technical tab. It is not persisted yet, and the
+thesis/context prompt loops do not automatically ingest this API package yet.
 
 Ticker theses should reference `technical_state`, but they should not bury this
 analysis in prose. A bullish thesis can coexist with an extended chart; an

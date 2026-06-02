@@ -329,6 +329,14 @@ requirements satisfied when rows have arrived. It does not call an LLM. If a
 previous no-thesis decline is older than the newly satisfied evidence, the same
 sweep can retry the ticker.
 
+When a thesis is drafted or reconciled, `known_unknowns` are stored on the
+thesis separately from `missing_evidence`. Missing evidence means acquisition
+is incomplete; known unknowns mean the system has a standing view but specific
+answers could materially change confidence. The thesis engine asks for these
+questions explicitly and derives them from missing evidence when a draft omits
+them, so a ticker should not look more certain merely because the model forgot
+to name the uncertainty.
+
 Completed source-task outcomes are also cognition triggers. When a provider
 check records `satisfied` or `no_rows` after the current thesis was last
 evaluated, the next bounded sweep refreshes context and reconciles the current

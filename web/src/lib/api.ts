@@ -77,6 +77,17 @@ export interface Condition {
   assertion?: string;
 }
 
+export interface KnownUnknown {
+  question: string;
+  watch_for: string;
+  deadline_at?: string | null;
+  evidence_source?: string | null;
+  requirement_key?: string | null;
+  priority?: string | null;
+  source_type?: string | null;
+  status?: string | null;
+}
+
 export interface ThesisVersionEvent {
   version: number;
   weakens_invalidation: boolean;
@@ -125,6 +136,7 @@ export interface ThesisDetail {
   trigger_conditions: Condition[];
   invalidation_conditions: Condition[];
   fulfillment_conditions: Condition[];
+  known_unknowns: KnownUnknown[];
   conviction_tier?: string | null;
   instrument?: string | null;
   intended_size: Record<string, unknown> | null;
@@ -132,6 +144,7 @@ export interface ThesisDetail {
   immutable_original: {
     edge_rationale?: string;
     invalidation_conditions?: Condition[];
+    known_unknowns?: KnownUnknown[];
     [key: string]: unknown;
   };
   created_at: string;

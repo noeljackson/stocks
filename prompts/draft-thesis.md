@@ -64,6 +64,15 @@ forward claim; otherwise it belongs in monitoring/no-edge rationale.
       "reason": "why this evidence blocks or weakens the thesis"
     }
   ],
+  "known_unknowns": [
+    {
+      "question": "material uncertainty that would change confidence",
+      "watch_for": "specific evidence/event/source the system should monitor",
+      "deadline_at": "YYYY-MM-DDTHH:MM:SSZ if the uncertainty has a natural check date; otherwise null",
+      "evidence_source": "where the answer should come from, e.g. 'fmp:analyst_estimates', 'news:customer_win', 'edgar:10-Q:MU'",
+      "status": "open"
+    }
+  ],
   "edge_rationale": "For actionable_edge: the SPECIFIC informational asymmetry. For monitoring: the neutral base-case / consensus thesis and why there is no current asymmetric entry. For decline: null.",
   "bull_case": "Specific bull case. Cite specific drivers / customers / products / metrics. No platitudes.",
   "bear_case": "Specific bear case that ACTUALLY CHALLENGES the bull case. Not a strawman. Cite competing forces.",
@@ -108,22 +117,23 @@ forward claim; otherwise it belongs in monitoring/no-edge rationale.
 5. **`edge_rationale` must say what is NOT YET PRICED for actionable edges.** Not "AI demand is strong" (priced); rather "Hynix CY26 HBM4 capex per 2026-04 capacity disclosure implies +18% YoY supply vs. consensus expecting +30%" (specific, sourced, asymmetric). For monitoring theses, say what consensus appears to believe and what evidence would create a future edge.
 6. **If the context is too thin**, set `thesis_kind: "decline"`, `edge_present: false`, and explain. Don't pad.
 7. **Always include output `missing_evidence`.** Use `[]` when no required input is missing.
-8. **If `missing_evidence` contains blocking requirements**, decline and copy those requirements into the output `missing_evidence` list. Missing evidence is a retryable acquisition state, not a final conclusion.
-9. **If `missing_evidence` is non-empty but non-blocking**, you may draft a monitoring thesis only when the remaining context is enough to state a useful base case. Copy the still-missing requirements into the output list so the operator sees what weakens the view.
-10. **If the context is substantial but no edge exists**, set `thesis_kind: "monitoring"`, `edge_present: false`, `forecast.direction: "neutral"`, `conviction_tier: "low"`, and draft useful bull/bear/conditions. The conditions should describe what would make the thesis become actionable or invalid.
-11. **Use `parent_theses` as context, not as proof.** A bullish theme can explain why {{symbol}} deserves monitoring, but the ticker thesis still needs ticker-specific evidence. If the ticker contradicts a parent theme, say so directly in `bear_case`, `no_edge_reason`, or `cluster_thesis`.
-12. **Cite normalized facts.** When a claim is grounded in news, estimate revisions, rating changes, or other `evidence_items`, name the fact source/date in prose and condition `evidence_source`.
-13. **Conviction tier mapping**: `high` = ≥1 strong quant-anchored invalidation + bear case actually challenges + 6-12mo horizon; `medium` = some specificity, some hedging; `low` = clearly thin or monitoring.
-14. **Instrument**: `equity` by default; `leaps` only if there's a specific catalyst with a defined window AND the bet is on a magnitude move, not a directional drift.
-15. **Forecast direction is not technical state.** A symbol may have an `up`
+8. **Always include `known_unknowns`.** These are not missing inputs in disguise; they are the specific uncertainties that would materially change confidence in the thesis. Include at least one. Use `missing_evidence` when the system lacks a source, and `known_unknowns` when the source is expected but the answer is not known yet.
+9. **If `missing_evidence` contains blocking requirements**, decline and copy those requirements into the output `missing_evidence` list. Missing evidence is a retryable acquisition state, not a final conclusion.
+10. **If `missing_evidence` is non-empty but non-blocking**, you may draft a monitoring thesis only when the remaining context is enough to state a useful base case. Copy the still-missing requirements into the output list so the operator sees what weakens the view.
+11. **If the context is substantial but no edge exists**, set `thesis_kind: "monitoring"`, `edge_present: false`, `forecast.direction: "neutral"`, `conviction_tier: "low"`, and draft useful bull/bear/conditions. The conditions should describe what would make the thesis become actionable or invalid.
+12. **Use `parent_theses` as context, not as proof.** A bullish theme can explain why {{symbol}} deserves monitoring, but the ticker thesis still needs ticker-specific evidence. If the ticker contradicts a parent theme, say so directly in `bear_case`, `no_edge_reason`, or `cluster_thesis`.
+13. **Cite normalized facts.** When a claim is grounded in news, estimate revisions, rating changes, or other `evidence_items`, name the fact source/date in prose and condition `evidence_source`.
+14. **Conviction tier mapping**: `high` = ≥1 strong quant-anchored invalidation + bear case actually challenges + 6-12mo horizon; `medium` = some specificity, some hedging; `low` = clearly thin or monitoring.
+15. **Instrument**: `equity` by default; `leaps` only if there's a specific catalyst with a defined window AND the bet is on a magnitude move, not a directional drift.
+16. **Forecast direction is not technical state.** A symbol may have an `up`
 forecast and still be technically extended. Use `forecast.technical_state` to
 separate the fundamental/narrative thesis from current chart regime.
-16. **Respect overextension without pretending it invalidates the thesis.** If
+17. **Respect overextension without pretending it invalidates the thesis.** If
 `context.market.price_snapshot` shows price more than 20% above the 200-day
 SMA, within 2% of the available-window high, or RSI 14 above 70, mark
 `technical_state.state` as `extended` unless the supplied context gives a
 better technical reason. Explain what that implies for timing/decision quality.
 Always name the SMA window.
-17. **Do not say there is no public data about a named product/theme unless `missing_evidence` includes `product_research` or the context shows an empty/failed research retrieval pass.** If retrieved research sources are present, either use them or explain why they are not relevant.
+18. **Do not say there is no public data about a named product/theme unless `missing_evidence` includes `product_research` or the context shows an empty/failed research retrieval pass.** If retrieved research sources are present, either use them or explain why they are not relevant.
 
 Output the JSON. Nothing else.

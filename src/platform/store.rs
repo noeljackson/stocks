@@ -2343,6 +2343,7 @@ impl Store {
                       COALESCE(trigger_conditions, '[]'::jsonb)       AS trigger_conditions,
                       COALESCE(invalidation_conditions, '[]'::jsonb)  AS invalidation_conditions,
                       COALESCE(fulfillment_conditions, '[]'::jsonb)   AS fulfillment_conditions,
+                      COALESCE(known_unknowns, '[]'::jsonb)           AS known_unknowns,
                       conviction_tier, instrument,
                       COALESCE(intended_size, 'null'::jsonb)          AS intended_size,
                       version,
@@ -2436,6 +2437,7 @@ impl Store {
                 row.try_get("invalidation_conditions")?;
             let fulfillment_conditions: serde_json::Value =
                 row.try_get("fulfillment_conditions")?;
+            let known_unknowns: serde_json::Value = row.try_get("known_unknowns")?;
             let intended_size: serde_json::Value = row.try_get("intended_size")?;
 
             let parse_conds = |v: &serde_json::Value| -> Vec<Condition> {
@@ -2494,6 +2496,7 @@ impl Store {
                 trigger_conditions,
                 invalidation_conditions,
                 fulfillment_conditions,
+                known_unknowns,
                 conviction_tier: row.try_get("conviction_tier").ok(),
                 instrument: row.try_get("instrument").ok(),
                 intended_size,

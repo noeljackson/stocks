@@ -59,9 +59,9 @@ async def _load_latest_context(pool: asyncpg.Pool, symbol: str) -> dict | None:
 async def _load_prior_thesis(pool: asyncpg.Pool, symbol: str) -> dict | None:
     """Latest non-closed thesis for this symbol, if any."""
     row = await pool.fetchrow(
-        """SELECT thesis_id, state, version, edge_rationale, bull_case, bear_case,
+        """SELECT thesis_id, symbol, state, version, edge_rationale, bull_case, bear_case,
                   forecast, conviction_conditions, trigger_conditions,
-                  invalidation_conditions, fulfillment_conditions,
+                  invalidation_conditions, fulfillment_conditions, known_unknowns,
                   conviction_tier, instrument
              FROM thesis
             WHERE symbol = $1 AND state NOT IN ('closed', 'disqualified')
@@ -276,9 +276,11 @@ async def _persist_thesis(
         if draft.get("intended_size_pct") is not None
         else None
     )
+    known_unknowns = _normalize_known_unknowns(symbol, draft)
     immutable_original = {
         "edge_rationale": draft.get("edge_rationale") or "",
         "invalidation_conditions": draft.get("invalidation_conditions") or [],
+        "known_unknowns": known_unknowns,
         "thesis_kind": draft.get("thesis_kind") or "actionable_edge",
         "no_edge_reason": draft.get("no_edge_reason"),
         "drafted_at": dt.datetime.now(dt.UTC).isoformat(),
@@ -290,16 +292,16 @@ async def _persist_thesis(
               bull_case, bear_case, edge_rationale,
               forecast,
               conviction_conditions, trigger_conditions,
-              invalidation_conditions, fulfillment_conditions,
+              invalidation_conditions, fulfillment_conditions, known_unknowns,
               conviction_tier, instrument, intended_size,
               version, immutable_original, last_evaluated_at)
            VALUES ($1, $2, $3, $4, 'forming',
                    $5, $6, $7,
                    $8::jsonb,
                    $9::jsonb, $10::jsonb,
-                   $11::jsonb, $12::jsonb,
-                   $13, $14, $15::jsonb,
-                   1, $16::jsonb, now())""",
+                   $11::jsonb, $12::jsonb, $13::jsonb,
+                   $14, $15, $16::jsonb,
+                   1, $17::jsonb, now())""",
         thesis_id,
         symbol,
         cluster_id,
@@ -312,6 +314,7 @@ async def _persist_thesis(
         json.dumps(draft.get("trigger_conditions") or []),
         json.dumps(draft.get("invalidation_conditions") or []),
         json.dumps(draft.get("fulfillment_conditions") or []),
+        json.dumps(known_unknowns),
         draft.get("conviction_tier"),
         draft.get("instrument"),
         json.dumps(intended_size) if intended_size else None,
@@ -327,6 +330,77 @@ def _maybe_json(v):
         except Exception:  # noqa: BLE001
             return v
     return v
+
+
+def _normalize_known_unknowns(symbol: str, draft: dict) -> list[dict]:
+    """Return material open questions in a stable JSON shape.
+
+    The LLM is asked to produce these explicitly. This normalizer keeps older
+    or partial responses useful by deriving questions from missing evidence
+    instead of silently storing an empty list.
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    def add(item: dict) -> None:
+        question = str(item.get("question") or "").strip()
+        watch_for = str(item.get("watch_for") or "").strip()
+        if not question or not watch_for:
+            return
+        key = question.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        normalized = {
+            "question": question,
+            "watch_for": watch_for,
+            "status": str(item.get("status") or "open"),
+        }
+        for optional_key in (
+            "deadline_at",
+            "evidence_source",
+            "requirement_key",
+            "priority",
+            "source_type",
+        ):
+            value = item.get(optional_key)
+            if value not in (None, "", [], {}):
+                normalized[optional_key] = value
+        out.append(normalized)
+
+    raw = draft.get("known_unknowns") or []
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                add(item)
+
+    missing = draft.get("missing_evidence") or []
+    if isinstance(missing, list):
+        for req in missing:
+            if not isinstance(req, dict) or len(out) >= 6:
+                continue
+            requirement_key = str(req.get("requirement_key") or "missing_evidence")
+            reason = str(req.get("reason") or "").strip()
+            add({
+                "question": f"What does {requirement_key.replace('_', ' ')} show for {symbol}?",
+                "watch_for": reason or f"Next successful {requirement_key} refresh",
+                "requirement_key": requirement_key,
+                "source_type": req.get("source_type"),
+                "priority": req.get("priority"),
+                "status": "open",
+            })
+
+    if not out:
+        add({
+            "question": f"What fresh evidence would materially change the {symbol} thesis?",
+            "watch_for": (
+                "next material filing, estimate revision, news event, "
+                "or price-action inflection"
+            ),
+            "evidence_source": "normalized evidence_item stream",
+            "status": "open",
+        })
+    return out
 
 
 def _condition_names(value) -> set[str]:
@@ -366,7 +440,13 @@ def classify_reconciliation(prior: dict, draft: dict) -> tuple[str, bool]:
 
     prior_edge = (prior.get("edge_rationale") or "").strip()
     draft_edge = (draft.get("edge_rationale") or "").strip()
-    if prior_edge == draft_edge and prior_direction == draft_direction:
+    prior_unknowns = _maybe_json(prior.get("known_unknowns")) or []
+    draft_unknowns = draft.get("known_unknowns") or []
+    if (
+        prior_edge == draft_edge
+        and prior_direction == draft_direction
+        and prior_unknowns == draft_unknowns
+    ):
         return "no_change", False
 
     prior_rank = _tier_rank(prior.get("conviction_tier"))
@@ -390,6 +470,7 @@ def _draft_snapshot(draft: dict) -> dict:
         "trigger_conditions": draft.get("trigger_conditions") or [],
         "invalidation_conditions": draft.get("invalidation_conditions") or [],
         "fulfillment_conditions": draft.get("fulfillment_conditions") or [],
+        "known_unknowns": draft.get("known_unknowns") or [],
         "conviction_tier": draft.get("conviction_tier"),
         "instrument": draft.get("instrument"),
         "missing_evidence": draft.get("missing_evidence") or [],
@@ -409,6 +490,7 @@ def _prior_snapshot(prior: dict) -> dict:
         "trigger_conditions": _maybe_json(prior.get("trigger_conditions")) or [],
         "invalidation_conditions": _maybe_json(prior.get("invalidation_conditions")) or [],
         "fulfillment_conditions": _maybe_json(prior.get("fulfillment_conditions")) or [],
+        "known_unknowns": _maybe_json(prior.get("known_unknowns")) or [],
         "conviction_tier": prior.get("conviction_tier"),
         "instrument": prior.get("instrument"),
     }
@@ -420,6 +502,8 @@ async def _reconcile_existing_thesis(
     draft: dict,
     context: dict | None,
 ) -> uuid.UUID:
+    known_unknowns = _normalize_known_unknowns(str(prior.get("symbol") or ""), draft)
+    draft["known_unknowns"] = known_unknowns
     classification, weakens = classify_reconciliation(prior, draft)
     thesis_id = prior["thesis_id"]
     next_version = int(prior["version"] or 1) + 1
@@ -462,10 +546,11 @@ async def _reconcile_existing_thesis(
                           trigger_conditions = $8::jsonb,
                           invalidation_conditions = $9::jsonb,
                           fulfillment_conditions = $10::jsonb,
-                          conviction_tier = $11,
-                          instrument = $12,
-                          intended_size = $13::jsonb,
-                          version = $14,
+                          known_unknowns = $11::jsonb,
+                          conviction_tier = $12,
+                          instrument = $13,
+                          intended_size = $14::jsonb,
+                          version = $15,
                           updated_at = now(),
                           last_evaluated_at = now()
                     WHERE thesis_id = $1""",
@@ -479,6 +564,7 @@ async def _reconcile_existing_thesis(
                 json.dumps(draft.get("trigger_conditions") or []),
                 json.dumps(draft.get("invalidation_conditions") or []),
                 json.dumps(draft.get("fulfillment_conditions") or []),
+                json.dumps(known_unknowns),
                 draft.get("conviction_tier"),
                 draft.get("instrument"),
                 json.dumps(intended_size) if intended_size else None,
@@ -645,6 +731,7 @@ def _normalize_monitoring_draft(symbol: str, parsed: dict) -> dict:
     out["invalidation_conditions"] = out.get("invalidation_conditions") or []
     out["fulfillment_conditions"] = out.get("fulfillment_conditions") or []
     out["missing_evidence"] = out.get("missing_evidence") or []
+    out["known_unknowns"] = _normalize_known_unknowns(symbol, out)
     out["conviction_tier"] = out.get("conviction_tier") or "low"
     out["instrument"] = out.get("instrument") or "equity"
     return out
@@ -742,6 +829,7 @@ async def draft(symbol: str) -> dict:
                 parsed["_reconciled_existing_thesis"] = True
                 parsed["_reconciliation_classification"] = "invalidates_existing_view"
             return parsed
+        parsed["known_unknowns"] = _normalize_known_unknowns(symbol, parsed)
 
         if prior is not None:
             thesis_id = await _reconcile_existing_thesis(pool, prior, parsed, context)
@@ -770,6 +858,7 @@ def _summarize_prior(prior: dict) -> dict:
         "version": prior["version"],
         "edge_rationale": prior["edge_rationale"],
         "invalidation_conditions": _maybe_json(prior["invalidation_conditions"]),
+        "known_unknowns": _maybe_json(prior.get("known_unknowns")) or [],
     }
 
 

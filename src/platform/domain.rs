@@ -282,6 +282,7 @@ pub struct ThesisDetail {
     pub trigger_conditions: serde_json::Value,
     pub invalidation_conditions: serde_json::Value,
     pub fulfillment_conditions: serde_json::Value,
+    pub known_unknowns: serde_json::Value,
     pub conviction_tier: Option<String>,
     pub instrument: Option<String>,
     pub intended_size: serde_json::Value,

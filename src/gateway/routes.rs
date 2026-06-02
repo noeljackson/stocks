@@ -4584,6 +4584,7 @@ mod tests {
             trigger_conditions: json!([]),
             invalidation_conditions: json!([]),
             fulfillment_conditions: json!([]),
+            known_unknowns: json!([]),
             conviction_tier: Some("high".to_string()),
             instrument: Some("LEAPS".to_string()),
             intended_size: json!({ "pct": 0.04 }),

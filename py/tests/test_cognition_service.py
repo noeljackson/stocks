@@ -9,6 +9,8 @@ from stocks.cognition_service import (
     _effective_sweep_interval_seconds,
     _effective_sweep_limit,
     _next_retry_from_evidence,
+    _reclaim_running_cognition_runs,
+    _reclaim_stale_cognition_runs,
     _run_symbol_once,
     _select_sweep_targets,
     _status_for_thesis_result,
@@ -39,6 +41,43 @@ class FakeMsg:
 
     async def in_progress(self) -> None:
         self.progress_calls += 1
+
+
+class ReclaimPool:
+    def __init__(self, count: int = 0) -> None:
+        self.count = count
+        self.calls: list[tuple[str, tuple]] = []
+
+    async def fetchval(self, sql: str, *args):
+        self.calls.append((sql, args))
+        return self.count
+
+
+@pytest.mark.asyncio
+async def test_startup_reclaim_marks_all_running_cognition_runs() -> None:
+    pool = ReclaimPool(count=2)
+
+    reclaimed = await _reclaim_running_cognition_runs(pool)
+
+    assert reclaimed == 2
+    sql, args = pool.calls[0]
+    assert "WHERE status = 'running'" in sql
+    assert "started_at <" not in sql
+    assert args[0] == "orphaned_by_cognition_startup"
+
+
+@pytest.mark.asyncio
+async def test_stale_reclaim_uses_age_threshold() -> None:
+    pool = ReclaimPool(count=1)
+
+    reclaimed = await _reclaim_stale_cognition_runs(pool, max_age_minutes=45)
+
+    assert reclaimed == 1
+    sql, args = pool.calls[0]
+    assert "WHERE status = 'running'" in sql
+    assert "started_at < now()" in sql
+    assert args[0] == 45
+    assert args[1] == "stale_running_reclaim"
 
 
 @pytest.mark.asyncio

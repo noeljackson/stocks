@@ -240,6 +240,63 @@ async def _finish_cognition_run(
     )
 
 
+async def _reclaim_running_cognition_runs(
+    pool: asyncpg.Pool,
+    reason: str = "orphaned_by_cognition_startup",
+) -> int:
+    count = await pool.fetchval(
+        """WITH updated AS (
+               UPDATE cognition_run
+                  SET status = 'failed',
+                      reason = $1::text,
+                      finished_at = now(),
+                      error = COALESCE(error, $2::text),
+                      source_ref = source_ref || jsonb_build_object(
+                          'reclaimed_by', 'cognition_service',
+                          'reclaimed_at', now(),
+                          'reclaim_reason', $1::text
+                      )
+                WHERE status = 'running'
+            RETURNING 1
+           )
+           SELECT count(*) FROM updated""",
+        reason,
+        "cognition service reclaimed an orphaned running run",
+    )
+    return int(count or 0)
+
+
+async def _reclaim_stale_cognition_runs(
+    pool: asyncpg.Pool,
+    *,
+    max_age_minutes: int,
+    reason: str = "stale_running_reclaim",
+) -> int:
+    count = await pool.fetchval(
+        """WITH updated AS (
+               UPDATE cognition_run
+                  SET status = 'failed',
+                      reason = $2::text,
+                      finished_at = now(),
+                      error = COALESCE(error, $3::text),
+                      source_ref = source_ref || jsonb_build_object(
+                          'reclaimed_by', 'cognition_service',
+                          'reclaimed_at', now(),
+                          'reclaim_reason', $2::text,
+                          'max_age_minutes', $1::int
+                      )
+                WHERE status = 'running'
+                  AND started_at < now() - make_interval(mins => $1::int)
+            RETURNING 1
+           )
+           SELECT count(*) FROM updated""",
+        max(1, max_age_minutes),
+        reason,
+        "cognition service reclaimed a stale running run",
+    )
+    return int(count or 0)
+
+
 async def _record_decline(
     pool: asyncpg.Pool,
     symbol: str,
@@ -754,6 +811,12 @@ async def _sweep_once(pool: asyncpg.Pool) -> None:
     fetch_limit = max(limit, limit * 5, limit + bootstrap_floor * 10)
     evidence_sync_limit = max(1, _env_int("COGNITION_EVIDENCE_SYNC_LIMIT", 200))
     brain_thesis_limit = max(1, _env_int("BRAIN_THESIS_SWEEP_LIMIT", 50))
+    reclaimed_runs = await _reclaim_stale_cognition_runs(
+        pool,
+        max_age_minutes=max(1, _env_int("COGNITION_RUNNING_RECLAIM_MINUTES", 30)),
+    )
+    if reclaimed_runs:
+        log.warning("cognition sweep: reclaimed %d stale running run(s)", reclaimed_runs)
     brain_updated = await refresh_brain_theses(pool, limit=brain_thesis_limit)
     if brain_updated:
         log.info("cognition sweep: evaluated %d parent brain thesis row(s)", brain_updated)
@@ -858,6 +921,9 @@ async def run() -> None:
     cfg = config.load()
     pool = await asyncpg.create_pool(cfg.database_url, min_size=1, max_size=3)
     assert pool is not None
+    reclaimed_runs = await _reclaim_running_cognition_runs(pool)
+    if reclaimed_runs:
+        log.warning("cognition startup: reclaimed %d orphaned running run(s)", reclaimed_runs)
     nats_url = os.getenv("NATS_URL", "nats://localhost:4222")
     nc = await nats.connect(nats_url)
     js = nc.jetstream()

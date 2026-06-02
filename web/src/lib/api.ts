@@ -33,6 +33,9 @@ export interface Ticker {
   latest_thesis_id?: string | null;
   thesis_state?: string | null;
   thesis_direction?: string | null;
+  technical_state?: string | null;
+  entry_stance?: string | null;
+  technical_pct_vs_200d?: number | null;
 }
 
 export async function fetchAlerts(opts?: { unacked?: boolean }): Promise<Alert[]> {
@@ -554,6 +557,9 @@ export interface WatchlistMember {
   latest_thesis_id?: string | null;
   thesis_state?: string | null;
   thesis_direction?: string | null;
+  technical_state?: string | null;
+  entry_stance?: string | null;
+  technical_pct_vs_200d?: number | null;
   open_theses?: number;
 }
 
@@ -686,6 +692,9 @@ export interface PoolMember {
   latest_thesis_id?: string | null;
   thesis_state?: string | null;
   thesis_direction?: string | null;
+  technical_state?: string | null;
+  entry_stance?: string | null;
+  technical_pct_vs_200d?: number | null;
   open_theses?: number;
 }
 

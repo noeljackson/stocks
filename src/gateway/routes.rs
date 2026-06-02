@@ -1785,6 +1785,9 @@ async fn list_discovery_pool(State(gw): State<Arc<Gateway>>) -> impl IntoRespons
                   latest.thesis_id AS latest_thesis_id,
                   latest.state AS thesis_state,
                   latest.direction AS thesis_direction,
+                  tech.technical_state AS technical_state,
+                  tech.entry_stance AS entry_stance,
+                  tech.pct_vs_200d AS technical_pct_vs_200d,
                   (SELECT count(*) FROM thesis th
                     WHERE th.symbol = dp.symbol
                       AND th.state NOT IN ('closed','disqualified')) AS open_theses
@@ -1797,6 +1800,51 @@ async fn list_discovery_pool(State(gw): State<Arc<Gateway>>) -> impl IntoRespons
            ORDER BY th.updated_at DESC
               LIMIT 1
         ) latest ON TRUE
+        LEFT JOIN LATERAL (
+            WITH bars AS (
+                SELECT ts, close::float8 AS close, high::float8 AS high
+                  FROM price_bar
+                 WHERE symbol = dp.symbol
+              ORDER BY ts DESC
+                 LIMIT 260
+            ), ranked AS (
+                SELECT ts, close, high, row_number() OVER (ORDER BY ts DESC) AS rn
+                  FROM bars
+            ), latest_bar AS (
+                SELECT close
+                  FROM ranked
+                 WHERE rn = 1
+            ), stats AS (
+                SELECT count(*) FILTER (WHERE rn <= 200) AS bars_200,
+                       avg(close) FILTER (WHERE rn <= 50) AS sma50,
+                       avg(close) FILTER (WHERE rn <= 200) AS sma200,
+                       max(high) FILTER (WHERE rn <= 252) AS high252
+                  FROM ranked
+            ), classified AS (
+                SELECT CASE
+                         WHEN stats.bars_200 < 200 OR stats.sma200 IS NULL THEN 'unknown'
+                         WHEN ((latest_bar.close - stats.sma200) / NULLIF(stats.sma200, 0) * 100.0) > 20.0
+                           OR ((latest_bar.close - stats.high252) / NULLIF(stats.high252, 0) * 100.0) >= -2.0 THEN 'extended'
+                         WHEN ((latest_bar.close - stats.sma200) / NULLIF(stats.sma200, 0) * 100.0) < -5.0 THEN 'deteriorating'
+                         WHEN stats.sma50 IS NOT NULL
+                           AND abs((latest_bar.close - stats.sma50) / NULLIF(stats.sma50, 0) * 100.0) <= 5.0 THEN 'base_building'
+                         WHEN ((latest_bar.close - stats.sma200) / NULLIF(stats.sma200, 0) * 100.0) >= 0.0 THEN 'constructive'
+                         ELSE 'unknown'
+                       END AS technical_state,
+                       ((latest_bar.close - stats.sma200) / NULLIF(stats.sma200, 0) * 100.0)::float8 AS pct_vs_200d
+                  FROM latest_bar CROSS JOIN stats
+            )
+            SELECT technical_state,
+                   CASE technical_state
+                     WHEN 'extended' THEN 'avoid_chase'
+                     WHEN 'deteriorating' THEN 'avoid'
+                     WHEN 'base_building' THEN 'wait_breakout'
+                     WHEN 'constructive' THEN 'constructive'
+                     ELSE 'wait_data'
+                   END AS entry_stance,
+                   pct_vs_200d
+              FROM classified
+        ) tech ON TRUE
             WHERE dp.dropped_at IS NULL
          ORDER BY dp.market_cap DESC NULLS LAST, dp.symbol"#,
     )
@@ -1820,6 +1868,9 @@ async fn list_discovery_pool(State(gw): State<Arc<Gateway>>) -> impl IntoRespons
                         "latest_thesis_id": r.try_get::<Option<uuid::Uuid>, _>("latest_thesis_id").ok().flatten(),
                         "thesis_state": r.try_get::<Option<String>, _>("thesis_state").ok().flatten(),
                         "thesis_direction": r.try_get::<Option<String>, _>("thesis_direction").ok().flatten(),
+                        "technical_state": r.try_get::<Option<String>, _>("technical_state").ok().flatten(),
+                        "entry_stance": r.try_get::<Option<String>, _>("entry_stance").ok().flatten(),
+                        "technical_pct_vs_200d": r.try_get::<Option<f64>, _>("technical_pct_vs_200d").ok().flatten(),
                         "open_theses": r.try_get::<i64, _>("open_theses").unwrap_or(0),
                     })
                 })

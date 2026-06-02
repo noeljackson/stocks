@@ -570,6 +570,8 @@
   let newListName = $state("");
   let addSymbolFor = $state<Record<string, string>>({});
   let expandedListIds = $state<Record<string, boolean>>({});
+  let watchlistThesisFilter = $state("all");
+  let watchlistTechnicalFilter = $state("all");
 
   // ---------- decision form (in bottom drawer) ----------
   let decThesisId = $state("");
@@ -610,6 +612,9 @@
       latest_thesis_id: t.latest_thesis_id,
       thesis_state: t.thesis_state,
       thesis_direction: t.thesis_direction,
+      technical_state: t.technical_state,
+      entry_stance: t.entry_stance,
+      technical_pct_vs_200d: t.technical_pct_vs_200d,
       open_theses: t.open_theses,
     })),
   );
@@ -636,6 +641,9 @@
       latest_thesis_id: p.latest_thesis_id,
       thesis_state: p.thesis_state,
       thesis_direction: p.thesis_direction,
+      technical_state: p.technical_state,
+      entry_stance: p.entry_stance,
+      technical_pct_vs_200d: p.technical_pct_vs_200d,
       open_theses: p.open_theses ?? 0,
     })),
   );
@@ -732,6 +740,28 @@
     return "thesis-none";
   }
 
+  function technicalStateLabel(state: string | null | undefined): string {
+    return state ? state.replace(/_/g, " ") : "no technicals";
+  }
+
+  function technicalStateClass(state: string | null | undefined): string {
+    return `tech-${state ?? "none"}`;
+  }
+
+  function entryStanceLabel(stance: string | null | undefined): string {
+    return stance ? stance.replace(/_/g, " ") : "wait data";
+  }
+
+  function entryStanceClass(stance: string | null | undefined): string {
+    return `stance-${stance ?? "none"}`;
+  }
+
+  function pctCompact(value: number | null | undefined): string {
+    if (value === null || value === undefined || Number.isNaN(value)) return "";
+    const sign = value > 0 ? "+" : "";
+    return `${sign}${value.toFixed(0)}%`;
+  }
+
   function decisionIntentLabel(d: DecisionRow): string {
     if (d.action === "enter") {
       const side = (d.side ?? "").trim();
@@ -759,6 +789,20 @@
     if (listId === UNIVERSE_ID) return universeMembers;
     if (listId === POOL_ID) return poolMembers;
     return watchlistMembers[listId] ?? [];
+  }
+
+  function filteredMembersFor(listId: string): WatchlistMember[] {
+    return membersFor(listId).filter((m) => {
+      if (watchlistThesisFilter !== "all") {
+        const direction = m.thesis_direction ?? "none";
+        if (direction !== watchlistThesisFilter) return false;
+      }
+      if (watchlistTechnicalFilter !== "all") {
+        const state = m.technical_state ?? "unknown";
+        if (state !== watchlistTechnicalFilter) return false;
+      }
+      return true;
+    });
   }
 
   function normalizeSymbol(value: string | null | undefined): string | null {
@@ -1956,15 +2000,33 @@
           <input bind:value={newListName} placeholder="+ new list" />
           <button type="submit" disabled={!newListName.trim()}>add</button>
         </form>
+        <div class="wl-filters">
+          <select bind:value={watchlistThesisFilter} aria-label="Thesis filter">
+            <option value="all">all theses</option>
+            <option value="up">bull</option>
+            <option value="down">bear</option>
+            <option value="neutral">neutral</option>
+            <option value="none">none</option>
+          </select>
+          <select bind:value={watchlistTechnicalFilter} aria-label="Technical filter">
+            <option value="all">all technicals</option>
+            <option value="extended">extended</option>
+            <option value="constructive">constructive</option>
+            <option value="base_building">base building</option>
+            <option value="deteriorating">deteriorating</option>
+            <option value="unknown">unknown</option>
+          </select>
+        </div>
         <ul class="wl-list">
           {#each allWatchlists as w (w.id)}
             {@const open = expandedListIds[w.id] ?? false}
-            {@const members = membersFor(w.id)}
+            {@const rawMembers = membersFor(w.id)}
+            {@const members = filteredMembersFor(w.id)}
             <li class="wl-item">
               <button type="button" class="wl-row" onclick={() => toggleListExpanded(w.id)}>
                 <span class="caret">{open ? "▾" : "▸"}</span>
                 <span class="wl-name" style={w.color ? `border-left: 3px solid ${w.color}; padding-left: .35rem` : ""}>{w.name}</span>
-                <span class="muted">{w.member_count}</span>
+                <span class="muted">{members.length === rawMembers.length ? w.member_count : `${members.length}/${rawMembers.length}`}</span>
                 {#if w.is_system}<span class="badge tiny">sys</span>{/if}
               </button>
               {#if open}
@@ -1994,6 +2056,15 @@
                         <span class={`badge tiny ${thesisDirectionClass(m.thesis_direction)}`}>
                           {thesisDirectionLabel(m.thesis_direction)}
                         </span>
+                        <span class={`badge tiny ${technicalStateClass(m.technical_state)}`}>
+                          {technicalStateLabel(m.technical_state)}
+                        </span>
+                        <span class={`badge tiny ${entryStanceClass(m.entry_stance)}`}>
+                          {entryStanceLabel(m.entry_stance)}
+                        </span>
+                        {#if pctCompact(m.technical_pct_vs_200d)}
+                          <span class="muted wl-distance">{pctCompact(m.technical_pct_vs_200d)} 200D</span>
+                        {/if}
                       </button>
                       {#if w.id !== UNIVERSE_ID && w.id !== POOL_ID}
                         <button
@@ -2006,7 +2077,7 @@
                     </li>
                   {/each}
                   {#if members.length === 0}
-                    <li class="muted wl-empty">empty</li>
+                    <li class="muted wl-empty">{rawMembers.length === 0 ? "empty" : "no matches"}</li>
                   {/if}
                 </ul>
               {/if}
@@ -2536,6 +2607,14 @@
     flex: 1; background: #0a0d14; color: #cdd6f4; border: 1px solid #2a3548;
     border-radius: 4px; padding: .2rem .35rem; font: inherit; font-size: .8rem;
   }
+  .wl-filters {
+    display: grid; grid-template-columns: 1fr 1fr; gap: .35rem;
+    margin-bottom: .35rem;
+  }
+  .wl-filters select {
+    min-width: 0; background: #0a0d14; color: #cdd6f4; border: 1px solid #2a3548;
+    border-radius: 4px; padding: .2rem .3rem; font: inherit; font-size: .72rem;
+  }
   .wl-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .15rem; }
   .wl-row {
     width: 100%; display: flex; gap: .35rem; align-items: baseline; cursor: pointer;
@@ -2553,11 +2632,12 @@
   .wl-mem:hover { background: rgba(137, 180, 250, .08); }
   .wl-mem.active { background: rgba(137, 180, 250, .18); }
   .wl-mem-select {
-    min-width: 0; flex: 1; display: flex; gap: .35rem; align-items: baseline;
+    min-width: 0; flex: 1; display: flex; gap: .28rem; align-items: baseline; flex-wrap: wrap;
     border: none; background: transparent; color: inherit; font: inherit;
     text-align: left; padding: 0; cursor: pointer;
   }
-  .wl-mem-select strong { flex: 1; }
+  .wl-mem-select strong { flex: 1 0 3.8rem; }
+  .wl-distance { font-size: .68rem; white-space: nowrap; }
   .wl-thesis-state {
     color: #9aa3b8; font-size: .68rem; text-transform: lowercase;
     white-space: nowrap; max-width: 8.5rem; overflow: hidden; text-overflow: ellipsis;
@@ -3203,6 +3283,28 @@
   .badge.thesis-up { background: rgba(166,227,161,.16); color: rgb(166,227,161); }
   .badge.thesis-neutral { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
   .badge.thesis-none { background: rgba(108,112,134,.16); color: #9aa3b8; }
+  .badge.tech-extended,
+  .badge.stance-avoid_chase,
+  .badge.stance-wait_breakout,
+  .badge.stance-wait_data {
+    background: rgba(249,226,175,.15); color: rgb(249,226,175);
+  }
+  .badge.tech-constructive,
+  .badge.stance-constructive {
+    background: rgba(166,227,161,.16); color: rgb(166,227,161);
+  }
+  .badge.tech-base_building {
+    background: rgba(137,180,250,.15); color: rgb(137,180,250);
+  }
+  .badge.tech-deteriorating,
+  .badge.stance-avoid {
+    background: rgba(243,139,168,.16); color: rgb(243,139,168);
+  }
+  .badge.tech-unknown,
+  .badge.tech-none,
+  .badge.stance-none {
+    background: rgba(108,112,134,.16); color: #9aa3b8;
+  }
   .link-mini {
     background: transparent; color: #89b4fa; border: none; cursor: pointer;
     font: inherit; font-size: .75rem; padding: 0;

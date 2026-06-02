@@ -15,6 +15,9 @@ type MockWatchlistMember = {
   latest_thesis_id?: string | null;
   thesis_state?: string | null;
   thesis_direction?: string | null;
+  technical_state?: string | null;
+  entry_stance?: string | null;
+  technical_pct_vs_200d?: number | null;
   open_theses?: number;
 };
 
@@ -65,6 +68,9 @@ async function mockApi(page: Page): Promise<Calls> {
     latest_thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
     thesis_state: "forming",
     thesis_direction: "up",
+    technical_state: "extended",
+    entry_stance: "avoid_chase",
+    technical_pct_vs_200d: 26.5,
     open_theses: 1,
   }];
 
@@ -110,9 +116,9 @@ async function mockApi(page: Page): Promise<Calls> {
     }
     if (path === "/api/tickers") {
       await json(route, [
-        { symbol: "MSFT", cluster_id: "ai", cluster_name: "AI infrastructure", tier: 1, options_eligible: true, domain_fit: 91, added_at: "2026-01-01T00:00:00Z", open_theses: 0, latest_thesis_id: null, thesis_state: null, thesis_direction: null },
-        { symbol: "OKTA", cluster_id: "identity", cluster_name: "Identity", tier: 2, options_eligible: true, domain_fit: 77, added_at: "2026-01-01T00:00:00Z", open_theses: 1, latest_thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59", thesis_state: "forming", thesis_direction: "up" },
-        { symbol: "NVDA", cluster_id: "ai", cluster_name: "AI infrastructure", tier: 1, options_eligible: true, domain_fit: 96, added_at: "2026-01-01T00:00:00Z", open_theses: 0, latest_thesis_id: null, thesis_state: null, thesis_direction: null },
+        { symbol: "MSFT", cluster_id: "ai", cluster_name: "AI infrastructure", tier: 1, options_eligible: true, domain_fit: 91, added_at: "2026-01-01T00:00:00Z", open_theses: 0, latest_thesis_id: null, thesis_state: null, thesis_direction: null, technical_state: "constructive", entry_stance: "constructive", technical_pct_vs_200d: 4.2 },
+        { symbol: "OKTA", cluster_id: "identity", cluster_name: "Identity", tier: 2, options_eligible: true, domain_fit: 77, added_at: "2026-01-01T00:00:00Z", open_theses: 1, latest_thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59", thesis_state: "forming", thesis_direction: "up", technical_state: "extended", entry_stance: "avoid_chase", technical_pct_vs_200d: 26.5 },
+        { symbol: "NVDA", cluster_id: "ai", cluster_name: "AI infrastructure", tier: 1, options_eligible: true, domain_fit: 96, added_at: "2026-01-01T00:00:00Z", open_theses: 0, latest_thesis_id: null, thesis_state: null, thesis_direction: null, technical_state: "base_building", entry_stance: "wait_breakout", technical_pct_vs_200d: -1.2 },
       ]);
       return;
     }
@@ -225,6 +231,9 @@ async function mockApi(page: Page): Promise<Calls> {
         latest_thesis_id: null,
         thesis_state: null,
         thesis_direction: null,
+        technical_state: "unknown",
+        entry_stance: "wait_data",
+        technical_pct_vs_200d: null,
         open_theses: 0,
       });
       await route.fulfill({ status: 204 });
@@ -271,6 +280,9 @@ async function mockApi(page: Page): Promise<Calls> {
         latest_thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
         thesis_state: "forming",
         thesis_direction: "up",
+        technical_state: "extended",
+        entry_stance: "avoid_chase",
+        technical_pct_vs_200d: 26.5,
         open_theses: 1,
       }]);
       return;
@@ -842,6 +854,27 @@ test("watchlist rows show thesis state and direction", async ({ page }) => {
 
   await expect(row).toContainText("forming");
   await expect(row).toContainText("bull");
+  await expect(row).toContainText("extended");
+  await expect(row).toContainText("avoid chase");
+  await expect(row).toContainText("+27% 200D");
+});
+
+test("watchlist filters by thesis direction and technical state", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+
+  const universe = page.locator(".wl-row").filter({ hasText: "Universe" });
+  await universe.click();
+  await page.getByLabel("Thesis filter").selectOption("up");
+  await page.getByLabel("Technical filter").selectOption("extended");
+  if (await page.locator(".wl-mem").filter({ hasText: "OKTA" }).count() === 0) {
+    await universe.click();
+  }
+
+  await expect(universe).toContainText("1/3");
+  await expect(page.locator(".wl-mem").filter({ hasText: "OKTA" })).toBeVisible();
+  await expect(page.locator(".wl-mem").filter({ hasText: "MSFT" })).toHaveCount(0);
+  await expect(page.locator(".wl-mem").filter({ hasText: "NVDA" })).toHaveCount(0);
 });
 
 test("decisions tab shows positions and posts manual exit fills", async ({ page }) => {

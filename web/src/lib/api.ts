@@ -282,6 +282,7 @@ export interface CognitionRun {
   finished_at?: string | null;
   next_retry_at?: string | null;
   error?: string | null;
+  source_ref?: Record<string, unknown>;
 }
 
 export interface BrainStatus {

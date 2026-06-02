@@ -2134,7 +2134,7 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
             r#"SELECT id, symbol, trigger, sweep_reason, status, reason,
                       context_version, thesis_id, thesis_classification,
                       evidence_open_count, evidence_blocking_count,
-                      started_at, finished_at, next_retry_at, error
+                      started_at, finished_at, next_retry_at, error, source_ref
                  FROM cognition_run
              ORDER BY started_at DESC
                 LIMIT 8"#,
@@ -2929,7 +2929,7 @@ async fn get_brain_status(
         r#"SELECT id, symbol, trigger, sweep_reason, status, reason,
                   context_version, thesis_id, thesis_classification,
                   evidence_open_count, evidence_blocking_count,
-                  started_at, finished_at, next_retry_at, error
+                  started_at, finished_at, next_retry_at, error, source_ref
              FROM cognition_run
             WHERE symbol = $1
          ORDER BY started_at DESC
@@ -3057,6 +3057,7 @@ fn cognition_run_json(r: sqlx::postgres::PgRow) -> serde_json::Value {
         "finished_at": finished_at,
         "next_retry_at": next_retry_at,
         "error": r.try_get::<Option<String>, _>("error").ok().flatten(),
+        "source_ref": r.try_get::<serde_json::Value, _>("source_ref").unwrap_or_else(|_| json!({})),
     })
 }
 

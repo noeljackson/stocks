@@ -217,8 +217,43 @@
     return parts.join(" · ");
   }
 
+  function cognitionTriggerLabel(trigger: string | null | undefined): string {
+    if (trigger === "source_task_delta") return "source data changed";
+    if (trigger === "open_thesis_update_loop") return "thesis refresh";
+    if (trigger === "evidence_state_bootstrap") return "evidence bootstrap";
+    if (trigger === "maintenance_sweep") return "maintenance";
+    if (trigger === "discovery.confirmed") return "confirmed ticker";
+    return trigger ? trigger.replace(/_/g, " ") : "scheduled";
+  }
+
+  function cognitionSweepReasonLabel(reason: string | null | undefined): string {
+    if (reason === "source_task_changed") return "source data newer than thesis";
+    if (reason === "source_task_changed_retry") return "source data newer than decline";
+    if (reason === "open_thesis_due") return "thesis due";
+    if (reason === "context_missing") return "context missing";
+    if (reason === "context_missing_market") return "market context missing";
+    if (reason === "evidence_state_missing") return "evidence checklist missing";
+    if (reason === "evidence_retry_due") return "evidence retry due";
+    if (reason === "evidence_satisfied_retry") return "evidence satisfied";
+    if (reason === "context_stale") return "context stale";
+    if (reason === "thesis_retry_due") return "thesis retry due";
+    if (reason === "maintenance_sweep") return "maintenance";
+    return reason ? reason.replace(/_/g, " ") : "";
+  }
+
+  function cognitionRunDriver(run: CognitionRun): string {
+    const sourceRef = run.source_ref ?? {};
+    const sourceTaskAt = typeof sourceRef.source_task_at === "string" ? sourceRef.source_task_at : "";
+    const parts = [
+      cognitionSweepReasonLabel(run.sweep_reason) || cognitionTriggerLabel(run.trigger),
+      sourceTaskAt ? `source ${relativeTime(sourceTaskAt)}` : "",
+    ].filter(Boolean);
+    return parts.join(" · ");
+  }
+
   function cognitionRunReason(run: CognitionRun): string {
     const bits = [
+      cognitionRunDriver(run),
       run.reason,
       run.thesis_classification ? `classification ${run.thesis_classification}` : "",
       run.evidence_open_count ? `${run.evidence_open_count} open evidence` : "",
@@ -1923,7 +1958,7 @@
                         <tr title={run.error ?? run.reason ?? ""}>
                           <td><strong>{run.symbol}</strong></td>
                           <td><span class={`badge tiny cognition-${run.status}`}>{cognitionRunLabel(run.status)}</span></td>
-                          <td class="muted">{run.sweep_reason ?? run.trigger}</td>
+                          <td class="muted">{cognitionRunDriver(run)}</td>
                           <td class="muted">{relativeTime(run.started_at)}</td>
                         </tr>
                       {/each}
@@ -2171,7 +2206,7 @@
                         <span class="muted">{cognitionRunTime(run)}</span>
                       </div>
                       <div class="brain-source-detail">
-                        {cognitionRunReason(run) || run.sweep_reason || run.trigger}
+                        {cognitionRunReason(run)}
                       </div>
                     </div>
                   {/if}

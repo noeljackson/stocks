@@ -12,6 +12,7 @@ use sqlx::{Row, postgres::PgPool};
 use std::time::Duration;
 use tracing::{info, warn};
 
+use crate::attention;
 use crate::platform::bus::Bus;
 use crate::platform::subjects;
 
@@ -76,17 +77,44 @@ pub async fn find_stale(pool: &PgPool, now: DateTime<Utc>) -> Result<Vec<StaleRo
 pub async fn mark_stale(pool: &PgPool, row: &StaleRow) -> Result<()> {
     let idx = (row.position - 1).max(0).to_string();
     let result = match row.role.as_str() {
-        "conviction" => sqlx::query(SQL_MARK_CONVICTION).bind(&idx).bind(row.thesis_id).execute(pool).await,
-        "trigger" => sqlx::query(SQL_MARK_TRIGGER).bind(&idx).bind(row.thesis_id).execute(pool).await,
-        "invalidation" => sqlx::query(SQL_MARK_INVALIDATION).bind(&idx).bind(row.thesis_id).execute(pool).await,
-        "fulfillment" => sqlx::query(SQL_MARK_FULFILLMENT).bind(&idx).bind(row.thesis_id).execute(pool).await,
+        "conviction" => {
+            sqlx::query(SQL_MARK_CONVICTION)
+                .bind(&idx)
+                .bind(row.thesis_id)
+                .execute(pool)
+                .await
+        }
+        "trigger" => {
+            sqlx::query(SQL_MARK_TRIGGER)
+                .bind(&idx)
+                .bind(row.thesis_id)
+                .execute(pool)
+                .await
+        }
+        "invalidation" => {
+            sqlx::query(SQL_MARK_INVALIDATION)
+                .bind(&idx)
+                .bind(row.thesis_id)
+                .execute(pool)
+                .await
+        }
+        "fulfillment" => {
+            sqlx::query(SQL_MARK_FULFILLMENT)
+                .bind(&idx)
+                .bind(row.thesis_id)
+                .execute(pool)
+                .await
+        }
         other => {
             warn!(role = other, "unknown role; skipping");
             return Ok(());
         }
     };
     result.with_context(|| {
-        format!("mark_stale {} {} pos={}", row.thesis_id, row.role, row.position)
+        format!(
+            "mark_stale {} {} pos={}",
+            row.thesis_id, row.role, row.position
+        )
     })?;
     Ok(())
 }
@@ -126,33 +154,115 @@ const SQL_MARK_FULFILLMENT: &str = r#"UPDATE thesis
 pub async fn run_once(pool: &PgPool, bus: &Bus) -> Result<usize> {
     let now = Utc::now();
     let stale = find_stale(pool, now).await?;
-    if stale.is_empty() {
-        return Ok(0);
-    }
-    info!(count = stale.len(), "staleness: marking conditions stale");
+    if !stale.is_empty() {
+        info!(count = stale.len(), "staleness: marking conditions stale");
 
-    for row in &stale {
-        if let Err(e) = mark_stale(pool, row).await {
-            warn!(error = %e, "mark_stale failed; skipping");
-            continue;
-        }
-        let payload = serde_json::json!({
-            "kind": "condition_stale",
-            "thesis_id": row.thesis_id,
-            "symbol": row.symbol,
-            "role": row.role,
-            "name": row.name,
-            "deadline_at": row.deadline_at,
-            "detected_at": now,
-        });
-        if let Err(e) = bus
-            .publish(subjects::RISK_WARNING, payload.to_string().as_bytes())
-            .await
-        {
-            warn!(error = %e, "publish risk.warning failed");
+        for row in &stale {
+            if let Err(e) = mark_stale(pool, row).await {
+                warn!(error = %e, "mark_stale failed; skipping");
+                continue;
+            }
+            let payload = serde_json::json!({
+                "kind": "condition_stale",
+                "thesis_id": row.thesis_id,
+                "symbol": row.symbol,
+                "role": row.role,
+                "name": row.name,
+                "deadline_at": row.deadline_at,
+                "detected_at": now,
+            });
+            if let Err(e) = bus
+                .publish(subjects::RISK_WARNING, payload.to_string().as_bytes())
+                .await
+            {
+                warn!(error = %e, "publish risk.warning failed");
+            }
         }
     }
-    Ok(stale.len())
+    let context_stale = emit_context_stale_attention(pool, now).await?;
+    if context_stale > 0 {
+        info!(
+            count = context_stale,
+            "staleness: emitted context_stale attention"
+        );
+    }
+    Ok(stale.len() + context_stale)
+}
+
+/// Create context_stale attention when an actionable-or-later thesis is still
+/// relying on old narrative context. This is separate from condition deadline
+/// staleness: it protects promotion/decision quality when the input package has
+/// aged out.
+pub async fn emit_context_stale_attention(pool: &PgPool, now: DateTime<Utc>) -> Result<usize> {
+    let (fsm_state, owner) = attention::initial_assignment(
+        attention::kind::CONTEXT_STALE,
+        attention::severity::REVIEW,
+        attention::source::CONTEXT,
+    );
+    let rows = sqlx::query(
+        r#"WITH latest_context AS (
+               SELECT DISTINCT ON (symbol)
+                      symbol,
+                      COALESCE(narrative_as_of, created_at) AS narrative_at,
+                      version
+                 FROM ticker_context
+             ORDER BY symbol, version DESC
+           ),
+           stale_theses AS (
+               SELECT t.thesis_id,
+                      t.symbol,
+                      t.state,
+                      lc.narrative_at,
+                      lc.version AS context_version
+                 FROM thesis t
+            LEFT JOIN latest_context lc ON lc.symbol = t.symbol
+                WHERE t.state IN ('actionable', 'position_open', 'exiting')
+                  AND (
+                       lc.narrative_at IS NULL
+                    OR lc.narrative_at < $1 - interval '30 days'
+                  )
+           ),
+           inserted AS (
+               INSERT INTO attention_item
+                    (kind, symbol, thesis_id, severity, title, reason, source, source_ref,
+                     fsm_state, owner, state_reason)
+               SELECT 'context_stale',
+                      symbol,
+                      thesis_id,
+                      'review',
+                      symbol || ' thesis needs fresh context',
+                      'Actionable thesis depends on narrative context older than 30 days.',
+                      'context',
+                      jsonb_build_object(
+                          'detected_at', $1,
+                          'narrative_at', narrative_at,
+                          'context_version', context_version,
+                          'thesis_state', state,
+                          'freshness_target_days', 30
+                      ),
+                      $2,
+                      $3,
+                      'context_stale'
+                 FROM stale_theses
+            ON CONFLICT DO NOTHING
+              RETURNING id, fsm_state, owner, state_reason, source_ref
+           ),
+           history AS (
+               INSERT INTO attention_state_history
+                    (attention_id, from_state, to_state, owner, reason, source_ref)
+               SELECT id, NULL, fsm_state, owner, state_reason, source_ref
+                 FROM inserted
+              RETURNING 1
+           )
+           SELECT COUNT(*) AS n FROM inserted"#,
+    )
+    .bind(now)
+    .bind(fsm_state)
+    .bind(owner)
+    .fetch_one(pool)
+    .await
+    .context("emit context_stale attention")?;
+    Ok(usize::try_from(rows.try_get::<i64, _>("n").unwrap_or(0)).unwrap_or(0))
 }
 
 /// Service entry point: loop forever waking every `interval`.
@@ -160,7 +270,10 @@ pub async fn run(pool: PgPool, bus: Bus, interval: Duration) -> Result<()> {
     // Ensure the DECISIONS stream exists so risk.warning publishes go through.
     bus.ensure_stream(subjects::STREAM_DECISIONS, &["risk.*", "decision.*"])
         .await?;
-    info!(interval_secs = interval.as_secs(), "staleness service started");
+    info!(
+        interval_secs = interval.as_secs(),
+        "staleness service started"
+    );
 
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -182,9 +295,19 @@ mod tests {
     fn role_to_column_maps_each() {
         assert_eq!(role_to_column("conviction"), Some("conviction_conditions"));
         assert_eq!(role_to_column("trigger"), Some("trigger_conditions"));
-        assert_eq!(role_to_column("invalidation"), Some("invalidation_conditions"));
-        assert_eq!(role_to_column("fulfillment"), Some("fulfillment_conditions"));
-        assert_eq!(role_to_column("garbage"), None, "unknown roles → None (skip safely)");
+        assert_eq!(
+            role_to_column("invalidation"),
+            Some("invalidation_conditions")
+        );
+        assert_eq!(
+            role_to_column("fulfillment"),
+            Some("fulfillment_conditions")
+        );
+        assert_eq!(
+            role_to_column("garbage"),
+            None,
+            "unknown roles → None (skip safely)"
+        );
     }
 
     // Note: find_stale + mark_stale are exercised via the live smoke run in

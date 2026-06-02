@@ -219,6 +219,8 @@ fn thesis_transition_event_payload(
         "rationale": rationale,
         "forecast": thesis.forecast,
         "conviction_tier": thesis.conviction_tier,
+        "system_confidence": thesis.system_confidence,
+        "system_confidence_components": thesis.system_confidence_components,
         "instrument": thesis.instrument,
         "intended_size": thesis.intended_size,
         "at": at,
@@ -1781,6 +1783,10 @@ struct DecisionReq {
     #[serde(default)]
     disagreement_detail: String,
     #[serde(default)]
+    human_conviction: String,
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
     sizing: Option<serde_json::Value>,
     #[serde(default)]
     manual_fill: Option<ManualFillReq>,
@@ -1798,6 +1804,8 @@ const DISAGREEMENT_REASONS: &[&str] = &[
     "risk_too_high",
     "other",
 ];
+
+const HUMAN_CONVICTIONS: &[&str] = &["low", "medium", "high"];
 
 fn normalize_disagreement(
     action: &str,
@@ -1834,6 +1842,17 @@ fn normalize_disagreement(
             Some(detail)
         },
     ))
+}
+
+fn normalize_human_conviction(raw: &str) -> Result<String, String> {
+    let value = raw.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        return Err("human_conviction required".into());
+    }
+    if !HUMAN_CONVICTIONS.contains(&value.as_str()) {
+        return Err(format!("invalid human_conviction: {value}"));
+    }
+    Ok(value)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -3705,6 +3724,7 @@ async fn insert_decision_replay(
                      WHERE te.thesis_id = $2
                   ), '[]'::jsonb),
                   COALESCE(
+                    NULLIF((SELECT t.system_confidence FROM thesis t WHERE t.thesis_id = $2), ''),
                     NULLIF((SELECT t.forecast->>'system_confidence' FROM thesis t WHERE t.thesis_id = $2), ''),
                     NULLIF((SELECT t.forecast->>'confidence' FROM thesis t WHERE t.thesis_id = $2), ''),
                     NULLIF((SELECT t.conviction_tier FROM thesis t WHERE t.thesis_id = $2), '')
@@ -3912,6 +3932,14 @@ async fn record_decision_inner(
         &req.disagreement_detail,
     )
     .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let human_conviction = normalize_human_conviction(&req.human_conviction)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let decision_reason = req.reason.trim().to_string();
+    let decision_reason_db = if decision_reason.is_empty() {
+        None
+    } else {
+        Some(decision_reason.as_str())
+    };
 
     let mut tx = gw.store.pool.begin().await.map_err(|e| {
         warn!(error = %e, "record_decision begin failed");
@@ -3921,8 +3949,9 @@ async fn record_decision_inner(
     let decision_id: uuid::Uuid = sqlx::query_scalar(
         r#"INSERT INTO decision
                 (thesis_id, action, user_choice, sizing,
-                 disagreement_reason, disagreement_detail)
-           VALUES ($1, $2, $3, $4, $5, $6)
+                 disagreement_reason, disagreement_detail,
+                 human_conviction, reason)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING decision_id"#,
     )
     .bind(thesis_uuid)
@@ -3931,6 +3960,8 @@ async fn record_decision_inner(
     .bind(&sizing_value)
     .bind(disagreement_reason.as_deref())
     .bind(disagreement_detail.as_deref())
+    .bind(&human_conviction)
+    .bind(decision_reason_db)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| {
@@ -4207,7 +4238,8 @@ async fn record_decision_inner(
                 json!({
                     "action": action,
                     "user_choice": user_choice,
-                    "disagreement_reason": disagreement_reason,
+                    "disagreement_reason": disagreement_reason.clone(),
+                    "human_conviction": human_conviction.clone(),
                 }),
             )
             .await
@@ -4261,6 +4293,8 @@ async fn record_decision_inner(
         "user_choice": user_choice,
         "disagreement_reason": disagreement_reason.clone(),
         "disagreement_detail": disagreement_detail.clone(),
+        "human_conviction": human_conviction.clone(),
+        "reason": decision_reason_db,
         "sizing": sizing_value,
     });
     if let Err(e) = gw
@@ -4279,6 +4313,8 @@ async fn record_decision_inner(
         "transitioned_to": transitioned_to,
         "disagreement_reason": disagreement_reason,
         "disagreement_detail": disagreement_detail,
+        "human_conviction": human_conviction,
+        "reason": decision_reason_db,
     }))
 }
 
@@ -4657,6 +4693,10 @@ mod tests {
             fulfillment_conditions: json!([]),
             known_unknowns: json!([]),
             conviction_tier: Some("high".to_string()),
+            system_confidence: Some("high".to_string()),
+            system_confidence_components: json!({
+                "evidence_strength": "strong"
+            }),
             instrument: Some("LEAPS".to_string()),
             intended_size: json!({ "pct": 0.04 }),
             version: 3,
@@ -4725,8 +4765,23 @@ mod tests {
         assert_eq!(payload["forecast"]["direction"], "up");
         assert_eq!(payload["forecast"]["horizon_days"], 180);
         assert_eq!(payload["conviction_tier"], "high");
+        assert_eq!(payload["system_confidence"], "high");
+        assert_eq!(
+            payload["system_confidence_components"]["evidence_strength"],
+            "strong"
+        );
         assert_eq!(payload["instrument"], "LEAPS");
         assert_eq!(payload["intended_size"]["pct"], 0.04);
+    }
+
+    #[test]
+    fn human_conviction_is_required_and_validated() {
+        assert_eq!(
+            normalize_human_conviction(" Medium ").unwrap(),
+            "medium".to_string()
+        );
+        assert!(normalize_human_conviction("").is_err());
+        assert!(normalize_human_conviction("very_high").is_err());
     }
 
     #[test]

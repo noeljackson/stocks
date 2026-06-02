@@ -4,6 +4,8 @@ from stocks.thesis_engine import (
     _evidence_weight,
     _extract_json,
     _normalize_known_unknowns,
+    _normalize_system_confidence,
+    _system_confidence_components,
     _thesis_review_attention_payload,
     classify_reconciliation,
 )
@@ -77,6 +79,27 @@ def test_classify_reconciliation_detects_no_change() -> None:
     assert classify_reconciliation(prior, draft) == ("no_change", False)
 
 
+def test_classify_reconciliation_detects_confidence_only_strengthening() -> None:
+    prior = {
+        "edge_rationale": "same edge",
+        "forecast": {"direction": "up"},
+        "invalidation_conditions": [{"name": "demand_break"}],
+        "known_unknowns": [],
+        "conviction_tier": "medium",
+        "system_confidence": "medium",
+    }
+    draft = {
+        "edge_rationale": "same edge",
+        "forecast": {"direction": "up"},
+        "invalidation_conditions": [{"name": "demand_break"}],
+        "known_unknowns": [],
+        "conviction_tier": "high",
+        "system_confidence": "very_high",
+    }
+
+    assert classify_reconciliation(prior, draft) == ("strengthened_view", False)
+
+
 def test_classify_reconciliation_versions_known_unknown_changes() -> None:
     prior = {
         "edge_rationale": "same edge",
@@ -98,6 +121,33 @@ def test_classify_reconciliation_versions_known_unknown_changes() -> None:
     }
 
     assert classify_reconciliation(prior, draft) == ("confirmed_existing_view", False)
+
+
+def test_normalize_system_confidence_accepts_prompt_variants() -> None:
+    assert _normalize_system_confidence({"system_confidence": "Very High"}) == "very_high"
+    assert _normalize_system_confidence({"forecast": {"confidence": "medium"}}) == "medium"
+    assert _normalize_system_confidence({"conviction_tier": "high"}) == "high"
+    assert _normalize_system_confidence({"system_confidence": "monitoring"}) == "low"
+
+
+def test_system_confidence_components_are_stable() -> None:
+    components = _system_confidence_components({
+        "system_confidence": "high",
+        "conviction_tier": "high",
+        "edge_present": True,
+        "missing_evidence": [{"requirement_key": "news"}],
+        "known_unknowns": [{"question": "x", "watch_for": "y"}],
+        "system_confidence_components": {"evidence_strength": "multi-source"},
+    })
+
+    assert components == {
+        "evidence_strength": "multi-source",
+        "system_confidence": "high",
+        "promotion_tier": "high",
+        "edge_present": True,
+        "missing_evidence_count": 1,
+        "known_unknowns_count": 1,
+    }
 
 
 def test_thesis_review_attention_payload_explains_direction_change() -> None:

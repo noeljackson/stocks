@@ -128,6 +128,7 @@ attention.
 | --- | --- | --- | --- |
 | `candidate_review` | discovery | A composed discovery interpretation or reasoned research nomination deserves confirm/reject. | confirm or reject candidate |
 | `thesis_incomplete` | cognition | Context was refreshed but thesis engine declined to invent an edge, or blocking evidence is still missing. | draft thesis / dismiss |
+| `thesis_review` | thesis reconciliation | Fresh context materially changed, weakened, or invalidated the standing thesis. | review thesis/version history |
 | `thesis_actionable` | thesis transition | A thesis reached actionable and needs a human decision. | record decision |
 | `risk_review` | risk | Proposed/recorded intent hit risk warnings or vetoes. | acknowledge / adjust |
 | `context_stale` | staler | A thesis depends on stale context. | refresh context |
@@ -141,6 +142,8 @@ Decisions and executions are separate concepts:
 ```text
 decision
   human says enter, exit, skip, resize, confirm, reject, or defer
+  records human_conviction low | medium | high
+  records freeform reason plus structured disagreement reason when skipping/rejecting
 
 trade_ticket
   proposed expression of the decision

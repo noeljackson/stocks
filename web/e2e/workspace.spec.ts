@@ -555,7 +555,12 @@ async function mockApi(
         trigger_conditions: [],
         invalidation_conditions: [],
         fulfillment_conditions: [],
-        conviction_tier: "monitoring",
+        conviction_tier: "medium",
+        system_confidence: "medium",
+        system_confidence_components: {
+          evidence_strength: "usable",
+          freshness: "fresh",
+        },
         instrument: "equity",
         intended_size: null,
         version: 1,
@@ -796,8 +801,10 @@ async function mockApi(
           symbol: "OKTA",
           state: "forming",
           version: 1,
-          forecast: { direction: "up", system_confidence: "monitoring" },
-          conviction_tier: "monitoring",
+          forecast: { direction: "up", system_confidence: "medium" },
+          conviction_tier: "medium",
+          system_confidence: "medium",
+          system_confidence_components: { evidence_strength: "usable" },
         },
         consensus_score: 64,
         risk_verdict: { status: "pass", veto: false, reasons: [], warnings: [] },
@@ -818,7 +825,7 @@ async function mockApi(
           weight: 0.9,
           added_by: "system",
         }],
-        system_confidence: "monitoring",
+        system_confidence: "medium",
         chart_range_seen: "ALL 1D",
         decision_snapshot: {
           decision_id: "8b4c3f5b-8288-49ff-9282-b4398abe85ba",
@@ -826,6 +833,8 @@ async function mockApi(
           user_choice: "deferred",
           disagreement_reason: "valuation_priced",
           disagreement_detail: "Story is true, but the chart already reflects it.",
+          human_conviction: "low",
+          reason: "Technically extended despite useful narrative.",
         },
         captured_at: "2026-06-01T00:02:00Z",
       });
@@ -840,6 +849,8 @@ async function mockApi(
         user_choice: "deferred",
         disagreement_reason: "valuation_priced",
         disagreement_detail: "Story is true, but the chart already reflects it.",
+        human_conviction: "low",
+        reason: "Technically extended despite useful narrative.",
         sizing: { thesis_direction: "up" },
         thesis_state: "forming",
         thesis_direction: "up",
@@ -1325,12 +1336,16 @@ test("decisions tab shows positions and posts manual exit fills", async ({ page 
   await expect(page.getByLabel("Action")).toHaveValue("exit");
   await expect(page.getByLabel("Qty")).toHaveValue("12");
   await page.getByLabel("Fill price").fill("97");
+  await page.getByLabel("Human conviction").selectOption("medium");
+  await page.getByLabel("Decision reason").fill("Taking profit after thesis review.");
   await page.locator(".decform").getByRole("button", { name: "Submit" }).click();
 
   await expect.poll(() => calls.decisionBody).toMatchObject({
     thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
     action: "exit",
     user_choice: "confirmed",
+    human_conviction: "medium",
+    reason: "Taking profit after thesis review.",
     chart_range_seen: "ALL 1D",
     sizing: { side: "long", instrument: "equity", thesis_direction: "up" },
     manual_fill: {
@@ -1357,12 +1372,20 @@ test("decision form requires disagreement reason for skip decisions", async ({ p
   await page.getByLabel("Detail").fill("Story is true, but the chart already reflects it.");
   await page.getByRole("button", { name: "Submit" }).click();
 
+  await expect(page.getByText("choose human conviction")).toBeVisible();
+
+  await page.getByLabel("Human conviction").selectOption("low");
+  await page.getByLabel("Decision reason").fill("Technically extended despite useful narrative.");
+  await page.getByRole("button", { name: "Submit" }).click();
+
   await expect.poll(() => calls.decisionBody).toMatchObject({
     thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
     action: "skip",
     user_choice: "deferred",
     disagreement_reason: "valuation_priced",
     disagreement_detail: "Story is true, but the chart already reflects it.",
+    human_conviction: "low",
+    reason: "Technically extended despite useful narrative.",
   });
 });
 
@@ -1382,7 +1405,9 @@ test("decisions tab opens decision replay snapshot", async ({ page }) => {
   await expect(replay).toContainText("ALL 1D");
   await expect(replay).toContainText("pass");
   await expect(replay).toContainText("disagreement: valuation priced");
-  await expect(replay).toContainText("confidence monitoring");
+  await expect(replay).toContainText("human conviction: low");
+  await expect(replay).toContainText("Technically extended despite useful narrative.");
+  await expect(replay).toContainText("system confidence medium");
   await expect(replay).toContainText("OKTA customer deployment article supports consolidation demand");
 });
 

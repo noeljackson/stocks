@@ -39,6 +39,7 @@ REVIEWABLE_RECONCILIATIONS = {
     "material_change",
     "invalidates_existing_view",
 }
+SYSTEM_CONFIDENCE_VALUES = {"low", "medium", "high", "very_high"}
 
 
 async def _load_latest_context(pool: asyncpg.Pool, symbol: str) -> dict | None:
@@ -69,7 +70,8 @@ async def _load_prior_thesis(pool: asyncpg.Pool, symbol: str) -> dict | None:
         """SELECT thesis_id, symbol, state, version, edge_rationale, bull_case, bear_case,
                   forecast, conviction_conditions, trigger_conditions,
                   invalidation_conditions, fulfillment_conditions, known_unknowns,
-                  conviction_tier, instrument
+                  conviction_tier, system_confidence, system_confidence_components,
+                  instrument
              FROM thesis
             WHERE symbol = $1 AND state NOT IN ('closed', 'disqualified')
          ORDER BY updated_at DESC
@@ -284,10 +286,17 @@ async def _persist_thesis(
         else None
     )
     known_unknowns = _normalize_known_unknowns(symbol, draft)
+    system_confidence = _normalize_system_confidence(draft)
+    system_confidence_components = _system_confidence_components({
+        **draft,
+        "known_unknowns": known_unknowns,
+    })
     immutable_original = {
         "edge_rationale": draft.get("edge_rationale") or "",
         "invalidation_conditions": draft.get("invalidation_conditions") or [],
         "known_unknowns": known_unknowns,
+        "system_confidence": system_confidence,
+        "system_confidence_components": system_confidence_components,
         "thesis_kind": draft.get("thesis_kind") or "actionable_edge",
         "no_edge_reason": draft.get("no_edge_reason"),
         "drafted_at": dt.datetime.now(dt.UTC).isoformat(),
@@ -300,15 +309,15 @@ async def _persist_thesis(
               forecast,
               conviction_conditions, trigger_conditions,
               invalidation_conditions, fulfillment_conditions, known_unknowns,
-              conviction_tier, instrument, intended_size,
-              version, immutable_original, last_evaluated_at)
+              conviction_tier, system_confidence, system_confidence_components,
+              instrument, intended_size, version, immutable_original, last_evaluated_at)
            VALUES ($1, $2, $3, $4, 'forming',
                    $5, $6, $7,
                    $8::jsonb,
                    $9::jsonb, $10::jsonb,
                    $11::jsonb, $12::jsonb, $13::jsonb,
                    $14, $15, $16::jsonb,
-                   1, $17::jsonb, now())""",
+                   $17, $18::jsonb, 1, $19::jsonb, now())""",
         thesis_id,
         symbol,
         cluster_id,
@@ -323,6 +332,8 @@ async def _persist_thesis(
         json.dumps(draft.get("fulfillment_conditions") or []),
         json.dumps(known_unknowns),
         draft.get("conviction_tier"),
+        system_confidence,
+        json.dumps(system_confidence_components),
         draft.get("instrument"),
         json.dumps(intended_size) if intended_size else None,
         json.dumps(immutable_original),
@@ -410,6 +421,34 @@ def _normalize_known_unknowns(symbol: str, draft: dict) -> list[dict]:
     return out
 
 
+def _normalize_system_confidence(draft: dict) -> str:
+    """Return the machine confidence bucket for a draft thesis."""
+    forecast = draft.get("forecast") if isinstance(draft.get("forecast"), dict) else {}
+    raw = (
+        draft.get("system_confidence")
+        or draft.get("confidence")
+        or forecast.get("system_confidence")
+        or forecast.get("confidence")
+        or draft.get("conviction_tier")
+        or "low"
+    )
+    value = str(raw).strip().lower().replace(" ", "_").replace("-", "_")
+    return value if value in SYSTEM_CONFIDENCE_VALUES else "low"
+
+
+def _system_confidence_components(draft: dict) -> dict:
+    raw = draft.get("system_confidence_components")
+    components = dict(raw) if isinstance(raw, dict) else {}
+    system_confidence = _normalize_system_confidence(draft)
+    components.setdefault("system_confidence", system_confidence)
+    if draft.get("conviction_tier"):
+        components.setdefault("promotion_tier", draft.get("conviction_tier"))
+    components.setdefault("edge_present", bool(draft.get("edge_present")))
+    components.setdefault("missing_evidence_count", len(draft.get("missing_evidence") or []))
+    components.setdefault("known_unknowns_count", len(draft.get("known_unknowns") or []))
+    return components
+
+
 def _condition_names(value) -> set[str]:
     out = set()
     decoded = _maybe_json(value) or []
@@ -433,6 +472,10 @@ def _tier_rank(value: str | None) -> int:
     return {"low": 0, "medium": 1, "high": 2}.get(value or "", -1)
 
 
+def _confidence_rank(value: str | None) -> int:
+    return {"low": 0, "medium": 1, "high": 2, "very_high": 3}.get(value or "", -1)
+
+
 def classify_reconciliation(prior: dict, draft: dict) -> tuple[str, bool]:
     prior_inv = _condition_names(prior.get("invalidation_conditions"))
     draft_inv = _condition_names(draft.get("invalidation_conditions"))
@@ -453,11 +496,19 @@ def classify_reconciliation(prior: dict, draft: dict) -> tuple[str, bool]:
         prior_edge == draft_edge
         and prior_direction == draft_direction
         and prior_unknowns == draft_unknowns
+        and _confidence_rank(prior.get("system_confidence") or prior.get("conviction_tier"))
+        == _confidence_rank(_normalize_system_confidence(draft))
     ):
         return "no_change", False
 
-    prior_rank = _tier_rank(prior.get("conviction_tier"))
-    draft_rank = _tier_rank(draft.get("conviction_tier"))
+    prior_rank = max(
+        _tier_rank(prior.get("conviction_tier")),
+        _confidence_rank(prior.get("system_confidence")),
+    )
+    draft_rank = max(
+        _tier_rank(draft.get("conviction_tier")),
+        _confidence_rank(_normalize_system_confidence(draft)),
+    )
     if draft_rank > prior_rank:
         return "strengthened_view", False
     if draft_rank < prior_rank:
@@ -587,6 +638,8 @@ def _draft_snapshot(draft: dict) -> dict:
         "fulfillment_conditions": draft.get("fulfillment_conditions") or [],
         "known_unknowns": draft.get("known_unknowns") or [],
         "conviction_tier": draft.get("conviction_tier"),
+        "system_confidence": _normalize_system_confidence(draft),
+        "system_confidence_components": _system_confidence_components(draft),
         "instrument": draft.get("instrument"),
         "missing_evidence": draft.get("missing_evidence") or [],
     }
@@ -607,6 +660,10 @@ def _prior_snapshot(prior: dict) -> dict:
         "fulfillment_conditions": _maybe_json(prior.get("fulfillment_conditions")) or [],
         "known_unknowns": _maybe_json(prior.get("known_unknowns")) or [],
         "conviction_tier": prior.get("conviction_tier"),
+        "system_confidence": prior.get("system_confidence"),
+        "system_confidence_components": (
+            _maybe_json(prior.get("system_confidence_components")) or {}
+        ),
         "instrument": prior.get("instrument"),
     }
 
@@ -619,6 +676,8 @@ async def _reconcile_existing_thesis(
 ) -> uuid.UUID:
     known_unknowns = _normalize_known_unknowns(str(prior.get("symbol") or ""), draft)
     draft["known_unknowns"] = known_unknowns
+    system_confidence = _normalize_system_confidence(draft)
+    system_confidence_components = _system_confidence_components(draft)
     classification, weakens = classify_reconciliation(prior, draft)
     thesis_id = prior["thesis_id"]
     next_version = int(prior["version"] or 1) + 1
@@ -663,9 +722,11 @@ async def _reconcile_existing_thesis(
                           fulfillment_conditions = $10::jsonb,
                           known_unknowns = $11::jsonb,
                           conviction_tier = $12,
-                          instrument = $13,
-                          intended_size = $14::jsonb,
-                          version = $15,
+                          system_confidence = $13,
+                          system_confidence_components = $14::jsonb,
+                          instrument = $15,
+                          intended_size = $16::jsonb,
+                          version = $17,
                           updated_at = now(),
                           last_evaluated_at = now()
                     WHERE thesis_id = $1""",
@@ -681,6 +742,8 @@ async def _reconcile_existing_thesis(
                 json.dumps(draft.get("fulfillment_conditions") or []),
                 json.dumps(known_unknowns),
                 draft.get("conviction_tier"),
+                system_confidence,
+                json.dumps(system_confidence_components),
                 draft.get("instrument"),
                 json.dumps(intended_size) if intended_size else None,
                 next_version,
@@ -869,6 +932,8 @@ def _normalize_monitoring_draft(symbol: str, parsed: dict) -> dict:
     out["missing_evidence"] = out.get("missing_evidence") or []
     out["known_unknowns"] = _normalize_known_unknowns(symbol, out)
     out["conviction_tier"] = out.get("conviction_tier") or "low"
+    out["system_confidence"] = _normalize_system_confidence(out)
+    out["system_confidence_components"] = _system_confidence_components(out)
     out["instrument"] = out.get("instrument") or "equity"
     return out
 
@@ -966,6 +1031,8 @@ async def draft(symbol: str) -> dict:
                 parsed["_reconciliation_classification"] = "invalidates_existing_view"
             return parsed
         parsed["known_unknowns"] = _normalize_known_unknowns(symbol, parsed)
+        parsed["system_confidence"] = _normalize_system_confidence(parsed)
+        parsed["system_confidence_components"] = _system_confidence_components(parsed)
 
         if prior is not None:
             thesis_id = await _reconcile_existing_thesis(pool, prior, parsed, context)

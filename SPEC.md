@@ -148,7 +148,9 @@ thesis(
   invalidation_conditions jsonb,       -- -> exiting/disqualified (quant AND narrative)
   fulfillment_conditions  jsonb,       -- exit = consensus arriving (also lead-time anchor)
   -- EXECUTION LINKAGE (advisory)
-  conviction_tier   text,              -- high | medium | low -> size band (human sets final)
+  system_confidence text,              -- machine confidence: low | medium | high | very_high
+  system_confidence_components jsonb,  -- evidence/freshness/substance drivers
+  conviction_tier   text,              -- promotion/ranking tier: high | medium | low
   instrument        text,              -- equity | leaps
   intended_size     jsonb,
   -- INTEGRITY
@@ -263,7 +265,7 @@ The most-reused event in the system: it fires **fulfillment/exit** for discovery
 | Sub-sector cluster concentration | ~35% | **soft / warning** |
 | Concurrent positions | 5–7 | guideline (tracking-quality limit) |
 
-**Sizing:** conviction-tiered (high+strong 8–12%; high+borderline 4–6%; medium 3–5%; below → skip), modified by correlation/sector/drawdown. **Conviction is advisory** — proposed by the thesis engine, bounded by risk overlay, **final size set by the human**.
+**Sizing:** machine-confidence-tiered as a proposal (high+strong 8–12%; high+borderline 4–6%; medium 3–5%; below → skip), modified by correlation/sector/drawdown. **Machine confidence is advisory** — proposed by the thesis engine, bounded by risk overlay, **final size and human conviction are set by the operator**.
 **Options accounting (two views):** delta-notional → name cap; premium → options-loss cap. LEAPS only on names passing the chain-liquidity gate (bid-ask < ~10% of premium, OI floor, real volume); sub-floor discovery names are **equity-only**.
 **Auto-execution:** **none in v1** (confirm everything). v2 grants per-trade-type auto-execution only after v1 demonstrates that type's `actionable` alerts were high-precision over the 18–24mo evaluation.
 **Monitoring/alerting (ops):** ingestion liveness per source; context staleness per band per Tier-1 name; LLM cost/usage; regime transitions; every hard-limit breach. Alerts on significant context shifts only (state transition / completed alignment / consensus arrival).

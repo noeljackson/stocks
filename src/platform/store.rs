@@ -1294,6 +1294,7 @@ impl Store {
         let rows = sqlx::query(
             r#"SELECT d.decision_id, d.thesis_id, d.action, d.user_choice,
                       d.disagreement_reason, d.disagreement_detail,
+                      d.human_conviction, d.reason,
                       d.sizing, d.at, t.state AS thesis_state,
                       t.forecast->>'direction' AS thesis_direction,
                       COALESCE(d.sizing->>'side', '') AS side,
@@ -1319,6 +1320,8 @@ impl Store {
                     "user_choice": r.try_get::<Option<String>, _>("user_choice")?,
                     "disagreement_reason": r.try_get::<Option<String>, _>("disagreement_reason")?,
                     "disagreement_detail": r.try_get::<Option<String>, _>("disagreement_detail")?,
+                    "human_conviction": r.try_get::<Option<String>, _>("human_conviction")?,
+                    "reason": r.try_get::<Option<String>, _>("reason")?,
                     "sizing": r.try_get::<Option<serde_json::Value>, _>("sizing")?,
                     "thesis_state": r.try_get::<String, _>("thesis_state")?,
                     "thesis_direction": r.try_get::<Option<String>, _>("thesis_direction")?,
@@ -1415,6 +1418,7 @@ impl Store {
                    concat_ws(
                        ' · ',
                        NULLIF(d.user_choice, ''),
+                       NULLIF(d.human_conviction, ''),
                        NULLIF(d.disagreement_reason, '')
                    ) AS detail
               FROM decision d
@@ -2351,7 +2355,9 @@ impl Store {
                       COALESCE(invalidation_conditions, '[]'::jsonb)  AS invalidation_conditions,
                       COALESCE(fulfillment_conditions, '[]'::jsonb)   AS fulfillment_conditions,
                       COALESCE(known_unknowns, '[]'::jsonb)           AS known_unknowns,
-                      conviction_tier, instrument,
+                      conviction_tier, system_confidence,
+                      COALESCE(system_confidence_components, '{}'::jsonb) AS system_confidence_components,
+                      instrument,
                       COALESCE(intended_size, 'null'::jsonb)          AS intended_size,
                       version,
                       COALESCE(immutable_original, '{}'::jsonb)       AS immutable_original,
@@ -2505,6 +2511,10 @@ impl Store {
                 fulfillment_conditions,
                 known_unknowns,
                 conviction_tier: row.try_get("conviction_tier").ok(),
+                system_confidence: row.try_get("system_confidence").ok(),
+                system_confidence_components: row
+                    .try_get("system_confidence_components")
+                    .unwrap_or_else(|_| serde_json::json!({})),
                 instrument: row.try_get("instrument").ok(),
                 intended_size,
                 version: row.try_get("version")?,

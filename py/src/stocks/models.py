@@ -37,6 +37,8 @@ class ThesisDraft(BaseModel):
     invalidation_conditions: list[Condition] = Field(default_factory=list)
     fulfillment_conditions: list[Condition] = Field(default_factory=list)
     conviction_tier: Literal["high", "medium", "low"] | None = None
+    system_confidence: Literal["low", "medium", "high", "very_high"] | None = None
+    system_confidence_components: dict[str, Any] = Field(default_factory=dict)
     instrument: Literal["equity", "leaps"] | None = None
 
 

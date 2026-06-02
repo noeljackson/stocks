@@ -41,6 +41,7 @@
   let forecastTechnicalState = $derived(forecastTechnicalStateFields());
   let linkedEvidence = $derived(thesis.evidence_items ?? []);
   let knownUnknowns = $derived(thesis.known_unknowns ?? []);
+  let systemConfidence = $derived(thesis.system_confidence ?? thesis.conviction_tier ?? null);
 
   // Substance checklist (#10): which structural slots are filled.
   let sub = $derived(thesis.substance);
@@ -140,8 +141,8 @@
     <span class="state-badge" style="background:{stateColor(thesis.state)}">
       {thesis.state.replace(/_/g, " ")}
     </span>
-    {#if thesis.conviction_tier}
-      <span class="meta">conviction: <strong>{thesis.conviction_tier}</strong></span>
+    {#if systemConfidence}
+      <span class="meta">system confidence: <strong>{systemConfidence}</strong></span>
     {/if}
     {#if thesis.instrument}
       <span class="meta">instrument: <strong>{thesis.instrument}</strong></span>

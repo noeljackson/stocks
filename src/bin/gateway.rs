@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use stocks::gateway::Gateway;
+use stocks::llm::{self, prompts};
 use stocks::platform::{bus::Bus, config::Config, logging, store::Store};
 use tracing::{error, info};
 
@@ -22,11 +23,22 @@ async fn main() -> Result<()> {
     if let Some(t) = dev_redirect.as_deref() {
         info!(target = t, "dev mode: SPA fallback will redirect to vite");
     }
+    let llm_cfg = cfg.llm();
+    let llm_provider_name = if llm_cfg.provider.is_empty() {
+        llm::detect(&llm_cfg).to_string()
+    } else {
+        llm_cfg.provider.clone()
+    };
+    let prompt_registry = prompts::load("prompts")?;
     let gw = Arc::new(Gateway::new(
         store,
         bus,
         cfg.fmp_api_key.clone(),
         cfg.fmp_base_url.clone(),
+        llm::new(&llm_cfg),
+        llm_provider_name,
+        cfg.model_routine.clone(),
+        prompt_registry,
         dev_redirect,
     ));
 

@@ -14,6 +14,7 @@ use anyhow::Result;
 use tracing::info;
 
 use crate::ingest::fmp_intraday::FmpIntradayAdapter;
+use crate::llm::{Provider, prompts};
 use crate::platform::bus::{Bus, ConsumerHandle};
 use crate::platform::store::Store;
 use crate::platform::subjects;
@@ -25,6 +26,10 @@ pub struct Gateway {
     pub bus: Arc<Bus>,
     pub hub: Arc<Hub>,
     pub fmp_intraday: Arc<FmpIntradayAdapter>,
+    pub llm: Arc<dyn Provider>,
+    pub llm_provider_name: String,
+    pub llm_model: String,
+    pub prompts: prompts::Registry,
     /// When Some, the SPA fallback returns a 302 to this URL instead of
     /// serving the rust-embed'd snapshot. Set by `make dev` so :8080 is
     /// API-only and the live SPA lives at :5173.
@@ -37,6 +42,10 @@ impl Gateway {
         bus: Bus,
         fmp_api_key: String,
         fmp_base_url: String,
+        llm: Box<dyn Provider>,
+        llm_provider_name: String,
+        llm_model: String,
+        prompts: prompts::Registry,
         dev_redirect: Option<String>,
     ) -> Self {
         Self {
@@ -44,6 +53,10 @@ impl Gateway {
             bus: Arc::new(bus),
             hub: Arc::new(Hub::new()),
             fmp_intraday: Arc::new(FmpIntradayAdapter::new(&fmp_api_key, &fmp_base_url)),
+            llm: Arc::from(llm),
+            llm_provider_name,
+            llm_model,
+            prompts,
             dev_redirect,
         }
     }

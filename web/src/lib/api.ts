@@ -430,6 +430,63 @@ export async function fetchTechnicalState(symbol: string): Promise<TechnicalStat
   return (await r.json()) as TechnicalState;
 }
 
+export interface ChatEvidenceRef {
+  source: string;
+  evidence_id?: number | null;
+  summary: string;
+  observed_at?: string | null;
+}
+
+export interface ChatRequestedEvidence {
+  requirement_key: string;
+  source_type: string;
+  priority: "blocking" | "high" | "medium" | "low";
+  reason: string;
+}
+
+export interface ChatAnalystAnswer {
+  answer: string;
+  confidence: "high" | "medium" | "low";
+  evidence_used: ChatEvidenceRef[];
+  technical_read: {
+    state?: string | null;
+    summary?: string | null;
+    timing_implication?: string | null;
+  };
+  thesis_impact: {
+    kind: "no_change" | "supports" | "weakens" | "contradicts" | "needs_reconciliation";
+    reason?: string | null;
+  };
+  requested_evidence: ChatRequestedEvidence[];
+  attention_request: {
+    kind: "none" | "thesis_review" | "decision_review" | "source_followup";
+    reason?: string | null;
+  };
+}
+
+export interface ChatAnalystResponse {
+  scope: "symbol" | "theme" | "macro" | "technical" | "decision";
+  symbol?: string | null;
+  answer: ChatAnalystAnswer;
+  queued_evidence: number;
+  used_fallback: boolean;
+  fallback_reason?: string | null;
+}
+
+export async function askChatAnalyst(body: {
+  question: string;
+  symbol?: string | null;
+  scope?: string | null;
+}): Promise<ChatAnalystResponse> {
+  const r = await fetch("/api/chat-analyst", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`chat analyst ${r.status}: ${await r.text()}`);
+  return (await r.json()) as ChatAnalystResponse;
+}
+
 export interface Calibration {
   predictions_total: number;
   outcomes_scored: number;

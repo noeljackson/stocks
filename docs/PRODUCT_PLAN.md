@@ -599,8 +599,8 @@ operator asks a question
        decisions/positions when relevant
   -> answer with citations and uncertainty
   -> if data is missing, create evidence_requirement/source_task
-  -> if answer changes standing view, route to thesis reconciliation
-  -> if answer implies action, route to attention/review packet
+  -> if answer changes standing view, flag thesis reconciliation
+  -> if answer implies action, flag attention/review packet
 ```
 
 Rules:
@@ -612,6 +612,14 @@ never turn a chat answer into a trade decision
 write audit rows for prompt, context refs, source rows, tokens, and latency
 surface follow-up work as source tasks or attention, not hidden prose
 ```
+
+Current implementation: `/api/chat-analyst` invokes `prompts/chat-analyst.md`
+through the audited prompt registry, loads symbol evidence packages including
+`technical_state`, queues requested missing evidence into
+`evidence_requirement`/`source_task`, and exposes the flow in the right-side
+Analyst tab. Slow provider calls return an audited deterministic fallback.
+Reconciliation packets and action review packets are still structured outputs,
+not automatic writes.
 
 Example questions:
 

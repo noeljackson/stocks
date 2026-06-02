@@ -1,9 +1,11 @@
 //! HTTP routes — REST + SSE + SPA fallback.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::{Context, Result as AnyResult};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -22,7 +24,11 @@ use tokio_stream::wrappers::BroadcastStream;
 use tracing::warn;
 
 use super::Gateway;
-use crate::platform::{subjects, technical::build_technical_state};
+use crate::llm::prompts;
+use crate::platform::{
+    subjects,
+    technical::{TechnicalState, build_technical_state},
+};
 use crate::web::Dist;
 
 pub(super) fn build(gw: Arc<Gateway>) -> Router {
@@ -47,6 +53,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/ticker-context", get(get_ticker_context))
         .route("/api/candles", get(get_candles))
         .route("/api/technical-state", get(get_technical_state))
+        .route("/api/chat-analyst", post(post_chat_analyst))
         .route("/api/symbol-events", get(get_symbol_events))
         .route("/api/decisions", get(get_decisions).post(record_decision))
         .route("/api/positions", get(get_positions))
@@ -545,13 +552,21 @@ async fn get_technical_state(
     let Some(sym) = q.symbol else {
         return (StatusCode::BAD_REQUEST, "symbol query param required").into_response();
     };
-    let daily = match gw.store.daily_technical_bars_for(&sym, 365 * 30).await {
-        Ok(rows) => rows,
+    match technical_state_for(&gw, &sym).await {
+        Ok(state) => (StatusCode::OK, Json(state)).into_response(),
         Err(e) => {
-            warn!(symbol = %sym, error = %e, "get daily technical bars failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            warn!(symbol = %sym, error = %e, "get_technical_state failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
-    };
+    }
+}
+
+async fn technical_state_for(gw: &Gateway, symbol: &str) -> AnyResult<TechnicalState> {
+    let daily = gw
+        .store
+        .daily_technical_bars_for(symbol, 365 * 30)
+        .await
+        .context("daily technical bars")?;
     let intraday_specs = [
         ("30m", "30min", 90, 30),
         ("2h", "1hour", 180, 120),
@@ -559,21 +574,20 @@ async fn get_technical_state(
     ];
     let mut intraday = Vec::new();
     for (label, native_interval, lookback_days, bucket_minutes) in intraday_specs {
-        maybe_backfill_intraday(&gw, &sym, native_interval, lookback_days).await;
+        maybe_backfill_intraday(gw, symbol, native_interval, lookback_days).await;
         match gw
             .store
-            .intraday_technical_bars_for(&sym, native_interval, lookback_days, bucket_minutes)
+            .intraday_technical_bars_for(symbol, native_interval, lookback_days, bucket_minutes)
             .await
         {
             Ok(rows) => intraday.push((label, rows)),
             Err(e) => {
-                warn!(symbol = %sym, interval = native_interval, error = %e, "get intraday technical bars failed");
+                warn!(symbol = %symbol, interval = native_interval, error = %e, "get intraday technical bars failed");
                 intraday.push((label, Vec::new()));
             }
         }
     }
-    let state = build_technical_state(&sym, &daily, &intraday);
-    (StatusCode::OK, Json(state)).into_response()
+    Ok(build_technical_state(symbol, &daily, &intraday))
 }
 
 async fn maybe_backfill_intraday(
@@ -618,6 +632,751 @@ async fn maybe_backfill_intraday(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct ChatAnalystRequest {
+    question: String,
+    #[serde(default)]
+    symbol: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChatEvidenceRef {
+    source: String,
+    #[serde(default)]
+    evidence_id: Option<i64>,
+    summary: String,
+    #[serde(default)]
+    observed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct ChatTechnicalRead {
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    timing_implication: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChatThesisImpact {
+    kind: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+impl Default for ChatThesisImpact {
+    fn default() -> Self {
+        Self {
+            kind: "no_change".to_string(),
+            reason: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RequestedEvidence {
+    requirement_key: String,
+    source_type: String,
+    priority: String,
+    reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChatAttentionRequest {
+    kind: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+impl Default for ChatAttentionRequest {
+    fn default() -> Self {
+        Self {
+            kind: "none".to_string(),
+            reason: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChatAnalystAnswer {
+    answer: String,
+    confidence: String,
+    #[serde(default)]
+    evidence_used: Vec<ChatEvidenceRef>,
+    #[serde(default)]
+    technical_read: ChatTechnicalRead,
+    #[serde(default)]
+    thesis_impact: ChatThesisImpact,
+    #[serde(default)]
+    requested_evidence: Vec<RequestedEvidence>,
+    #[serde(default)]
+    attention_request: ChatAttentionRequest,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatAnalystEnvelope {
+    scope: String,
+    symbol: Option<String>,
+    answer: ChatAnalystAnswer,
+    queued_evidence: usize,
+    used_fallback: bool,
+    fallback_reason: Option<String>,
+}
+
+async fn post_chat_analyst(
+    State(gw): State<Arc<Gateway>>,
+    Json(req): Json<ChatAnalystRequest>,
+) -> impl IntoResponse {
+    let question = req.question.trim();
+    if question.is_empty() {
+        return (StatusCode::BAD_REQUEST, "question required").into_response();
+    }
+    if question.chars().count() > 4_000 {
+        return (StatusCode::BAD_REQUEST, "question too long").into_response();
+    }
+    let symbol = req.symbol.as_deref().and_then(normalize_chat_symbol);
+    let scope = normalize_chat_scope(req.scope.as_deref(), question, symbol.as_deref());
+    if matches!(scope.as_str(), "symbol" | "technical" | "decision") && symbol.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "symbol required for symbol, technical, and decision questions",
+        )
+            .into_response();
+    }
+
+    let package = match build_chat_evidence_package(&gw, question, &scope, symbol.as_deref()).await
+    {
+        Ok(package) => package,
+        Err(e) => {
+            warn!(symbol = ?symbol, scope = %scope, error = %e, "build chat evidence package failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    };
+    let (mut answer, fallback_reason) = match invoke_chat_analyst(
+        &gw,
+        question,
+        &scope,
+        symbol.as_deref(),
+        &package,
+    )
+    .await
+    {
+        Ok(answer) => answer,
+        Err(e) => {
+            warn!(symbol = ?symbol, scope = %scope, error = %e, "chat analyst invocation failed");
+            return (StatusCode::BAD_GATEWAY, e.to_string()).into_response();
+        }
+    };
+    answer.requested_evidence = answer
+        .requested_evidence
+        .iter()
+        .map(canonical_requested_evidence)
+        .collect();
+    if answer.requested_evidence.is_empty() && fallback_should_request_evidence(question, &package)
+    {
+        answer
+            .requested_evidence
+            .push(default_product_research_request(
+                question,
+                symbol.as_deref(),
+            ));
+    }
+    let queued_evidence = if let Some(symbol) = symbol.as_deref() {
+        match queue_requested_evidence(&gw, symbol, &answer.requested_evidence, question).await {
+            Ok(n) => n,
+            Err(e) => {
+                warn!(symbol = %symbol, error = %e, "queue requested chat evidence failed");
+                return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            }
+        }
+    } else {
+        0
+    };
+
+    (
+        StatusCode::OK,
+        Json(ChatAnalystEnvelope {
+            scope,
+            symbol,
+            answer,
+            queued_evidence,
+            used_fallback: fallback_reason.is_some(),
+            fallback_reason,
+        }),
+    )
+        .into_response()
+}
+
+async fn build_chat_evidence_package(
+    gw: &Gateway,
+    question: &str,
+    scope: &str,
+    symbol: Option<&str>,
+) -> AnyResult<serde_json::Value> {
+    let brain_theses = relevant_brain_theses(gw, symbol).await?;
+    let mut ticker_context = serde_json::Value::Null;
+    let mut technical_state = serde_json::Value::Null;
+    let mut current_thesis = serde_json::Value::Null;
+    let mut thesis_history = json!([]);
+    let mut evidence_items = json!([]);
+    let mut evidence_requirements = json!([]);
+    let mut research_evidence = json!([]);
+    let mut decisions = json!([]);
+    let mut positions = json!([]);
+
+    if let Some(symbol) = symbol {
+        ticker_context = serde_json::to_value(gw.store.latest_ticker_context(symbol).await?)
+            .context("encode ticker_context")?;
+        technical_state =
+            serde_json::to_value(technical_state_for(gw, symbol).await?).context("technical")?;
+        let theses = gw.store.theses_for_symbol(symbol).await?;
+        current_thesis = serde_json::to_value(
+            theses
+                .iter()
+                .find(|t| !["closed", "disqualified"].contains(&t.state.as_str()))
+                .or_else(|| theses.first()),
+        )
+        .context("encode current_thesis")?;
+        thesis_history = serde_json::to_value(theses).context("encode thesis_history")?;
+        evidence_items = serde_json::to_value(gw.store.evidence_items_for_symbol(symbol).await?)
+            .context("encode evidence_items")?;
+        evidence_requirements =
+            serde_json::to_value(gw.store.evidence_requirements_for_symbol(symbol).await?)
+                .context("encode evidence_requirements")?;
+        research_evidence =
+            serde_json::to_value(gw.store.research_evidence_for_symbol(symbol).await?)
+                .context("encode research_evidence")?;
+        decisions = serde_json::to_value(gw.store.decisions_for_symbol(symbol).await?)
+            .context("encode decisions")?;
+        positions =
+            serde_json::to_value(positions_for_symbol(gw, symbol).await?).context("positions")?;
+    }
+
+    Ok(json!({
+        "question": question,
+        "scope": scope,
+        "symbol": symbol,
+        "brain_theses": brain_theses,
+        "ticker_context": ticker_context,
+        "technical_state": technical_state,
+        "current_thesis": current_thesis,
+        "thesis_history": thesis_history,
+        "evidence_items": evidence_items,
+        "evidence_requirements": evidence_requirements,
+        "research_evidence": research_evidence,
+        "decisions": decisions,
+        "positions": positions,
+    }))
+}
+
+async fn invoke_chat_analyst(
+    gw: &Gateway,
+    question: &str,
+    scope: &str,
+    symbol: Option<&str>,
+    package: &serde_json::Value,
+) -> AnyResult<(ChatAnalystAnswer, Option<String>)> {
+    let prompt = gw
+        .prompts
+        .get("chat-analyst")
+        .ok_or_else(|| anyhow::anyhow!("chat-analyst prompt not loaded"))?;
+    let mut vars = HashMap::new();
+    vars.insert("today", chrono::Utc::now().date_naive().to_string());
+    vars.insert("scope", scope.to_string());
+    vars.insert("symbol", symbol.unwrap_or("").to_string());
+    let user_message = serde_json::to_string_pretty(package).context("encode chat package")?;
+    let response = match tokio::time::timeout(
+        Duration::from_secs(45),
+        prompts::invoke(
+            gw.llm.as_ref(),
+            Some(gw.store.as_ref() as &dyn prompts::InvocationRecorder),
+            prompt,
+            &vars,
+            &user_message,
+            &gw.llm_provider_name,
+            Some(&gw.llm_model),
+        ),
+    )
+    .await
+    {
+        Ok(resp) => resp?,
+        Err(_) => {
+            record_chat_timeout_invocation(gw, prompt, &vars, &user_message).await?;
+            return Ok((
+                fallback_chat_answer(question, scope, symbol, package),
+                Some("provider timeout".to_string()),
+            ));
+        }
+    };
+    match parse_chat_analyst_answer(&response.content) {
+        Ok(answer) => Ok((answer, None)),
+        Err(_e) if is_mock_response(&response.content) => Ok((
+            fallback_chat_answer(question, scope, symbol, package),
+            Some("mock provider".to_string()),
+        )),
+        Err(e) => Err(e),
+    }
+}
+
+async fn record_chat_timeout_invocation(
+    gw: &Gateway,
+    prompt: &prompts::Prompt,
+    vars: &HashMap<&str, String>,
+    user_message: &str,
+) -> AnyResult<()> {
+    let request_summary =
+        chat_summary(&format!("{}\n\n{}", prompt.render(vars), user_message), 200);
+    gw.store
+        .record_llm_invocation(
+            &prompt.name,
+            &prompt.hash,
+            &gw.llm_provider_name,
+            &gw.llm_model,
+            0,
+            0,
+            45_000,
+            &request_summary,
+            "provider timed out; deterministic chat analyst fallback returned",
+        )
+        .await
+        .context("record chat analyst timeout invocation")
+}
+
+fn chat_summary(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        value.to_string()
+    } else {
+        format!("{}...", value.chars().take(max_chars).collect::<String>())
+    }
+}
+
+fn parse_chat_analyst_answer(content: &str) -> AnyResult<ChatAnalystAnswer> {
+    let raw = prompts::extract_json(content);
+    serde_json::from_str::<ChatAnalystAnswer>(raw).context("parse chat analyst JSON")
+}
+
+fn is_mock_response(content: &str) -> bool {
+    content.trim() == r#"{"mock":true}"#
+}
+
+fn fallback_chat_answer(
+    question: &str,
+    scope: &str,
+    symbol: Option<&str>,
+    package: &serde_json::Value,
+) -> ChatAnalystAnswer {
+    let technical = package
+        .get("technical_state")
+        .unwrap_or(&serde_json::Value::Null);
+    let state = technical
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let summary = technical
+        .get("summary")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let mut evidence_used = Vec::new();
+    if let Some(items) = package
+        .get("evidence_items")
+        .and_then(serde_json::Value::as_array)
+    {
+        for item in items.iter().take(5) {
+            evidence_used.push(ChatEvidenceRef {
+                source: item
+                    .get("source")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("evidence_item")
+                    .to_string(),
+                evidence_id: item.get("id").and_then(serde_json::Value::as_i64),
+                summary: item
+                    .get("summary")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("evidence fact")
+                    .to_string(),
+                observed_at: item
+                    .get("observed_at")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+            });
+        }
+    }
+    let requested_evidence = if fallback_should_request_evidence(question, package) {
+        vec![default_product_research_request(question, symbol)]
+    } else {
+        Vec::new()
+    };
+    let symbol_text = symbol.unwrap_or("the selected scope");
+    let answer = if let Some(summary) = summary.as_deref() {
+        format!(
+            "{symbol_text}: {summary}. This is timing context, not a thesis mutation. Use the cited evidence and requested evidence list to decide what to refresh before acting."
+        )
+    } else {
+        format!(
+            "{symbol_text}: I can answer only from the loaded evidence package. No technical summary was available, so missing evidence should be queued before drawing a stronger conclusion."
+        )
+    };
+    ChatAnalystAnswer {
+        answer,
+        confidence: if evidence_used.is_empty() {
+            "low".to_string()
+        } else {
+            "medium".to_string()
+        },
+        evidence_used,
+        technical_read: ChatTechnicalRead {
+            state: Some(state.to_string()),
+            summary,
+            timing_implication: Some(
+                if state == "extended" {
+                    "standing thesis may remain intact, but timing quality is lower until extension cools or a fresh trigger appears"
+                } else {
+                    "treat chart state as timing context separate from thesis direction"
+                }
+                .to_string(),
+            ),
+        },
+        thesis_impact: ChatThesisImpact {
+            kind: if scope == "technical" && state == "extended" {
+                "weakens".to_string()
+            } else {
+                "no_change".to_string()
+            },
+            reason: Some("Deterministic fallback used loaded evidence only; no thesis was mutated.".to_string()),
+        },
+        requested_evidence,
+        attention_request: ChatAttentionRequest::default(),
+    }
+}
+
+fn fallback_should_request_evidence(question: &str, package: &serde_json::Value) -> bool {
+    let q = question.to_ascii_lowercase();
+    let asks_for_research = ["missing", "search", "source", "evidence", "article", "news"]
+        .iter()
+        .any(|needle| q.contains(needle));
+    let no_evidence = package
+        .get("evidence_items")
+        .and_then(serde_json::Value::as_array)
+        .is_none_or(Vec::is_empty);
+    asks_for_research || no_evidence
+}
+
+fn default_product_research_request(question: &str, symbol: Option<&str>) -> RequestedEvidence {
+    RequestedEvidence {
+        requirement_key: "product_research".to_string(),
+        source_type: "web_research".to_string(),
+        priority: "high".to_string(),
+        reason: format!(
+            "Operator analyst question needs fresh public research for {}: {}",
+            symbol.unwrap_or("current scope"),
+            question
+        ),
+    }
+}
+
+fn normalize_chat_symbol(raw: &str) -> Option<String> {
+    let symbol = raw.trim().to_ascii_uppercase();
+    let valid = !symbol.is_empty()
+        && symbol.len() <= 10
+        && symbol
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '.' || c == '-');
+    valid.then_some(symbol)
+}
+
+fn normalize_chat_scope(raw: Option<&str>, question: &str, symbol: Option<&str>) -> String {
+    if let Some(scope) = raw {
+        let scope = scope.trim().to_ascii_lowercase();
+        if matches!(
+            scope.as_str(),
+            "symbol" | "theme" | "macro" | "technical" | "decision"
+        ) {
+            return scope;
+        }
+    }
+    classify_chat_scope(question, symbol)
+}
+
+fn classify_chat_scope(question: &str, symbol: Option<&str>) -> String {
+    let q = question.to_ascii_lowercase();
+    if [
+        "rsi",
+        "sma",
+        "chart",
+        "technical",
+        "entry",
+        "timing",
+        "200-day",
+        "200 day",
+    ]
+    .iter()
+    .any(|needle| q.contains(needle))
+    {
+        "technical".to_string()
+    } else if ["decision", "position", "enter", "exit", "trade", "size"]
+        .iter()
+        .any(|needle| q.contains(needle))
+    {
+        "decision".to_string()
+    } else if ["macro", "rates", "credit", "liquidity", "market regime"]
+        .iter()
+        .any(|needle| q.contains(needle))
+    {
+        "macro".to_string()
+    } else if ["sector", "theme", "metals", "copper", "wheat"]
+        .iter()
+        .any(|needle| q.contains(needle))
+    {
+        "theme".to_string()
+    } else if symbol.is_some() {
+        "symbol".to_string()
+    } else {
+        "macro".to_string()
+    }
+}
+
+async fn relevant_brain_theses(
+    gw: &Gateway,
+    symbol: Option<&str>,
+) -> AnyResult<Vec<serde_json::Value>> {
+    let rows = sqlx::query(
+        r#"SELECT bt.id, bt.scope, bt.key, bt.name, bt.state, bt.direction,
+                  bt.summary, bt.core_claim, bt.why_now, bt.evidence,
+                  bt.invalidation_conditions, bt.open_questions, bt.missing_evidence,
+                  bt.last_evaluated_at, bt.version, btt.symbol AS linked_symbol,
+                  btt.role, btt.rationale, btt.conviction
+             FROM brain_thesis bt
+        LEFT JOIN brain_thesis_ticker btt
+               ON btt.brain_thesis_id = bt.id
+              AND btt.symbol = $1
+            WHERE bt.active = true
+              AND (bt.scope = 'macro' OR ($1::text IS NOT NULL AND btt.symbol = $1))
+         ORDER BY CASE bt.scope WHEN 'macro' THEN 0 WHEN 'sector' THEN 1 ELSE 2 END,
+                  bt.name
+            LIMIT 12"#,
+    )
+    .bind(symbol)
+    .fetch_all(&gw.store.pool)
+    .await
+    .context("relevant_brain_theses")?;
+    rows.into_iter()
+        .map(|r| {
+            let id: Option<uuid::Uuid> = r.try_get("id")?;
+            let last_evaluated_at: Option<chrono::DateTime<chrono::Utc>> =
+                r.try_get("last_evaluated_at")?;
+            Ok::<serde_json::Value, sqlx::Error>(json!({
+                "id": id,
+                "scope": r.try_get::<String, _>("scope")?,
+                "key": r.try_get::<String, _>("key")?,
+                "name": r.try_get::<String, _>("name")?,
+                "state": r.try_get::<String, _>("state")?,
+                "direction": r.try_get::<String, _>("direction")?,
+                "summary": r.try_get::<String, _>("summary")?,
+                "core_claim": r.try_get::<String, _>("core_claim")?,
+                "why_now": r.try_get::<Option<String>, _>("why_now")?,
+                "evidence": r.try_get::<serde_json::Value, _>("evidence")?,
+                "invalidation_conditions": r.try_get::<serde_json::Value, _>("invalidation_conditions")?,
+                "open_questions": r.try_get::<serde_json::Value, _>("open_questions")?,
+                "missing_evidence": r.try_get::<serde_json::Value, _>("missing_evidence")?,
+                "last_evaluated_at": last_evaluated_at,
+                "version": r.try_get::<i32, _>("version")?,
+                "linked_symbol": r.try_get::<Option<String>, _>("linked_symbol")?,
+                "role": r.try_get::<Option<String>, _>("role")?,
+                "rationale": r.try_get::<Option<String>, _>("rationale")?,
+                "conviction": r.try_get::<Option<f64>, _>("conviction")?,
+            }))
+        })
+        .collect::<Result<_, _>>()
+        .context("encode relevant_brain_theses")
+}
+
+fn canonical_requested_evidence(req: &RequestedEvidence) -> RequestedEvidence {
+    let key = match req.requirement_key.trim() {
+        "price_history" | "company_facts" | "recent_news" | "analyst_estimates"
+        | "analyst_opinion" | "product_research" => req.requirement_key.trim(),
+        _ => "product_research",
+    };
+    let priority = match req.priority.trim() {
+        "blocking" | "high" | "medium" | "low" => req.priority.trim(),
+        _ => "medium",
+    };
+    RequestedEvidence {
+        requirement_key: key.to_string(),
+        source_type: source_type_for_requirement(key).to_string(),
+        priority: priority.to_string(),
+        reason: if req.reason.trim().is_empty() {
+            format!("Chat analyst requested {key}")
+        } else {
+            req.reason.trim().chars().take(500).collect()
+        },
+    }
+}
+
+fn source_type_for_requirement(requirement_key: &str) -> &'static str {
+    match requirement_key {
+        "price_history" => "price",
+        "company_facts" => "fundamentals",
+        "recent_news" => "news",
+        "analyst_estimates" => "estimates",
+        "analyst_opinion" => "analyst_opinion",
+        "product_research" => "web_research",
+        _ => "web_research",
+    }
+}
+
+fn actions_for_requirement(requirement_key: &str) -> &'static [&'static str] {
+    match requirement_key {
+        "price_history" => &["fmp_price_backfill"],
+        "company_facts" => &["sec_company_tickers_cik_lookup", "sec_companyfacts_xbrl"],
+        "recent_news" => &["fmp_news", "massive_news", "llm_sentiment_scoring"],
+        "analyst_estimates" => &["fmp_analyst_estimates"],
+        "analyst_opinion" => &[
+            "fmp_price_target_consensus",
+            "fmp_grades_historical",
+            "fmp_price_target_news",
+        ],
+        "product_research" => &["gdelt_doc_search", "bing_news_rss_search"],
+        _ => &["gdelt_doc_search", "bing_news_rss_search"],
+    }
+}
+
+fn provider_for_action(action: &str, source_type: &str) -> &'static str {
+    if action.starts_with("fmp_") {
+        "fmp"
+    } else if action.starts_with("massive_") {
+        "massive"
+    } else if action.starts_with("sec_") {
+        "sec"
+    } else if action.starts_with("gdelt_") {
+        "gdelt"
+    } else if action.starts_with("bing_") {
+        "bing"
+    } else if action.starts_with("llm_") {
+        "llm"
+    } else {
+        match source_type {
+            "web_research" => "gdelt",
+            _ => "system",
+        }
+    }
+}
+
+async fn queue_requested_evidence(
+    gw: &Gateway,
+    symbol: &str,
+    requested: &[RequestedEvidence],
+    question: &str,
+) -> AnyResult<usize> {
+    if requested.is_empty() {
+        return Ok(0);
+    }
+    let mut tx = gw
+        .store
+        .pool
+        .begin()
+        .await
+        .context("begin chat evidence tx")?;
+    let mut queued = 0usize;
+    for raw in requested {
+        let req = canonical_requested_evidence(raw);
+        let actions = actions_for_requirement(&req.requirement_key);
+        let actions_vec = actions.iter().map(|a| (*a).to_string()).collect::<Vec<_>>();
+        let source_ref = json!({
+            "requested_by": "chat_analyst",
+            "question": question,
+            "fetch_actions": actions_vec,
+        });
+        let blocking_state: String = sqlx::query_scalar(
+            r#"INSERT INTO evidence_requirement
+                    (symbol, requirement_key, source_type, reason, priority,
+                     blocking_state, next_retry_at, source_ref)
+               VALUES ($1, $2, $3, $4, $5, 'missing', now(), $6)
+               ON CONFLICT (symbol, requirement_key) DO UPDATE SET
+                    source_type = EXCLUDED.source_type,
+                    reason = EXCLUDED.reason,
+                    priority = EXCLUDED.priority,
+                    blocking_state = CASE
+                        WHEN evidence_requirement.blocking_state = 'satisfied'
+                        THEN evidence_requirement.blocking_state
+                        ELSE 'missing'
+                    END,
+                    next_retry_at = CASE
+                        WHEN evidence_requirement.blocking_state = 'satisfied'
+                        THEN evidence_requirement.next_retry_at
+                        ELSE now()
+                    END,
+                    source_ref = evidence_requirement.source_ref || EXCLUDED.source_ref,
+                    updated_at = now(),
+                    satisfied_at = CASE
+                        WHEN evidence_requirement.blocking_state = 'satisfied'
+                        THEN evidence_requirement.satisfied_at
+                        ELSE NULL
+                    END
+             RETURNING blocking_state"#,
+        )
+        .bind(symbol)
+        .bind(&req.requirement_key)
+        .bind(&req.source_type)
+        .bind(&req.reason)
+        .bind(&req.priority)
+        .bind(&source_ref)
+        .fetch_one(&mut *tx)
+        .await
+        .context("upsert chat evidence_requirement")?;
+        if blocking_state == "satisfied" {
+            continue;
+        }
+        for action in actions {
+            let provider = provider_for_action(action, &req.source_type);
+            let task_ref = json!({
+                "requested_by": "chat_analyst",
+                "question": question,
+                "reason": req.reason,
+            });
+            let res = sqlx::query(
+                r#"INSERT INTO source_task
+                        (source_type, requirement_key, action, scope, target_id,
+                         provider, limiter_key, state, priority, due_at, source_ref)
+                   VALUES ($1, $2, $3, 'symbol', $4, $5, $5, 'queued', $6, now(), $7)
+                   ON CONFLICT (scope, target_id, requirement_key, action) DO UPDATE SET
+                        source_type = EXCLUDED.source_type,
+                        provider = EXCLUDED.provider,
+                        limiter_key = EXCLUDED.limiter_key,
+                        state = CASE
+                            WHEN source_task.state = 'fetching' THEN source_task.state
+                            ELSE 'queued'
+                        END,
+                        priority = EXCLUDED.priority,
+                        due_at = CASE
+                            WHEN source_task.state = 'fetching' THEN source_task.due_at
+                            ELSE now()
+                        END,
+                        next_retry_at = NULL,
+                        last_error = NULL,
+                        source_ref = source_task.source_ref || EXCLUDED.source_ref,
+                        updated_at = now()"#,
+            )
+            .bind(&req.source_type)
+            .bind(&req.requirement_key)
+            .bind(action)
+            .bind(symbol)
+            .bind(provider)
+            .bind(&req.priority)
+            .bind(&task_ref)
+            .execute(&mut *tx)
+            .await
+            .context("upsert chat source_task")?;
+            queued += usize::try_from(res.rows_affected()).unwrap_or(0);
+        }
+    }
+    tx.commit().await.context("commit chat evidence tx")?;
+    Ok(queued)
+}
+
 async fn get_decisions(
     State(gw): State<Arc<Gateway>>,
     Query(q): Query<ThesesQuery>,
@@ -641,8 +1400,18 @@ async fn get_positions(
     let Some(sym) = q.symbol else {
         return (StatusCode::BAD_REQUEST, "symbol query param required").into_response();
     };
+    match positions_for_symbol(&gw, &sym).await {
+        Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+        Err(e) => {
+            warn!(symbol = %sym, error = %e, "get_positions failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn positions_for_symbol(gw: &Gateway, sym: &str) -> AnyResult<Vec<serde_json::Value>> {
     let symbol = sym.trim().to_ascii_uppercase();
-    let rows = match sqlx::query(
+    let rows = sqlx::query(
         r#"SELECT p.position_id, p.thesis_id, p.symbol, COALESCE(p.side, 'long') AS side,
                   p.instrument,
                   p.qty::float8 AS qty,
@@ -685,16 +1454,9 @@ async fn get_positions(
     .bind(&symbol)
     .fetch_all(&gw.store.pool)
     .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            warn!(symbol = %symbol, error = %e, "get_positions failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-        }
-    };
+    .context("positions_for_symbol")?;
 
-    let body: Vec<serde_json::Value> = match rows
-        .into_iter()
+    rows.into_iter()
         .map(|r| {
             let opened_at: chrono::DateTime<chrono::Utc> = r.try_get("opened_at")?;
             let closed_at: Option<chrono::DateTime<chrono::Utc>> = r.try_get("closed_at")?;
@@ -722,14 +1484,7 @@ async fn get_positions(
             }))
         })
         .collect::<Result<_, _>>()
-    {
-        Ok(body) => body,
-        Err(e) => {
-            warn!(symbol = %symbol, error = %e, "get_positions encode failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-        }
-    };
-    (StatusCode::OK, Json(body)).into_response()
+        .context("encode positions_for_symbol")
 }
 
 async fn get_symbol_events(
@@ -3124,5 +3879,84 @@ mod tests {
         assert_eq!(payload["conviction_tier"], "high");
         assert_eq!(payload["instrument"], "LEAPS");
         assert_eq!(payload["intended_size"]["pct"], 0.04);
+    }
+
+    #[test]
+    fn chat_scope_classifies_technical_questions() {
+        assert_eq!(
+            classify_chat_scope("Is ENTG overextended above the 200-day SMA?", Some("ENTG")),
+            "technical"
+        );
+        assert_eq!(
+            classify_chat_scope("Should I resize this position?", Some("ENTG")),
+            "decision"
+        );
+        assert_eq!(classify_chat_scope("What do rates imply?", None), "macro");
+    }
+
+    #[test]
+    fn chat_requested_evidence_is_canonicalized() {
+        let req = RequestedEvidence {
+            requirement_key: "customer_adoption_research".to_string(),
+            source_type: "whatever".to_string(),
+            priority: "urgent".to_string(),
+            reason: "".to_string(),
+        };
+        let out = canonical_requested_evidence(&req);
+
+        assert_eq!(out.requirement_key, "product_research");
+        assert_eq!(out.source_type, "web_research");
+        assert_eq!(out.priority, "medium");
+        assert!(out.reason.contains("product_research"));
+        assert_eq!(
+            actions_for_requirement(&out.requirement_key),
+            ["gdelt_doc_search", "bing_news_rss_search"]
+        );
+    }
+
+    #[test]
+    fn chat_fallback_requests_research_for_missing_evidence_questions() {
+        let package = json!({
+            "technical_state": {
+                "state": "extended",
+                "summary": "technical state is extended; +25.0% vs 200-day SMA"
+            },
+            "evidence_items": []
+        });
+
+        let answer = fallback_chat_answer(
+            "Search current product evidence and tell me what is missing",
+            "technical",
+            Some("ENTG"),
+            &package,
+        );
+
+        assert_eq!(answer.technical_read.state.as_deref(), Some("extended"));
+        assert_eq!(answer.requested_evidence.len(), 1);
+        assert_eq!(
+            answer.requested_evidence[0].requirement_key,
+            "product_research"
+        );
+    }
+
+    #[test]
+    fn chat_missing_evidence_questions_are_detected_deterministically() {
+        let package = json!({
+            "evidence_items": [{
+                "source": "ticker_context",
+                "summary": "existing context"
+            }]
+        });
+
+        assert!(fallback_should_request_evidence(
+            "Search current MI325X articles and source gaps",
+            &package
+        ));
+
+        let req = default_product_research_request("Search current MI325X articles", Some("AMD"));
+        assert_eq!(req.requirement_key, "product_research");
+        assert_eq!(req.source_type, "web_research");
+        assert_eq!(req.priority, "high");
+        assert!(req.reason.contains("AMD"));
     }
 }

@@ -119,6 +119,15 @@ def _credibility(url: str, publisher: str | None) -> str:
     return "unknown"
 
 
+def _evidence_strength(credibility: str) -> float:
+    return {
+        "primary": 0.9,
+        "credible_media": 0.75,
+        "industry": 0.6,
+        "unknown": 0.4,
+    }.get(credibility, 0.4)
+
+
 def _canonical_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.netloc.lower().endswith("bing.com") and parsed.path.endswith("/news/apiclick.aspx"):
@@ -416,7 +425,7 @@ async def _insert_result(
                   )
               ),
               source_ref = EXCLUDED.source_ref
-        RETURNING (xmax = 0) AS inserted""",
+        RETURNING id, (xmax = 0) AS inserted""",
         symbol,
         query,
         result.url,
@@ -431,7 +440,63 @@ async def _insert_result(
         json.dumps(result.source_ref),
         content_hash,
     )
-    return bool(row and row["inserted"])
+    if not row:
+        return False
+    await _upsert_product_research_evidence_item(
+        pool,
+        research_id=int(row["id"]),
+        symbol=symbol,
+        query=query,
+        provider=provider,
+        result=result,
+        tags=tags,
+    )
+    return bool(row["inserted"])
+
+
+async def _upsert_product_research_evidence_item(
+    pool: asyncpg.Pool,
+    *,
+    research_id: int,
+    symbol: str,
+    query: str,
+    provider: str,
+    result: SearchResult,
+    tags: list[str],
+) -> None:
+    observed_at = result.published_at or dt.datetime.now(dt.UTC)
+    source_ref = {
+        "table": "research_evidence",
+        "id": research_id,
+        "provider": provider,
+        "query": query,
+        "publisher": result.publisher,
+        "credibility": result.credibility,
+        "source_type": result.source_type,
+        "tags": tags,
+        **(result.source_ref or {}),
+    }
+    await pool.execute(
+        """INSERT INTO evidence_item
+             (symbol, kind, observed_at, source, source_id, source_ref,
+              summary, strength, polarity, url)
+           VALUES ($1, 'product_research', $2, $3, $4, $5::jsonb,
+                   $6, $7, NULL, $8)
+           ON CONFLICT (source, source_id) DO UPDATE SET
+              observed_at = EXCLUDED.observed_at,
+              source_ref = evidence_item.source_ref || EXCLUDED.source_ref,
+              summary = EXCLUDED.summary,
+              strength = EXCLUDED.strength,
+              url = EXCLUDED.url""",
+        symbol,
+        observed_at,
+        SOURCE,
+        f"research_evidence:{research_id}",
+        json.dumps(source_ref, default=str),
+        _truncate(result.title, 500),
+        _evidence_strength(result.credibility),
+        result.url,
+    )
 
 
 async def _recent_run_exists(

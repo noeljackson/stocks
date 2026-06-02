@@ -37,6 +37,19 @@ pub struct CalibrationSummary {
     pub mean_brier: Option<f64>,
     pub mean_lead_time_days: Option<f64>,
     pub median_lead_time_days: Option<f64>,
+    pub parent_themes: Vec<ParentThemeCalibration>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ParentThemeCalibration {
+    pub key: String,
+    pub name: String,
+    pub scope: String,
+    pub role: String,
+    pub predictions_total: i64,
+    pub outcomes_scored: i64,
+    pub mean_brier: Option<f64>,
+    pub mean_lead_time_days: Option<f64>,
 }
 
 #[cfg(test)]

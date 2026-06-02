@@ -380,9 +380,12 @@ Current gaps:
   their coverage/freshness state, and a bounded parent-thesis LLM pass can
   rewrite parent claims from linked ticker/evidence state when evidence changes
   or the parent view is stale. Parent records now cover tech infrastructure,
-  commodities, financials, energy, staples, and housing/rates. Remaining work
-  is richer factor data coverage for breadth, credit, inventories, flows, and
-  earnings.
+  commodities, financials, energy, staples, and housing/rates. Reflection
+  snapshots the relevant macro/sector/theme links into ticker prediction claims
+  when a thesis becomes actionable, so calibration can report parent-theme
+  expression results separately from global ticker-thesis calibration. Remaining
+  work is richer factor data coverage for breadth, credit, inventories, flows,
+  and earnings.
 - Discovery ranking reads `brain_thesis_ticker` fit today; it still needs
   active parent-thesis direction and contradiction penalties.
 
@@ -875,6 +878,8 @@ risk
 reflection
   on actionable / fulfilled / invalidated
   records predictions/outcomes/calibration
+  snapshots parent macro/sector/theme links into prediction.claim
+  groups calibration by parent theme + ticker expression role
 ```
 
 Current dev cadence:

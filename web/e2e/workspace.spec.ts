@@ -155,7 +155,23 @@ async function mockApi(page: Page): Promise<Calls> {
       return;
     }
     if (path === "/api/calibration") {
-      await json(route, { predictions_total: 3, outcomes_scored: 0, mean_brier: null, mean_lead_time_days: null, median_lead_time_days: null });
+      await json(route, {
+        predictions_total: 3,
+        outcomes_scored: 1,
+        mean_brier: 0.21,
+        mean_lead_time_days: 8.5,
+        median_lead_time_days: 8.5,
+        parent_themes: [{
+          key: "ai_compute_infrastructure",
+          name: "AI Compute Infrastructure",
+          scope: "theme",
+          role: "supplier",
+          predictions_total: 2,
+          outcomes_scored: 1,
+          mean_brier: 0.18,
+          mean_lead_time_days: 10.0,
+        }],
+      });
       return;
     }
     if (path === "/api/brain") {
@@ -1005,6 +1021,20 @@ test("brain tab shows macro and theme theses with linked tickers", async ({ page
   await expect(theme).toContainText("Core");
   await expect(theme.getByRole("button", { name: /NVDA leader/ })).toBeVisible();
   await expect(theme.getByRole("button", { name: /OKTA/ })).toContainText("forming");
+});
+
+test("calibration tab shows parent theme expression results", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "calibration" }).click();
+
+  const calibration = page.locator(".calibration-themes");
+  await expect(calibration).toContainText("Parent Theme Calibration");
+  await expect(calibration).toContainText("AI Compute Infrastructure");
+  await expect(calibration).toContainText("supplier");
+  await expect(calibration).toContainText("1/2");
+  await expect(calibration).toContainText("brier 0.180");
 });
 
 test("overview shows selected ticker parent brain context", async ({ page }) => {

@@ -1043,9 +1043,12 @@ coverage, turns beneficiary/proxy lists into active ticker mappings, updates
 changes, and runs a bounded parent-thesis LLM pass when evidence changes or the
 parent view is stale. That pass rewrites the parent summary, core claim,
 evidence, open questions, invalidation conditions, and beneficiary/loser lists
-from normalized linked evidence. The remaining Phase 3 work is broader factor
-coverage: normalized commodity prices/fundamentals, sector breadth, credit,
-earnings breadth, and better parent-direction inputs.
+from normalized linked evidence. Reflection now snapshots the active parent
+macro/sector/theme links into ticker prediction claims when a thesis becomes
+actionable, so parent-theme expression calibration can be reported separately
+from global ticker-thesis calibration. The remaining Phase 3 work is broader
+factor coverage: normalized commodity prices/fundamentals, sector breadth,
+credit, earnings breadth, and better parent-direction inputs.
 
 ### Phase 4: Improve Discovery Ranking
 
@@ -1094,6 +1097,7 @@ Goal: outcomes measure actual decisions and positions, not theoretical notes.
 outcome scoring
 lead-time-to-consensus
 forecast calibration
+parent-theme expression calibration
 error taxonomy
 signal/prompt feedback reports
 benchmark by relevant passive alternative

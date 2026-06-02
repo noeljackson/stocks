@@ -548,6 +548,7 @@ symbol selected by event or scheduler
   -> sharpen conditions
   -> challenge weak claims
   -> persist current view or visible decline reason
+  -> write cognition_run ledger row
 ```
 
 No active ticker should be blank:
@@ -580,6 +581,21 @@ open thesis older than freshness target
 
 The system should never create multiple open theses for MU or any other symbol.
 New facts reconcile into the canonical current thesis and show as a timeline.
+
+Every cognition attempt is durable:
+
+```text
+cognition_run
+  trigger + sweep_reason
+  status + reason
+  evidence blockers + retry time
+  context version
+  thesis id + reconciliation classification
+```
+
+Diagnostics and the selected-symbol Brain card show this ledger so a stale or
+blank ticker can explain whether cognition ran, what it tried, what blocked it,
+and when the next retry is due.
 
 ## Chat Analyst Loop
 

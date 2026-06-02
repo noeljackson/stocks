@@ -243,6 +243,32 @@ export interface BrainSourceStatus {
   direction?: string | null;
 }
 
+export interface CognitionRun {
+  id: number;
+  symbol: string;
+  trigger: string;
+  sweep_reason?: string | null;
+  status:
+    | "running"
+    | "context_refreshed"
+    | "blocked_on_evidence"
+    | "declined"
+    | "drafted"
+    | "reconciled"
+    | "no_change"
+    | "failed";
+  reason?: string | null;
+  context_version?: number | null;
+  thesis_id?: string | null;
+  thesis_classification?: string | null;
+  evidence_open_count: number;
+  evidence_blocking_count: number;
+  started_at: string;
+  finished_at?: string | null;
+  next_retry_at?: string | null;
+  error?: string | null;
+}
+
 export interface BrainStatus {
   symbol: string;
   as_of: string;
@@ -261,6 +287,10 @@ export interface BrainStatus {
   attention: {
     open: number;
     by_kind: { kind: string; count: number }[];
+  };
+  cognition: {
+    last_run?: CognitionRun | null;
+    recent_runs: CognitionRun[];
   };
 }
 

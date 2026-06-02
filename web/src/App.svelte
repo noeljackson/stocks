@@ -38,6 +38,7 @@
     type Alert,
     type AttentionItem,
     type BrainOverview,
+    type CognitionRun,
     type BrainSourceStatus,
     type BrainStatus,
     type BrainThesis,
@@ -200,6 +201,29 @@
 
   function brainActionLabel(action: string): string {
     return action.replace(/_/g, " ");
+  }
+
+  function cognitionRunLabel(status: string): string {
+    if (status === "blocked_on_evidence") return "blocked";
+    if (status === "context_refreshed") return "context refreshed";
+    return status.replace(/_/g, " ");
+  }
+
+  function cognitionRunTime(run: CognitionRun): string {
+    const parts = [`started ${relativeTime(run.started_at)}`];
+    if (run.finished_at) parts.push(`finished ${relativeTime(run.finished_at)}`);
+    if (run.next_retry_at) parts.push(`retry ${relativeTime(run.next_retry_at)}`);
+    return parts.join(" · ");
+  }
+
+  function cognitionRunReason(run: CognitionRun): string {
+    const bits = [
+      run.reason,
+      run.thesis_classification ? `classification ${run.thesis_classification}` : "",
+      run.evidence_open_count ? `${run.evidence_open_count} open evidence` : "",
+      run.evidence_blocking_count ? `${run.evidence_blocking_count} blocking` : "",
+    ].filter(Boolean);
+    return bits.join(" · ");
   }
 
   function sourceLabel(source: string): string {
@@ -1728,7 +1752,7 @@
           {#if sysStatus}
             {@const ing = (sysStatus.ingest ?? {}) as Record<string, { last_at: string|null; count_24h: number; symbols_24h?: number }>}
             {@const disc = sysStatus.discovery as { last_pass_at: string|null; open_candidates: number; by_signal: { signal: string; count: number }[]; pool_size: number }}
-            {@const cog = sysStatus.cognition as { contexts_24h: number; contexts_total_symbols: number; thesis_by_state: { state: string; count: number }[] }}
+            {@const cog = sysStatus.cognition as { contexts_24h: number; contexts_total_symbols: number; thesis_by_state: { state: string; count: number }[]; runs_24h?: number; runs_by_status?: { status: string; count: number }[]; latest_runs?: CognitionRun[] }}
             {@const ev = sysStatus.evidence as { open_requirements: number; by_state: { state: string; count: number }[]; by_reason?: { reason: string; count: number }[] }}
             {@const att = sysStatus.attention as { open_items: number; deferred_items?: number; by_kind: { kind: string; count: number }[]; by_state?: { state: string; count: number }[]; by_owner?: { owner: string; count: number }[] }}
             {@const llm = sysStatus.llm as { calls_24h: number; avg_latency_ms: number|null; by_prompt: { prompt: string; count: number; avg_ms: number|null; last_at: string|null }[] }}
@@ -1803,6 +1827,7 @@
                 <dl class="meta-list inline">
                   <dt>contexts (24h)</dt><dd>{cog.contexts_24h}</dd>
                   <dt>symbols with context</dt><dd>{cog.contexts_total_symbols}</dd>
+                  <dt>runs (24h)</dt><dd>{cog.runs_24h ?? 0}</dd>
                 </dl>
                 {#if cog.thesis_by_state?.length}
                   <ul class="chips">
@@ -1810,6 +1835,28 @@
                       <li class="chip">{s.state}: <strong>{s.count}</strong></li>
                     {/each}
                   </ul>
+                {/if}
+                {#if cog.runs_by_status?.length}
+                  <ul class="chips">
+                    {#each cog.runs_by_status as s (s.status)}
+                      <li class="chip">{cognitionRunLabel(s.status)}: <strong>{s.count}</strong></li>
+                    {/each}
+                  </ul>
+                {/if}
+                {#if cog.latest_runs?.length}
+                  <table class="diag-tbl compact-run-table">
+                    <thead><tr><th>symbol</th><th>status</th><th>why</th><th>when</th></tr></thead>
+                    <tbody>
+                      {#each cog.latest_runs as run (run.id)}
+                        <tr title={run.error ?? run.reason ?? ""}>
+                          <td><strong>{run.symbol}</strong></td>
+                          <td><span class={`badge tiny cognition-${run.status}`}>{cognitionRunLabel(run.status)}</span></td>
+                          <td class="muted">{run.sweep_reason ?? run.trigger}</td>
+                          <td class="muted">{relativeTime(run.started_at)}</td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
                 {/if}
               </section>
 
@@ -2007,6 +2054,19 @@
                     <dt>attention</dt><dd>{symbolBrain.attention.open} open</dd>
                     <dt>target</dt><dd>{symbolBrain.freshness_target_minutes}m</dd>
                   </dl>
+                  {#if symbolBrain.cognition?.last_run}
+                    {@const run = symbolBrain.cognition.last_run}
+                    <div class="brain-run" title={run.error ?? run.reason ?? ""}>
+                      <div class="brain-source-main">
+                        <strong>Last cognition run</strong>
+                        <span class={`badge tiny cognition-${run.status}`}>{cognitionRunLabel(run.status)}</span>
+                        <span class="muted">{cognitionRunTime(run)}</span>
+                      </div>
+                      <div class="brain-source-detail">
+                        {cognitionRunReason(run) || run.sweep_reason || run.trigger}
+                      </div>
+                    </div>
+                  {/if}
                   <ul class="brain-sources">
                     {#each symbolBrain.sources as s (s.source)}
                       <li title={s.last_error ?? ""}>
@@ -2845,6 +2905,12 @@
     line-height: 1.25;
     overflow-wrap: anywhere;
   }
+  .brain-run {
+    border-top: 1px solid #1f2733;
+    border-bottom: 1px solid #1f2733;
+    padding: .4rem 0;
+    margin: .45rem 0;
+  }
   .text-action {
     background: transparent;
     border: none;
@@ -2966,6 +3032,14 @@
   .badge.brain-blocked,
   .badge.brain-source-failed,
   .badge.brain-source-rate_limited { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
+  .badge.cognition-drafted,
+  .badge.cognition-reconciled,
+  .badge.cognition-no_change,
+  .badge.cognition-context_refreshed { background: rgba(166,227,161,.18); color: rgb(166,227,161); }
+  .badge.cognition-running,
+  .badge.cognition-declined,
+  .badge.cognition-blocked_on_evidence { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
+  .badge.cognition-failed { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
   .badge.brain-dir-risk_off,
   .badge.brain-dir-bearish { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
   .badge.tech-constructive,

@@ -2356,7 +2356,7 @@
             {@const ing = (sysStatus.ingest ?? {}) as Record<string, { last_at: string|null; count_24h: number; symbols_24h?: number }>}
             {@const disc = sysStatus.discovery as { last_pass_at: string|null; open_candidates: number; by_signal: { signal: string; count: number }[]; pool_size: number }}
             {@const cog = sysStatus.cognition as { contexts_24h: number; contexts_total_symbols: number; thesis_by_state: { state: string; count: number }[]; runs_24h?: number; runs_by_status?: { status: string; count: number }[]; latest_runs?: CognitionRun[] }}
-            {@const ev = sysStatus.evidence as { open_requirements: number; source_tasks_due?: number; source_tasks_stale_fetching?: number; by_state: { state: string; count: number }[]; by_reason?: { reason: string; count: number }[]; source_tasks_by_state?: { state: string; count: number }[] }}
+            {@const ev = sysStatus.evidence as { open_requirements: number; source_tasks_due?: number; source_tasks_stale_fetching?: number; by_state: { state: string; count: number }[]; by_reason?: { reason: string; count: number }[]; source_tasks_by_state?: { state: string; count: number }[]; source_tasks_by_action?: { provider: string; action: string; state: string; count: number; due_count?: number; stale_fetching_count?: number; next_due_at?: string|null; last_updated_at?: string|null; sample_targets?: string[] }[] }}
             {@const att = sysStatus.attention as { open_items: number; deferred_items?: number; by_kind: { kind: string; count: number }[]; by_state?: { state: string; count: number }[]; by_owner?: { owner: string; count: number }[] }}
             {@const llm = sysStatus.llm as { calls_24h: number; avg_latency_ms: number|null; by_prompt: { prompt: string; count: number; avg_ms: number|null; last_at: string|null }[] }}
             {@const health = (sysStatus.source_health ?? []) as { source: string; last_status: string; effective_status?: string; stale_running?: boolean; running_age_minutes?: number|null; last_started_at: string|null; last_success_at: string|null; last_failure_at: string|null; last_failure_kind?: string|null; last_error?: string|null; retry_after_at?: string|null; rows_seen: number; rows_inserted: number; symbols_attempted: number; symbols_failed: number }[]}
@@ -2492,6 +2492,23 @@
                       <li class="chip">source {s.state}: <strong>{s.count}</strong></li>
                     {/each}
                   </ul>
+                {/if}
+                {#if ev.source_tasks_by_action?.length}
+                  <table class="diag-tbl compact-run-table">
+                    <thead><tr><th>provider/action</th><th>state</th><th>count</th><th>due</th><th>next</th><th>examples</th></tr></thead>
+                    <tbody>
+                      {#each ev.source_tasks_by_action.slice(0, 12) as task (`${task.provider}:${task.action}:${task.state}`)}
+                        <tr title={task.last_updated_at ? `updated ${relativeTime(task.last_updated_at)}` : ""}>
+                          <td><strong>{task.provider}</strong><br><span class="muted">{task.action.replace(/_/g, " ")}</span></td>
+                          <td><span class={`badge tiny task-${task.state}`}>{task.state.replace(/_/g, " ")}</span></td>
+                          <td>{task.count}</td>
+                          <td>{task.due_count ?? 0}{#if task.stale_fetching_count} / {task.stale_fetching_count} stale{/if}</td>
+                          <td class="muted">{task.next_due_at ? relativeTime(task.next_due_at) : "—"}</td>
+                          <td class="muted">{task.sample_targets?.slice(0, 4).join(", ") || "—"}</td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
                 {/if}
               </section>
 

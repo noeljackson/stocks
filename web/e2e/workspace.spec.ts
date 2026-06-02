@@ -850,6 +850,17 @@ async function mockApi(page: Page): Promise<Calls> {
           by_state: [{ state: "missing", count: 2 }],
           by_reason: [{ reason: "fetching_required_sources", count: 1 }],
           source_tasks_by_state: [{ state: "fetching", count: 1 }],
+          source_tasks_by_action: [{
+            provider: "fmp",
+            action: "fmp_analyst_estimates",
+            state: "fetching",
+            count: 17,
+            due_count: 0,
+            stale_fetching_count: 1,
+            next_due_at: null,
+            last_updated_at: "2026-06-01T12:00:00Z",
+            sample_targets: ["HPE", "JKHY", "GIS"],
+          }],
         },
         attention: { open_items: attentionOpen ? 1 : 0, by_kind: [] },
         source_health: [{
@@ -1129,6 +1140,8 @@ test("diagnostics tab shows source task backlog state", async ({ page }) => {
   await expect(evidence).toContainText("source tasks due");
   await expect(evidence).toContainText("stale fetching");
   await expect(evidence).toContainText("source fetching");
+  await expect(evidence).toContainText("fmp analyst estimates");
+  await expect(evidence).toContainText("HPE, JKHY");
   const sourceHealth = page.locator(".diag").filter({ hasText: "Source health" });
   await expect(sourceHealth).toContainText("started");
   await expect(sourceHealth).toContainText("stale running");

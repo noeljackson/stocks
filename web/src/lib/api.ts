@@ -829,7 +829,24 @@ export interface DecisionRow {
   thesis_direction?: string | null;
   side?: string | null;
   instrument?: string | null;
+  has_replay?: boolean;
   at: string;
+}
+
+export interface DecisionReplay {
+  decision_id: string;
+  symbol: string;
+  thesis_id?: string | null;
+  context_version?: number | null;
+  thesis_snapshot: Record<string, unknown>;
+  consensus_score?: number | null;
+  risk_verdict: Record<string, unknown>;
+  evidence_ids: number[];
+  evidence_snapshot: EvidenceItem[];
+  system_confidence?: string | null;
+  chart_range_seen?: string | null;
+  decision_snapshot: Record<string, unknown>;
+  captured_at: string;
 }
 
 export interface PositionRow {
@@ -859,6 +876,12 @@ export async function fetchDecisions(symbol: string): Promise<DecisionRow[]> {
   return ((await r.json()) as DecisionRow[] | null) ?? [];
 }
 
+export async function fetchDecisionReplay(decisionId: string): Promise<DecisionReplay> {
+  const r = await fetch(`/api/decisions/${encodeURIComponent(decisionId)}/replay`);
+  if (!r.ok) throw new Error(`decision replay ${r.status}`);
+  return (await r.json()) as DecisionReplay;
+}
+
 export async function fetchPositions(symbol: string): Promise<PositionRow[]> {
   const r = await fetch(`/api/positions?symbol=${encodeURIComponent(symbol)}`);
   if (!r.ok) throw new Error(`positions ${r.status}`);
@@ -871,6 +894,7 @@ export async function postDecision(d: {
   user_choice: string;
   sizing?: unknown;
   manual_fill?: unknown;
+  chart_range_seen?: string;
 }): Promise<Record<string, unknown>> {
   const r = await fetch("/api/decisions", {
     method: "POST",

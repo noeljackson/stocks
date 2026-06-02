@@ -17,6 +17,7 @@
     dismissAttention,
     fetchDecisions,
     fetchDiscoveryPool,
+    fetchDecisionReplay,
     fetchEvidenceItems,
     fetchEvidenceRequirements,
     fetchPendingCandidates,
@@ -44,6 +45,7 @@
     type BrainThesis,
     type Calibration,
     type DecisionRow,
+    type DecisionReplay,
     type EvidenceItem,
     type EvidenceRequirement,
     type MarketState,
@@ -90,6 +92,7 @@
   let live = $state<StreamEvent[]>([]);
   let connected = $state(false);
   let error = $state<string | null>(null);
+  let chartState = $state<{ interval: string; range: string }>({ interval: "1D", range: "ALL" });
   let pending = $state<PendingCandidate[]>([]);
   let watchlists = $state<Watchlist[]>([]);
   let watchlistMembers = $state<Record<string, WatchlistMember[]>>({});
@@ -642,6 +645,8 @@
   let decInstrument = $state("equity");
   let decChoice = $state("deferred");
   let decStatus = $state<string | null>(null);
+  let replay = $state<DecisionReplay | null>(null);
+  let replayStatus = $state<string | null>(null);
   let decRecordFill = $state(false);
   let decPositionId = $state("");
   let decQty = $state("");
@@ -939,6 +944,38 @@
     return entries.length > 0 ? Object.fromEntries(entries) : null;
   }
 
+  function updateChartState(next: { interval: string; range: string }) {
+    chartState = next;
+  }
+
+  async function openReplay(decisionId: string) {
+    replayStatus = "loading replay…";
+    replay = null;
+    try {
+      replay = await fetchDecisionReplay(decisionId);
+      replayStatus = null;
+    } catch (e) {
+      replayStatus = `replay unavailable: ${e}`;
+    }
+  }
+
+  function replayThesisText(r: DecisionReplay | null): string {
+    const thesis = r?.thesis_snapshot ?? {};
+    const state = typeof thesis.state === "string" ? thesis.state.replace(/_/g, " ") : "unknown";
+    const version = typeof thesis.version === "number" ? `v${thesis.version}` : "v?";
+    const direction = (thesis.forecast as Record<string, unknown> | undefined)?.direction;
+    return [version, state, typeof direction === "string" ? direction : null].filter(Boolean).join(" · ");
+  }
+
+  function replayRiskText(r: DecisionReplay | null): string {
+    const risk = r?.risk_verdict ?? {};
+    const status = typeof risk.status === "string" ? risk.status : "not captured";
+    const reasons = Array.isArray(risk.reasons) ? risk.reasons.filter((x): x is string => typeof x === "string") : [];
+    const warnings = Array.isArray(risk.warnings) ? risk.warnings.filter((x): x is string => typeof x === "string") : [];
+    const detail = [...reasons, ...warnings].slice(0, 2).join(" · ");
+    return detail ? `${status}: ${detail}` : status;
+  }
+
   function tickerFor(symbol: string | null): Ticker | undefined {
     if (!symbol) return undefined;
     return tickers.find((t) => t.symbol === symbol);
@@ -1046,6 +1083,8 @@
     symbolDeclines = undefined;
     symbolDecisions = undefined;
     symbolPositions = undefined;
+    replay = null;
+    replayStatus = null;
     // Fetch detail in parallel.
     const [ctx, evidence, evidenceItems, research, technical, brain, theses, declines, decisions, positions] = await Promise.all([
       fetchTickerContext(symbol).catch(() => null),
@@ -1240,6 +1279,7 @@
         user_choice: decChoice,
         sizing: Object.keys(sizing).length > 0 ? sizing : undefined,
         manual_fill,
+        chart_range_seen: `${chartState.range} ${chartState.interval}`,
       });
       decStatus = "recorded ✓";
       setTimeout(() => (decStatus = null), 2500);
@@ -1445,7 +1485,7 @@
     <Pane defaultSize={72} minSize={40}>
       <PaneGroup direction="vertical" autoSaveId="ws.v3.left" class="main-col">
         <Pane defaultSize={70} minSize={30}>
-          <ChartPanel symbol={selectedSymbol} />
+          <ChartPanel symbol={selectedSymbol} onStateChange={updateChartState} />
         </Pane>
 
         <PaneResizer class="split-h" />
@@ -2726,12 +2766,66 @@
                             title="prefill the decision form with this thesis"
                           >use ↓</button>
                         {/if}
+                        {#if d.has_replay}
+                          <button
+                            class="link-mini"
+                            onclick={() => openReplay(d.decision_id)}
+                            title="show point-in-time decision replay"
+                          >replay</button>
+                        {/if}
                         {#if extraSizing}
                           <pre class="dec-sizing">{JSON.stringify(extraSizing)}</pre>
                         {/if}
                       </li>
                     {/each}
                   </ul>
+                  {#if replayStatus}
+                    <p class="muted hint">{replayStatus}</p>
+                  {/if}
+                  {#if replay}
+                    <section class="decision-replay">
+                      <div class="replay-head">
+                        <strong>Decision replay</strong>
+                        <span class="muted">{replay.symbol}</span>
+                        <span class="muted">captured {shortTs(replay.captured_at)}</span>
+                        <button class="link-mini" onclick={() => (replay = null)}>close</button>
+                      </div>
+                      <div class="replay-grid">
+                        <div>
+                          <span class="muted">thesis</span>
+                          <strong>{replayThesisText(replay)}</strong>
+                        </div>
+                        <div>
+                          <span class="muted">context</span>
+                          <strong>{replay.context_version ? `v${replay.context_version}` : "missing"}</strong>
+                        </div>
+                        <div>
+                          <span class="muted">consensus</span>
+                          <strong>{replay.consensus_score === null || replay.consensus_score === undefined ? "n/a" : replay.consensus_score.toFixed(0)}</strong>
+                        </div>
+                        <div>
+                          <span class="muted">chart</span>
+                          <strong>{replay.chart_range_seen ?? "not captured"}</strong>
+                        </div>
+                      </div>
+                      <p class="replay-risk">{replayRiskText(replay)}</p>
+                      {#if replay.system_confidence}
+                        <span class="badge tiny">confidence {replay.system_confidence}</span>
+                      {/if}
+                      {#if replay.evidence_snapshot.length > 0}
+                        <ul class="replay-evidence">
+                          {#each replay.evidence_snapshot.slice(0, 5) as item (item.id)}
+                            <li>
+                              <span class="badge tiny">{item.kind.replace(/_/g, " ")}</span>
+                              <span>{item.summary}</span>
+                            </li>
+                          {/each}
+                        </ul>
+                      {:else}
+                        <p class="muted hint">No linked evidence was captured for this decision.</p>
+                      {/if}
+                    </section>
+                  {/if}
                   <p class="muted hint">Submit new decisions via the bottom drawer's <strong>decisions</strong> tab.</p>
                 {:else}
                   <p class="muted">No decisions recorded yet for <strong>{selectedSymbol}</strong>.</p>
@@ -3558,6 +3652,30 @@
     display: flex; align-items: baseline; gap: .35rem; flex-wrap: wrap;
     padding: .25rem .4rem; border: 1px solid #1f2733; border-radius: 3px;
     font-size: .8rem;
+  }
+  .decision-replay {
+    border: 1px solid #263144; border-left: 3px solid #89b4fa;
+    border-radius: 4px; padding: .45rem .55rem; margin: .5rem 0;
+    background: #0a0d14; font-size: .78rem;
+  }
+  .replay-head {
+    display: flex; align-items: baseline; gap: .35rem; flex-wrap: wrap;
+    margin-bottom: .4rem;
+  }
+  .replay-head .link-mini { margin-left: auto; }
+  .replay-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .35rem; margin-bottom: .35rem;
+  }
+  .replay-grid > div { display: flex; flex-direction: column; gap: .05rem; }
+  .replay-risk { margin: .3rem 0; color: #bac2de; }
+  .replay-evidence {
+    list-style: none; margin: .4rem 0 0; padding: 0;
+    display: flex; flex-direction: column; gap: .25rem;
+  }
+  .replay-evidence li {
+    display: flex; gap: .35rem; align-items: baseline;
+    border-top: 1px solid #1f2733; padding-top: .25rem;
   }
   .positions { list-style: none; padding: 0; margin: .15rem 0 .8rem; display: flex; flex-direction: column; gap: .25rem; }
   .positions li {

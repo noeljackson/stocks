@@ -1152,9 +1152,11 @@ impl Store {
                       d.sizing, d.at, t.state AS thesis_state,
                       t.forecast->>'direction' AS thesis_direction,
                       COALESCE(d.sizing->>'side', '') AS side,
-                      COALESCE(d.sizing->>'instrument', t.instrument) AS instrument
+                      COALESCE(d.sizing->>'instrument', t.instrument) AS instrument,
+                      dr.decision_id IS NOT NULL AS has_replay
                  FROM decision d
                  JOIN thesis t USING (thesis_id)
+            LEFT JOIN decision_replay dr ON dr.decision_id = d.decision_id
                 WHERE t.symbol = $1
              ORDER BY d.at DESC LIMIT 100"#,
         )
@@ -1175,10 +1177,51 @@ impl Store {
                     "thesis_direction": r.try_get::<Option<String>, _>("thesis_direction")?,
                     "side": r.try_get::<String, _>("side")?,
                     "instrument": r.try_get::<Option<String>, _>("instrument")?,
+                    "has_replay": r.try_get::<bool, _>("has_replay").unwrap_or(false),
                     "at": at,
                 }))
             })
             .collect()
+    }
+
+    pub async fn decision_replay(
+        &self,
+        decision_id: uuid::Uuid,
+    ) -> Result<Option<serde_json::Value>> {
+        let row = sqlx::query(
+            r#"SELECT dr.decision_id, dr.symbol, dr.thesis_id, dr.context_version,
+                      dr.thesis_snapshot, dr.consensus_score, dr.risk_verdict,
+                      dr.evidence_ids, dr.evidence_snapshot, dr.system_confidence,
+                      dr.chart_range_seen, dr.captured_at,
+                      to_jsonb(d) AS decision_snapshot
+                 FROM decision_replay dr
+                 JOIN decision d ON d.decision_id = dr.decision_id
+                WHERE dr.decision_id = $1"#,
+        )
+        .bind(decision_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("decision_replay")?;
+        let Some(r) = row else {
+            return Ok(None);
+        };
+        let captured_at: DateTime<Utc> = r.try_get("captured_at")?;
+        let evidence_ids: Vec<i64> = r.try_get("evidence_ids").unwrap_or_default();
+        Ok(Some(serde_json::json!({
+            "decision_id": r.try_get::<uuid::Uuid, _>("decision_id")?,
+            "symbol": r.try_get::<String, _>("symbol")?,
+            "thesis_id": r.try_get::<Option<uuid::Uuid>, _>("thesis_id")?,
+            "context_version": r.try_get::<Option<i32>, _>("context_version")?,
+            "thesis_snapshot": r.try_get::<serde_json::Value, _>("thesis_snapshot")?,
+            "consensus_score": r.try_get::<Option<f64>, _>("consensus_score")?,
+            "risk_verdict": r.try_get::<serde_json::Value, _>("risk_verdict")?,
+            "evidence_ids": evidence_ids,
+            "evidence_snapshot": r.try_get::<serde_json::Value, _>("evidence_snapshot")?,
+            "system_confidence": r.try_get::<Option<String>, _>("system_confidence")?,
+            "chart_range_seen": r.try_get::<Option<String>, _>("chart_range_seen")?,
+            "decision_snapshot": r.try_get::<serde_json::Value, _>("decision_snapshot")?,
+            "captured_at": captured_at,
+        })))
     }
 
     /// Returns timestamped events for a symbol — thesis state transitions,

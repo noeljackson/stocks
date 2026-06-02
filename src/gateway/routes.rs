@@ -57,6 +57,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/chat-analyst", post(post_chat_analyst))
         .route("/api/symbol-events", get(get_symbol_events))
         .route("/api/decisions", get(get_decisions).post(record_decision))
+        .route("/api/decisions/{id}/replay", get(get_decision_replay))
         .route("/api/positions", get(get_positions))
         .route("/api/calibration", get(get_calibration))
         .route(
@@ -1537,6 +1538,20 @@ async fn get_decisions(
     }
 }
 
+async fn get_decision_replay(
+    State(gw): State<Arc<Gateway>>,
+    Path(id): Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    match gw.store.decision_replay(id).await {
+        Ok(Some(row)) => (StatusCode::OK, Json(row)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "decision replay not found").into_response(),
+        Err(e) => {
+            warn!(decision_id = %id, error = %e, "get_decision_replay failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
 async fn get_positions(
     State(gw): State<Arc<Gateway>>,
     Query(q): Query<ThesesQuery>,
@@ -1745,6 +1760,8 @@ struct DecisionReq {
     sizing: Option<serde_json::Value>,
     #[serde(default)]
     manual_fill: Option<ManualFillReq>,
+    #[serde(default)]
+    chart_range_seen: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -3444,6 +3461,87 @@ async fn risk_result_for_intent(
     })
 }
 
+async fn insert_decision_replay(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    decision_id: uuid::Uuid,
+    meta: &DecisionThesisMeta,
+    risk_result: &serde_json::Value,
+    chart_range_seen: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let risk_verdict = if risk_result.is_null() {
+        json!({})
+    } else {
+        risk_result.clone()
+    };
+    sqlx::query(
+        r#"INSERT INTO decision_replay
+                (decision_id, symbol, thesis_id, context_version, thesis_snapshot,
+                 consensus_score, risk_verdict, evidence_ids, evidence_snapshot,
+                 system_confidence, chart_range_seen, captured_at)
+           SELECT $1,
+                  $3,
+                  $2,
+                  (SELECT tc.version
+                     FROM ticker_context tc
+                    WHERE tc.symbol = $3
+                 ORDER BY tc.version DESC
+                    LIMIT 1),
+                  COALESCE((SELECT to_jsonb(t) FROM thesis t WHERE t.thesis_id = $2), '{}'::jsonb),
+                  (SELECT cs.score
+                     FROM consensus_score cs
+                    WHERE cs.symbol = $3
+                 ORDER BY cs.computed_at DESC
+                    LIMIT 1),
+                  $4::jsonb,
+                  COALESCE((
+                    SELECT array_agg(ei.id ORDER BY COALESCE(te.weight, 0) DESC, ei.observed_at DESC, ei.id DESC)
+                      FROM thesis_evidence te
+                      JOIN evidence_item ei ON ei.id = te.evidence_id
+                     WHERE te.thesis_id = $2
+                  ), ARRAY[]::bigint[]),
+                  COALESCE((
+                    SELECT jsonb_agg(
+                             jsonb_build_object(
+                               'id', ei.id,
+                               'symbol', ei.symbol,
+                               'kind', ei.kind,
+                               'observed_at', ei.observed_at,
+                               'source', ei.source,
+                               'source_id', ei.source_id,
+                               'source_ref', ei.source_ref,
+                               'summary', ei.summary,
+                               'strength', ei.strength,
+                               'polarity', ei.polarity,
+                               'url', ei.url,
+                               'created_at', ei.created_at,
+                               'weight', te.weight,
+                               'added_by', te.added_by
+                             )
+                             ORDER BY COALESCE(te.weight, 0) DESC, ei.observed_at DESC, ei.id DESC
+                           )
+                      FROM thesis_evidence te
+                      JOIN evidence_item ei ON ei.id = te.evidence_id
+                     WHERE te.thesis_id = $2
+                  ), '[]'::jsonb),
+                  COALESCE(
+                    NULLIF((SELECT t.forecast->>'system_confidence' FROM thesis t WHERE t.thesis_id = $2), ''),
+                    NULLIF((SELECT t.forecast->>'confidence' FROM thesis t WHERE t.thesis_id = $2), ''),
+                    NULLIF((SELECT t.conviction_tier FROM thesis t WHERE t.thesis_id = $2), '')
+                  ),
+                  $5,
+                  now()
+        ON CONFLICT (decision_id) DO NOTHING"#,
+    )
+    .bind(decision_id)
+    .bind(meta.thesis_id)
+    .bind(&meta.symbol)
+    .bind(risk_verdict)
+    .bind(chart_range_seen)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 async fn record_decision(
     State(gw): State<Arc<Gateway>>,
     Json(req): Json<DecisionReq>,
@@ -3647,6 +3745,20 @@ async fn record_decision_inner(
         warn!(error = %e, "record_decision insert failed");
         (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
     })?;
+
+    if let Some(meta) = thesis_meta.as_ref() {
+        let chart_range_seen = req
+            .chart_range_seen
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        insert_decision_replay(&mut tx, decision_id, meta, &risk_result, chart_range_seen)
+            .await
+            .map_err(|e| {
+                warn!(error = %e, "decision_replay insert failed");
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            })?;
+    }
 
     let mut ticket_id: Option<uuid::Uuid> = None;
     if should_create_ticket {

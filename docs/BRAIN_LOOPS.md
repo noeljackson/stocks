@@ -607,6 +607,9 @@ symbol overview
      - last changed
      - retry_after when rate-limited/failed
      - source-specific detail: session coverage, latest publication, version/state
+     - symbol-scoped source_task rows for each source group
+     - analyst opinion freshness: price target snapshots, recommendation mix,
+       and recent target-change events
   -> evidence rows/open/blocking/due
   -> context age
   -> thesis age
@@ -617,9 +620,12 @@ symbol overview
 That endpoint is intentionally derived from existing tables. It does not
 mutate state and it does not replace the orchestrator. Its job is to make the
 brain loop legible: every ticker should say `fresh`, `due`, `stale`,
-`waiting_on_evidence`, or `blocked`, plus the next system action. The remaining
-#128 work is to make the same decision object drive active source fetches and
-cognition jobs instead of only explaining what should happen next.
+`waiting_on_evidence`, or `blocked`, plus the next system action. A provider may
+be globally fresh while a symbol still has queued or rate-limited work; the
+selected-symbol Brain card therefore shows both the provider freshness row and
+the ticker's local source tasks. The remaining #128 work is to make the same
+decision object drive active source fetches and cognition jobs instead of only
+explaining what should happen next.
 
 ## Thesis Loop
 

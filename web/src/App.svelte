@@ -248,20 +248,39 @@
     const parts: string[] = [];
     const detail = source.detail ?? {};
     const sourceHealth = source.source_health ?? {};
+    const tasks = source.source_tasks ?? [];
     const latestSession = detail.latest_session ?? detail.latest_price_session ?? detail.actual_latest_session;
     const expectedSession = detail.expected_session ?? detail.expected_price_session ?? detail.expected_latest_session;
     const publishedAt = detail.latest_published_at ?? detail.latest_news_published_at;
     const contextAge = detail.context_age_minutes;
     const rowsSeen = sourceHealth.rows_seen;
     const rowsInserted = sourceHealth.rows_inserted;
+    const opinionCounts = [
+      ["targets", detail.price_target_snapshots],
+      ["ratings", detail.recommendation_snapshots],
+      ["target events", detail.price_target_events],
+    ]
+      .filter(([, v]) => typeof v === "number")
+      .map(([label, v]) => `${Number(v)} ${label}`);
 
     if (source.version !== null && source.version !== undefined) parts.push(`v${source.version}`);
     if (source.state) parts.push(source.direction ? `${source.state} ${source.direction}` : source.state);
     if (expectedSession || latestSession) parts.push(`session ${String(latestSession ?? "none")}/${String(expectedSession ?? "expected")}`);
     if (publishedAt) parts.push(`published ${relativeTime(String(publishedAt))}`);
+    if (opinionCounts.length) parts.push(opinionCounts.join(" · "));
     if (typeof contextAge === "number") parts.push(`context ${Math.round(contextAge)}m old`);
     if (typeof rowsSeen === "number" || typeof rowsInserted === "number") {
       parts.push(`${Number(rowsInserted ?? 0)} new / ${Number(rowsSeen ?? 0)} seen`);
+    }
+    if (tasks.length) {
+      const taskText = tasks
+        .slice(0, 3)
+        .map((task) => {
+          const due = task.due_at ? ` ${relativeTime(task.due_at)}` : "";
+          return `${task.action.replace(/_/g, " ")} ${task.state.replace(/_/g, " ")}${due}`;
+        })
+        .join(" · ");
+      parts.push(`tasks ${taskText}${tasks.length > 3 ? ` +${tasks.length - 3}` : ""}`);
     }
     if (source.max_age_minutes) parts.push(`SLA ${source.max_age_minutes}m`);
     return parts.join(" · ");

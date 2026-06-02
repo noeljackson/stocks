@@ -240,6 +240,18 @@ export interface BrainSourceStatus {
   max_age_minutes?: number | null;
   detail?: Record<string, unknown> | null;
   source_health?: Record<string, unknown> | null;
+  source_tasks?: {
+    requirement_key?: string | null;
+    action: string;
+    provider: string;
+    state: string;
+    priority: string;
+    due_at?: string | null;
+    next_retry_at?: string | null;
+    attempts: number;
+    last_error?: string | null;
+    updated_at?: string | null;
+  }[];
   version?: number | null;
   thesis_id?: string | null;
   state?: string | null;

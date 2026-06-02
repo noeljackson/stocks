@@ -2622,6 +2622,20 @@ struct SourceHealthSnapshot {
     retry_after_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+#[derive(Debug, Clone)]
+struct SourceTaskSnapshot {
+    requirement_key: Option<String>,
+    action: String,
+    provider: String,
+    state: String,
+    priority: String,
+    due_at: Option<chrono::DateTime<chrono::Utc>>,
+    next_retry_at: Option<chrono::DateTime<chrono::Utc>>,
+    attempts: i32,
+    last_error: Option<String>,
+    updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 async fn get_brain_status(
     State(gw): State<Arc<Gateway>>,
     Query(q): Query<BrainStatusQuery>,
@@ -2631,7 +2645,7 @@ async fn get_brain_status(
     use sqlx::Row;
 
     let symbol = q.symbol.trim().to_ascii_uppercase();
-    if symbol.is_empty() || symbol.len() > 10 {
+    if symbol.is_empty() || symbol.len() > 14 {
         return (StatusCode::BAD_REQUEST, "invalid symbol").into_response();
     }
     let pool = &gw.store.pool;
@@ -2649,6 +2663,23 @@ async fn get_brain_status(
               (SELECT max(ingested_at) FROM news_article WHERE symbol = $1) AS news_at,
               (SELECT max(published_at) FROM news_article WHERE symbol = $1) AS news_published_at,
               (SELECT max(snapshot_at) FROM estimate_snapshot WHERE symbol = $1) AS estimates_at,
+              (SELECT max(at) FROM (
+                  SELECT max(snapshot_at) AS at
+                    FROM analyst_price_target_snapshot WHERE symbol = $1
+                  UNION ALL
+                  SELECT max(snapshot_at) AS at
+                    FROM analyst_recommendation_snapshot WHERE symbol = $1
+                  UNION ALL
+                  SELECT max(ingested_at) AS at
+                    FROM analyst_price_target_event WHERE symbol = $1
+              ) opinion_dates) AS analyst_opinion_at,
+              (SELECT count(*) FROM analyst_price_target_snapshot
+                WHERE symbol = $1) AS price_target_snapshots,
+              (SELECT count(*) FROM analyst_recommendation_snapshot
+                WHERE symbol = $1) AS recommendation_snapshots,
+              (SELECT count(*) FROM analyst_price_target_event
+                WHERE symbol = $1
+                  AND published_at > now() - interval '90 days') AS price_target_events,
               (SELECT max(retrieved_at) FROM research_evidence WHERE symbol = $1) AS research_at,
               (SELECT max(ingested_at) FROM company_fact WHERE symbol = $1) AS fundamentals_at,
               (SELECT max(ingested_at) FROM ingest_event
@@ -2719,6 +2750,7 @@ async fn get_brain_status(
         "fmp_news".to_string(),
         "massive_news".to_string(),
         "fmp_estimates".to_string(),
+        "fmp_analyst_opinion".to_string(),
         "xbrl".to_string(),
         "edgar".to_string(),
         "web_research".to_string(),
@@ -2738,17 +2770,54 @@ async fn get_brain_status(
     })
     .collect::<Vec<_>>();
 
+    let task_rows = sqlx::query(
+        r#"SELECT requirement_key, action, provider, state, priority, due_at,
+                  next_retry_at, attempts, last_error, updated_at
+             FROM source_task
+            WHERE scope = 'symbol'
+              AND target_id = $1
+         ORDER BY
+              CASE priority
+                WHEN 'blocking' THEN 0
+                WHEN 'high' THEN 1
+                WHEN 'medium' THEN 2
+                ELSE 3
+              END,
+              due_at ASC,
+              action"#,
+    )
+    .bind(&symbol)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|r| SourceTaskSnapshot {
+        requirement_key: r.try_get("requirement_key").ok().flatten(),
+        action: r.try_get("action").unwrap_or_default(),
+        provider: r.try_get("provider").unwrap_or_default(),
+        state: r.try_get("state").unwrap_or_default(),
+        priority: r.try_get("priority").unwrap_or_default(),
+        due_at: r.try_get("due_at").ok().flatten(),
+        next_retry_at: r.try_get("next_retry_at").ok().flatten(),
+        attempts: r.try_get("attempts").unwrap_or(0),
+        last_error: r.try_get("last_error").ok().flatten(),
+        updated_at: r.try_get("updated_at").ok().flatten(),
+    })
+    .collect::<Vec<_>>();
+
     let health = |names: &[&str], max_age: ChronoDuration| {
         source_health_group(&health_rows, names, now, max_age)
     };
     let price_health = health(&["fmp_price"], ChronoDuration::minutes(30));
     let news_health = health(&["fmp_news", "massive_news"], ChronoDuration::minutes(30));
     let estimates_health = health(&["fmp_estimates"], ChronoDuration::minutes(30));
+    let analyst_opinion_health = health(&["fmp_analyst_opinion"], ChronoDuration::minutes(30));
     let research_health = health(&["web_research"], ChronoDuration::hours(24));
     let fundamentals_health = health(&["xbrl"], ChronoDuration::minutes(360));
     let filings_health = health(&["edgar"], ChronoDuration::minutes(30));
     let news_status = source_status(&news_health).to_string();
     let estimates_status = source_status(&estimates_health).to_string();
+    let analyst_opinion_status = source_status(&analyst_opinion_health).to_string();
     let research_status = source_status(&research_health).to_string();
     let fundamentals_status = source_status(&fundamentals_health).to_string();
     let filings_status = source_status(&filings_health).to_string();
@@ -2759,6 +2828,8 @@ async fn get_brain_status(
     let news_published_at: Option<chrono::DateTime<chrono::Utc>> =
         row.try_get("news_published_at").ok();
     let estimates_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("estimates_at").ok();
+    let analyst_opinion_at: Option<chrono::DateTime<chrono::Utc>> =
+        row.try_get("analyst_opinion_at").ok();
     let research_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("research_at").ok();
     let fundamentals_at: Option<chrono::DateTime<chrono::Utc>> =
         row.try_get("fundamentals_at").ok();
@@ -2783,6 +2854,7 @@ async fn get_brain_status(
         &price_health,
         &news_health,
         &estimates_health,
+        &analyst_opinion_health,
         &research_health,
         &fundamentals_health,
         &filings_health,
@@ -2793,6 +2865,7 @@ async fn get_brain_status(
         price_status,
         news_status.as_str(),
         estimates_status.as_str(),
+        analyst_opinion_status.as_str(),
         research_status.as_str(),
         filings_status.as_str(),
     ]
@@ -2864,17 +2937,50 @@ async fn get_brain_status(
         "reason": decision.reason,
         "freshness_target_minutes": 30,
         "sources": [
-            source_json("price", price_status, price_at, price_health, json!({
+            source_json("price", price_status, price_at, price_health, source_tasks_for(
+                &task_rows,
+                &["price_history"],
+                &["fmp_price_backfill", "twse_price_backfill"],
+            ), json!({
                 "expected_latest_session": expected_price_session,
                 "actual_latest_session": price_session,
             })),
-            source_json("news", &news_status, news_at, news_health, json!({
+            source_json("news", &news_status, news_at, news_health, source_tasks_for(
+                &task_rows,
+                &["recent_news"],
+                &["fmp_news", "massive_news", "llm_sentiment_scoring"],
+            ), json!({
                 "latest_published_at": news_published_at,
             })),
-            source_json("estimates", &estimates_status, estimates_at, estimates_health, json!({})),
-            source_json("research", &research_status, research_at, research_health, json!({})),
-            source_json("fundamentals", &fundamentals_status, fundamentals_at, fundamentals_health, json!({})),
-            source_json("filings", &filings_status, filings_at, filings_health, json!({})),
+            source_json("estimates", &estimates_status, estimates_at, estimates_health, source_tasks_for(
+                &task_rows,
+                &["analyst_estimates"],
+                &["fmp_analyst_estimates"],
+            ), json!({})),
+            source_json("analyst_opinion", &analyst_opinion_status, analyst_opinion_at, analyst_opinion_health, source_tasks_for(
+                &task_rows,
+                &["analyst_opinion"],
+                &["fmp_price_target_consensus", "fmp_grades_historical", "fmp_price_target_news"],
+            ), json!({
+                "price_target_snapshots": row.try_get::<i64, _>("price_target_snapshots").unwrap_or(0),
+                "recommendation_snapshots": row.try_get::<i64, _>("recommendation_snapshots").unwrap_or(0),
+                "price_target_events": row.try_get::<i64, _>("price_target_events").unwrap_or(0),
+            })),
+            source_json("research", &research_status, research_at, research_health, source_tasks_for(
+                &task_rows,
+                &["product_research"],
+                &["gdelt_doc_search", "bing_news_rss_search"],
+            ), json!({})),
+            source_json("fundamentals", &fundamentals_status, fundamentals_at, fundamentals_health, source_tasks_for(
+                &task_rows,
+                &["company_facts"],
+                &["sec_company_tickers_cik_lookup", "sec_companyfacts_xbrl"],
+            ), json!({})),
+            source_json("filings", &filings_status, filings_at, filings_health, source_tasks_for(
+                &task_rows,
+                &["filing_metadata"],
+                &["sec_edgar_submissions"],
+            ), json!({})),
             json!({
                 "source": "context",
                 "status": context_freshness.as_str(),
@@ -2991,11 +3097,43 @@ fn source_is_blocked(health: &serde_json::Value) -> bool {
     matches!(source_status(health), "rate_limited" | "failed")
 }
 
+fn source_tasks_for(
+    rows: &[SourceTaskSnapshot],
+    requirement_keys: &[&str],
+    actions: &[&str],
+) -> serde_json::Value {
+    let tasks = rows
+        .iter()
+        .filter(|r| {
+            r.requirement_key
+                .as_deref()
+                .is_some_and(|k| requirement_keys.contains(&k))
+                || actions.contains(&r.action.as_str())
+        })
+        .map(|r| {
+            json!({
+                "requirement_key": r.requirement_key,
+                "action": r.action,
+                "provider": r.provider,
+                "state": r.state,
+                "priority": r.priority,
+                "due_at": r.due_at,
+                "next_retry_at": r.next_retry_at,
+                "attempts": r.attempts,
+                "last_error": r.last_error,
+                "updated_at": r.updated_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::Value::Array(tasks)
+}
+
 fn source_json(
     source: &str,
     status: &str,
     last_changed_at: Option<chrono::DateTime<chrono::Utc>>,
     health: serde_json::Value,
+    source_tasks: serde_json::Value,
     detail: serde_json::Value,
 ) -> serde_json::Value {
     json!({
@@ -3008,6 +3146,7 @@ fn source_json(
         "last_error": health.get("last_error").cloned().unwrap_or(serde_json::Value::Null),
         "max_age_minutes": health.get("max_age_minutes").cloned().unwrap_or(serde_json::Value::Null),
         "source_health": health,
+        "source_tasks": source_tasks,
         "detail": detail,
     })
 }
@@ -4219,6 +4358,65 @@ mod tests {
             answer.requested_evidence[0].requirement_key,
             "product_research"
         );
+    }
+
+    #[test]
+    fn brain_source_tasks_are_grouped_by_requirement_or_action() {
+        let at = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
+        let rows = vec![
+            SourceTaskSnapshot {
+                requirement_key: Some("analyst_opinion".to_string()),
+                action: "fmp_price_target_news".to_string(),
+                provider: "fmp".to_string(),
+                state: "queued".to_string(),
+                priority: "medium".to_string(),
+                due_at: Some(at),
+                next_retry_at: None,
+                attempts: 2,
+                last_error: None,
+                updated_at: Some(at),
+            },
+            SourceTaskSnapshot {
+                requirement_key: Some("recent_news".to_string()),
+                action: "fmp_news".to_string(),
+                provider: "fmp".to_string(),
+                state: "satisfied".to_string(),
+                priority: "high".to_string(),
+                due_at: Some(at),
+                next_retry_at: None,
+                attempts: 1,
+                last_error: None,
+                updated_at: Some(at),
+            },
+            SourceTaskSnapshot {
+                requirement_key: None,
+                action: "twse_price_backfill".to_string(),
+                provider: "twse".to_string(),
+                state: "satisfied".to_string(),
+                priority: "blocking".to_string(),
+                due_at: Some(at),
+                next_retry_at: None,
+                attempts: 1,
+                last_error: None,
+                updated_at: Some(at),
+            },
+        ];
+
+        let opinion = source_tasks_for(
+            &rows,
+            &["analyst_opinion"],
+            &[
+                "fmp_price_target_consensus",
+                "fmp_grades_historical",
+                "fmp_price_target_news",
+            ],
+        );
+        let price = source_tasks_for(&rows, &["price_history"], &["twse_price_backfill"]);
+
+        assert_eq!(opinion.as_array().unwrap().len(), 1);
+        assert_eq!(opinion[0]["action"], "fmp_price_target_news");
+        assert_eq!(price.as_array().unwrap().len(), 1);
+        assert_eq!(price[0]["provider"], "twse");
     }
 
     #[test]

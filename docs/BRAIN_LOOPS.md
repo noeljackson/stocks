@@ -555,7 +555,9 @@ check such as `satisfied` or `no_rows`; `fetching`, `failed`, and rate-limited
 work stays visible in source health/tasks without forcing a thesis LLM pass.
 A normalized evidence delta is a newly available fact such as news, a filing,
 estimate revision, price-action event, product research, context shift, or
-regime change. Each scheduled run records a `sweep_reason` such as
+regime change. The delta clock is `evidence_item.updated_at`, not merely
+`observed_at`, so later sentiment scoring or relevance/source-ref enrichment
+can also wake cognition. Each scheduled run records a `sweep_reason` such as
 `source_task_changed`, `evidence_item_changed`, `open_thesis_due`,
 `context_missing`, or `evidence_retry_due` into the pipeline source reference
 so the UI/audit trail can explain why the symbol was touched.

@@ -174,7 +174,8 @@ async def test_persist_context_upserts_context_shift_evidence_item() -> None:
         if "INSERT INTO evidence_item" in sql and "context_shift" in sql
     ]
     assert len(evidence_calls) == 1
-    _, args = evidence_calls[0]
+    sql, args = evidence_calls[0]
+    assert "updated_at = now()" in sql
     assert args[0] == "MU"
     assert args[2] == "context_shift:MU:v2"
     assert json.loads(args[3])["changed_sections"] == ["narrative", "market"]

@@ -555,7 +555,8 @@ async fn upsert_news_evidence_item(
            ON CONFLICT (source, source_id) DO UPDATE SET
              strength = COALESCE(EXCLUDED.strength, evidence_item.strength),
              polarity = COALESCE(EXCLUDED.polarity, evidence_item.polarity),
-             source_ref = evidence_item.source_ref || EXCLUDED.source_ref"#,
+             source_ref = evidence_item.source_ref || EXCLUDED.source_ref,
+             updated_at = now()"#,
     )
     .bind(&a.symbol)
     .bind(a.published_at)
@@ -591,6 +592,7 @@ async fn update_news_evidence_sentiment(
         r#"UPDATE evidence_item
               SET strength = $2,
                   polarity = $3,
+                  updated_at = now(),
                   source_ref = source_ref || jsonb_build_object(
                     'sentiment', $4::text,
                     'sentiment_confidence', $5::text,

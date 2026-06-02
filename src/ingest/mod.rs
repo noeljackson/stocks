@@ -395,7 +395,8 @@ async fn upsert_filing_evidence_item(store: &Store, fields: &FilingEvidenceField
              source_ref = evidence_item.source_ref || EXCLUDED.source_ref,
              summary = EXCLUDED.summary,
              strength = EXCLUDED.strength,
-             url = EXCLUDED.url"#,
+             url = EXCLUDED.url,
+             updated_at = now()"#,
     )
     .bind(&fields.symbol)
     .bind(fields.observed_at)

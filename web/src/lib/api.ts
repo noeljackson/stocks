@@ -227,6 +227,7 @@ export interface EvidenceItem {
   polarity?: number | null;
   url?: string | null;
   created_at: string;
+  updated_at?: string | null;
   weight?: number | null;
   added_by?: string | null;
 }

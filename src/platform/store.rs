@@ -1113,7 +1113,7 @@ impl Store {
     pub async fn evidence_items_for_symbol(&self, symbol: &str) -> Result<Vec<serde_json::Value>> {
         let rows = sqlx::query(
             r#"SELECT id, symbol, kind, observed_at, source, source_id,
-                      source_ref, summary, strength, polarity, url, created_at
+                      source_ref, summary, strength, polarity, url, created_at, updated_at
                  FROM evidence_item
                 WHERE symbol = $1
              ORDER BY observed_at DESC, id DESC
@@ -1127,6 +1127,7 @@ impl Store {
             .map(|r| {
                 let observed_at: DateTime<Utc> = r.try_get("observed_at")?;
                 let created_at: DateTime<Utc> = r.try_get("created_at")?;
+                let updated_at: DateTime<Utc> = r.try_get("updated_at")?;
                 Ok(serde_json::json!({
                     "id": r.try_get::<i64, _>("id")?,
                     "symbol": r.try_get::<String, _>("symbol")?,
@@ -1140,6 +1141,7 @@ impl Store {
                     "polarity": r.try_get::<Option<f64>, _>("polarity")?,
                     "url": r.try_get::<Option<String>, _>("url")?,
                     "created_at": created_at,
+                    "updated_at": updated_at,
                 }))
             })
             .collect()

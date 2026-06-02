@@ -272,7 +272,8 @@ async fn upsert_regime_evidence_item(
              source_ref = evidence_item.source_ref || EXCLUDED.source_ref,
              summary = EXCLUDED.summary,
              strength = EXCLUDED.strength,
-             polarity = EXCLUDED.polarity"#,
+             polarity = EXCLUDED.polarity,
+             updated_at = now()"#,
     )
     .bind(as_of)
     .bind(format!("market_state:{}", as_of.to_rfc3339()))

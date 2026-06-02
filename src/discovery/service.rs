@@ -460,7 +460,8 @@ async fn upsert_price_action_evidence_item(
              source_ref = evidence_item.source_ref || EXCLUDED.source_ref,
              summary = EXCLUDED.summary,
              strength = EXCLUDED.strength,
-             polarity = EXCLUDED.polarity"#,
+             polarity = EXCLUDED.polarity,
+             updated_at = now()"#,
     )
     .bind(&hit.symbol)
     .bind(source_id)

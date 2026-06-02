@@ -527,7 +527,7 @@ every COGNITION_SWEEP_SECONDS
         |
         v
 select up to COGNITION_MAX_SYMBOLS_PER_SWEEP active tickers where:
-  provider source_task outcome is newer than thesis evaluation / no-thesis decline
+  provider source_task rows_seen result is newer than thesis evaluation / no-thesis decline
   normalized evidence_item is newer than thesis evaluation / no-thesis decline
   open thesis is older than COGNITION_OPEN_THESIS_MAX_AGE_MINUTES
   no context exists
@@ -584,11 +584,13 @@ Parent brain/theme thesis maintenance runs after ticker target execution inside
 the sweep. It is important context, but it should not block stale open ticker
 theses from entering the update loop.
 
-Sweep priority is evidence-first. Fresh provider outcomes for an open thesis
-come first, then fresh normalized `evidence_item` facts, then stale open
-theses, then bootstrap work. A provider outcome is a completed `source_task`
-check such as `satisfied` or `no_rows`; `fetching`, `failed`, and rate-limited
-work stays visible in source health/tasks without forcing a thesis LLM pass.
+Sweep priority is evidence-first. Fresh provider rows for an open thesis come
+first, then fresh normalized `evidence_item` facts, then stale open theses,
+then bootstrap work. A provider row trigger is a completed `source_task` with
+`state='satisfied'` and `source_ref.result='rows_seen'`. Routine `no_rows`
+checks still refresh source health/task state, but they do not force a thesis
+LLM pass by themselves. `fetching`, `failed`, and rate-limited work stays
+visible in source health/tasks without forcing a thesis LLM pass.
 A normalized evidence delta is a newly available fact such as news, a filing,
 estimate revision, price-action event, product research, context shift, or
 regime change. The delta clock is `evidence_item.updated_at`, not merely
@@ -635,14 +637,14 @@ view. It is emitted for `weakened_view`, `material_change`, and
 
 ```text
 cognition target priority
-  0 source_task outcome newer than open thesis evaluation
+  0 source_task rows_seen newer than open thesis evaluation
   1 normalized evidence newer than open thesis evaluation
   2 open thesis due for re-evaluation
   3 missing context
   4 context exists but market context is blank
   5 evidence checklist missing
   6 evidence retry due for a no-thesis symbol
-  7 source_task outcome newer than no-thesis decline
+  7 source_task rows_seen newer than no-thesis decline
   8 normalized evidence newer than no-thesis decline
   9 stale context
  10 older decline retry / maintenance
@@ -654,10 +656,10 @@ What works now:
 - Active tickers are swept without requiring the UI to open them.
 - Evidence checklists are bootstrapped for old tickers.
 - Open theses are explicitly due for re-evaluation after 30 minutes.
-- Fresh source-task outcomes trigger a cognition pass immediately when they are
-  newer than the open thesis evaluation or newer than the last no-thesis
-  decline. This gives the brain a data-change edge in addition to the
-  30-minute clock edge.
+- Fresh source-task `rows_seen` outcomes trigger a cognition pass immediately
+  when they are newer than the open thesis evaluation or newer than the last
+  no-thesis decline. This gives the brain a data-change edge in addition to the
+  30-minute clock edge without burning LLM passes on routine `no_rows` checks.
 - Fresh normalized evidence facts trigger the same immediate pass when they are
   newer than the open thesis evaluation or newer than the last no-thesis
   decline. This catches facts created by news, filings, research, price-action,

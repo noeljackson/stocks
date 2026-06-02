@@ -200,6 +200,7 @@ export interface EvidenceRequirement {
     action: string;
     provider: string;
     state: string;
+    result?: string | null;
     priority: string;
     due_at?: string | null;
     next_retry_at?: string | null;
@@ -280,6 +281,7 @@ export interface BrainSourceStatus {
     action: string;
     provider: string;
     state: string;
+    result?: string | null;
     priority: string;
     due_at?: string | null;
     next_retry_at?: string | null;
@@ -324,7 +326,7 @@ export interface BrainStatus {
   symbol: string;
   as_of: string;
   active_ticker: boolean;
-  status: "fresh" | "due" | "stale" | "waiting_on_evidence" | "blocked";
+  status: "fresh" | "due" | "stale" | "waiting_on_evidence" | "blocked" | "not_monitored";
   next_action: string;
   reason: string;
   freshness_target_minutes: number;

@@ -340,12 +340,14 @@ questions explicitly and derives them from missing evidence when a draft omits
 them, so a ticker should not look more certain merely because the model forgot
 to name the uncertainty.
 
-Completed source-task outcomes are also cognition triggers. When a provider
-check records `satisfied` or `no_rows` after the current thesis was last
-evaluated, the next bounded sweep refreshes context and reconciles the current
-thesis instead of waiting for the 30-minute clock. If a symbol has no thesis,
-the same source-task outcome can retry the thesis path when it is newer than the
-last no-thesis decline.
+Completed source-task rows-seen outcomes are also cognition triggers. When a
+provider check records `state='satisfied'` with `source_ref.result='rows_seen'`
+after the current thesis was last evaluated, the next bounded sweep refreshes
+context and reconciles the current thesis instead of waiting for the 30-minute
+clock. Routine `no_rows` checks update acquisition health and retry timing, but
+they do not force a thesis LLM pass by themselves. If a symbol has no thesis,
+the same rows-seen source-task outcome can retry the thesis path when it is
+newer than the last no-thesis decline.
 
 Normalized evidence facts are cognition triggers too. When a new
 `evidence_item` row is available after the current thesis was last evaluated,
@@ -407,7 +409,7 @@ active ticker with no evidence checklist rows
 active ticker where evidence became satisfied after a decline
   -> retry thesis immediately in the next bounded sweep
 
-active ticker where source_task outcome is newer than thesis evaluation
+active ticker where source_task rows_seen result is newer than thesis evaluation
   -> refresh context/evidence
   -> reconcile current thesis and update last_evaluated_at
   -> if materially changed, upsert thesis_review attention

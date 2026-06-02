@@ -2816,6 +2816,7 @@ struct SourceTaskSnapshot {
     action: String,
     provider: String,
     state: String,
+    result: Option<String>,
     priority: String,
     due_at: Option<chrono::DateTime<chrono::Utc>>,
     next_retry_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -2975,7 +2976,8 @@ async fn get_brain_status(
     .collect::<Vec<_>>();
 
     let task_rows = sqlx::query(
-        r#"SELECT requirement_key, action, provider, state, priority, due_at,
+        r#"SELECT requirement_key, action, provider, state, source_ref->>'result' AS result,
+                  priority, due_at,
                   next_retry_at, attempts, last_error, updated_at
              FROM source_task
             WHERE scope = 'symbol'
@@ -3000,6 +3002,7 @@ async fn get_brain_status(
         action: r.try_get("action").unwrap_or_default(),
         provider: r.try_get("provider").unwrap_or_default(),
         state: r.try_get("state").unwrap_or_default(),
+        result: r.try_get("result").ok().flatten(),
         priority: r.try_get("priority").unwrap_or_default(),
         due_at: r.try_get("due_at").ok().flatten(),
         next_retry_at: r.try_get("next_retry_at").ok().flatten(),
@@ -3084,7 +3087,7 @@ async fn get_brain_status(
     .any(|s| matches!(*s, "stale" | "missing" | "rate_limited" | "failed"));
     let latest_source_task_outcome_at = task_rows
         .iter()
-        .filter(|task| matches!(task.state.as_str(), "satisfied" | "no_rows"))
+        .filter(|task| source_task_is_material(task))
         .filter_map(|task| task.updated_at)
         .max();
     let source_task_delta = latest_source_task_outcome_at.is_some_and(|at| {
@@ -3120,6 +3123,16 @@ async fn get_brain_status(
         any_source_stale,
         source_blocked,
     });
+    let active_ticker = row.try_get::<bool, _>("active_ticker").unwrap_or(false);
+    let (status, next_action, reason) = if active_ticker {
+        (decision.status, decision.next_action, decision.reason)
+    } else {
+        (
+            "not_monitored",
+            "add_to_universe",
+            "symbol is not in the active universe, so the scheduled brain loop will not run until it is confirmed or added",
+        )
+    };
 
     let attention_kinds = sqlx::query(
         r#"SELECT kind, count(*) AS n
@@ -3167,10 +3180,10 @@ async fn get_brain_status(
     let body = json!({
         "symbol": symbol,
         "as_of": now,
-        "active_ticker": row.try_get::<bool, _>("active_ticker").unwrap_or(false),
-        "status": decision.status,
-        "next_action": decision.next_action,
-        "reason": decision.reason,
+        "active_ticker": active_ticker,
+        "status": status,
+        "next_action": next_action,
+        "reason": reason,
         "freshness_target_minutes": 30,
         "sources": [
             source_json("price", price_status, price_at, price_health, source_tasks_for(
@@ -3377,6 +3390,10 @@ fn source_is_blocked(health: &serde_json::Value) -> bool {
     matches!(source_status(health), "rate_limited" | "failed")
 }
 
+fn source_task_is_material(task: &SourceTaskSnapshot) -> bool {
+    task.state == "satisfied" && task.result.as_deref() == Some("rows_seen")
+}
+
 fn source_tasks_for(
     rows: &[SourceTaskSnapshot],
     requirement_keys: &[&str],
@@ -3396,6 +3413,7 @@ fn source_tasks_for(
                 "action": r.action,
                 "provider": r.provider,
                 "state": r.state,
+                "result": r.result,
                 "priority": r.priority,
                 "due_at": r.due_at,
                 "next_retry_at": r.next_retry_at,
@@ -4851,6 +4869,7 @@ mod tests {
                 action: "fmp_price_target_news".to_string(),
                 provider: "fmp".to_string(),
                 state: "queued".to_string(),
+                result: None,
                 priority: "medium".to_string(),
                 due_at: Some(at),
                 next_retry_at: None,
@@ -4863,6 +4882,7 @@ mod tests {
                 action: "fmp_news".to_string(),
                 provider: "fmp".to_string(),
                 state: "satisfied".to_string(),
+                result: Some("rows_seen".to_string()),
                 priority: "high".to_string(),
                 due_at: Some(at),
                 next_retry_at: None,
@@ -4875,6 +4895,7 @@ mod tests {
                 action: "twse_price_backfill".to_string(),
                 provider: "twse".to_string(),
                 state: "satisfied".to_string(),
+                result: Some("rows_seen".to_string()),
                 priority: "blocking".to_string(),
                 due_at: Some(at),
                 next_retry_at: None,
@@ -4899,6 +4920,43 @@ mod tests {
         assert_eq!(opinion[0]["action"], "fmp_price_target_news");
         assert_eq!(price.as_array().unwrap().len(), 1);
         assert_eq!(price[0]["provider"], "twse");
+    }
+
+    #[test]
+    fn source_task_materiality_requires_rows_seen() {
+        let base = SourceTaskSnapshot {
+            requirement_key: Some("recent_news".to_string()),
+            action: "fmp_news".to_string(),
+            provider: "fmp".to_string(),
+            state: "satisfied".to_string(),
+            result: Some("rows_seen".to_string()),
+            priority: "high".to_string(),
+            due_at: None,
+            next_retry_at: None,
+            attempts: 1,
+            last_error: None,
+            updated_at: None,
+        };
+
+        assert!(source_task_is_material(&base));
+
+        let no_rows = SourceTaskSnapshot {
+            result: Some("no_rows".to_string()),
+            ..base.clone()
+        };
+        assert!(!source_task_is_material(&no_rows));
+
+        let recurring_freshness_sync = SourceTaskSnapshot {
+            result: None,
+            ..base.clone()
+        };
+        assert!(!source_task_is_material(&recurring_freshness_sync));
+
+        let failed = SourceTaskSnapshot {
+            state: "failed".to_string(),
+            ..base
+        };
+        assert!(!source_task_is_material(&failed));
     }
 
     #[test]

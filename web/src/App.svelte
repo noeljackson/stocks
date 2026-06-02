@@ -257,6 +257,7 @@
   }
 
   function brainActionLabel(action: string): string {
+    if (action === "add_to_universe") return "add to universe";
     if (action === "reevaluate_after_source_update") return "re-evaluate after source update";
     if (action === "draft_after_source_update") return "draft after source update";
     if (action === "reevaluate_after_evidence_update") return "re-evaluate after evidence update";
@@ -382,7 +383,8 @@
         .slice(0, 3)
         .map((task) => {
           const due = task.due_at ? ` ${relativeTime(task.due_at)}` : "";
-          return `${task.action.replace(/_/g, " ")} ${task.state.replace(/_/g, " ")}${due}`;
+          const result = task.result ? ` ${task.result.replace(/_/g, " ")}` : "";
+          return `${task.action.replace(/_/g, " ")} ${task.state.replace(/_/g, " ")}${result}${due}`;
         })
         .join(" · ");
       parts.push(`tasks ${taskText}${tasks.length > 3 ? ` +${tasks.length - 3}` : ""}`);
@@ -4212,6 +4214,7 @@
   .brain-card.brain-due,
   .brain-card.brain-stale,
   .brain-card.brain-waiting_on_evidence { border-left-color: rgb(249,226,175); }
+  .brain-card.brain-not_monitored { border-left-color: rgb(137,180,250); }
   .brain-card.brain-blocked { border-left-color: rgb(243,139,168); }
   .brain-card.technical-overview { border-left-color: #6c7693; }
   .brain-card p {
@@ -4370,6 +4373,7 @@
   .badge.health-rate_limited { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
   .badge.brain-fresh,
   .badge.brain-source-fresh { background: rgba(166,227,161,.18); color: rgb(166,227,161); }
+  .badge.brain-not_monitored { background: rgba(137,180,250,.16); color: rgb(137,180,250); }
   .badge.brain-fresh-fresh,
   .badge.brain-dir-risk_on,
   .badge.brain-dir-bullish { background: rgba(166,227,161,.18); color: rgb(166,227,161); }

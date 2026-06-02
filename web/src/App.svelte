@@ -1988,7 +1988,7 @@
           <div class="att-toolbar">
             <span class="muted">{groupedAttention.length} pending</span>
             <span class="att-filters">
-              {#each ["all", "candidate_review", "thesis_actionable", "risk_review"] as f}
+              {#each ["all", "candidate_review", "thesis_review", "thesis_actionable", "risk_review"] as f}
                 <button class:active={attentionFilter === f} onclick={() => (attentionFilter = f)}>
                   {f === "all" ? "all" : f.replace(/_/g, " ")}
                 </button>
@@ -2062,6 +2062,8 @@
                       {/if}
                     {:else if g.kind === "thesis_actionable"}
                       thesis ready
+                    {:else if g.kind === "thesis_review"}
+                      thesis changed
                     {:else if g.kind === "risk_review"}
                       ⛔ risk · {g.severity}
                     {:else if g.kind === "thesis_incomplete"}
@@ -2143,6 +2145,15 @@
                       }}>Enter ▾</button>
                       <button class="reject" onclick={() => g.items.forEach((it) => deferOne(it.id))}>Defer 7d</button>
                       <button class="reject" onclick={() => g.items.forEach((it) => dismissOne(it.id, "skip"))}>Skip</button>
+                    {:else if g.kind === "thesis_review"}
+                      <button class="confirm" onclick={() => {
+                        if (g.symbol) {
+                          selectSymbol(g.symbol);
+                          rightTab = "theses";
+                        }
+                      }}>Review</button>
+                      <button class="reject" onclick={() => g.items.forEach((it) => deferOne(it.id))}>Defer 7d</button>
+                      <button class="reject" onclick={() => g.items.forEach((it) => dismissOne(it.id))}>Dismiss</button>
                     {:else if g.kind === "risk_review"}
                       <button class="confirm" onclick={() => g.items.forEach((it) => dismissOne(it.id, "ack"))}>Acknowledge</button>
                     {:else}

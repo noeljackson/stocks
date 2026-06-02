@@ -73,9 +73,33 @@ async function json(route: Route, body: unknown, status = 200) {
   });
 }
 
-async function mockApi(page: Page): Promise<Calls> {
+async function mockApi(
+  page: Page,
+  options: { attentionItems?: Record<string, unknown>[] } = {},
+): Promise<Calls> {
   const calls: Calls = { candleUrls: [], confirmBody: null, decisionBody: null, addedSymbols: [] };
   let attentionOpen = true;
+  const attentionItems = options.attentionItems ?? [{
+    id: 7001,
+    kind: "candidate_review",
+    symbol: "NVDA",
+    thesis_id: null,
+    candidate_id: 44,
+    severity: "review",
+    status: "open",
+    fsm_state: "ready_for_review",
+    owner: "operator",
+    title: "NVDA via volume_anomaly",
+    reason: "2.4x volume vs SMA",
+    source: "discovery",
+    source_ref: { raw_signals: ["volume_anomaly"], interpretation_kind: "volume_breakout" },
+    created_at: "2026-06-01T00:00:00Z",
+    resolved_at: null,
+    resolution_kind: null,
+    next_retry_at: null,
+    resurface_at: null,
+    state_reason: "candidate_review",
+  }];
   const watchlistMembers: MockWatchlistMember[] = [{
     watchlist_id: "wl-core",
     symbol: "OKTA",
@@ -360,27 +384,7 @@ async function mockApi(page: Page): Promise<Calls> {
       return;
     }
     if (path === "/api/attention") {
-      await json(route, attentionOpen ? [{
-        id: 7001,
-        kind: "candidate_review",
-        symbol: "NVDA",
-        thesis_id: null,
-        candidate_id: 44,
-        severity: "review",
-        status: "open",
-        fsm_state: "ready_for_review",
-        owner: "operator",
-        title: "NVDA via volume_anomaly",
-        reason: "2.4x volume vs SMA",
-        source: "discovery",
-        source_ref: { raw_signals: ["volume_anomaly"], interpretation_kind: "volume_breakout" },
-        created_at: "2026-06-01T00:00:00Z",
-        resolved_at: null,
-        resolution_kind: null,
-        next_retry_at: null,
-        resurface_at: null,
-        state_reason: "candidate_review",
-      }] : []);
+      await json(route, attentionOpen ? attentionItems : []);
       return;
     }
     if (path === "/api/discovery/candidates/44/confirm" && request.method() === "POST") {
@@ -1192,6 +1196,47 @@ test("attention Confirm posts selected watchlist memberships", async ({ page }) 
 
   await expect.poll(() => calls.confirmBody).toEqual({ watchlist_ids: ["wl-core"] });
   await expect(page.getByText("No open attention. The system is quiet.")).toBeVisible();
+});
+
+test("attention thesis review opens selected ticker thesis panel", async ({ page }) => {
+  await mockApi(page, {
+    attentionItems: [{
+      id: 7002,
+      kind: "thesis_review",
+      symbol: "OKTA",
+      thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+      candidate_id: null,
+      severity: "review",
+      status: "open",
+      fsm_state: "ready_for_review",
+      owner: "operator",
+      title: "OKTA thesis needs review: material change",
+      reason: "Fresh evidence changed the standing thesis direction to down. Review before recording a decision.",
+      source: "thesis",
+      source_ref: {
+        event: "thesis_reconciliation",
+        classification: "material_change",
+        operator_action_required: true,
+      },
+      created_at: "2026-06-01T00:00:00Z",
+      resolved_at: null,
+      resolution_kind: null,
+      next_retry_at: null,
+      resurface_at: null,
+      state_reason: "thesis_material_change",
+    }],
+  });
+  await page.goto("/");
+
+  await page.locator(".att-filters").getByRole("button", { name: "thesis review" }).click();
+  const card = page.locator(".att-card").filter({ hasText: "OKTA" });
+  await expect(card).toContainText("thesis changed");
+  await expect(card).toContainText("Fresh evidence changed");
+
+  await card.getByRole("button", { name: "Review" }).click();
+
+  await expect(page.locator(".tabs button.active")).toHaveText("theses");
+  await expect(page.getByTestId("workflow-strip")).toContainText("OKTA");
 });
 
 test("watchlist add form posts ticker and refreshes members", async ({ page }) => {

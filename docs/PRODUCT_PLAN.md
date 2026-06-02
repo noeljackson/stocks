@@ -1180,8 +1180,9 @@ Goal: know whether the product makes decisions better.
 2. Evidence acquisition FSM
    Turn missing evidence into scheduled work with retry/backoff, not static text.
 
-3. Brain parent thesis service
-   Generate/update macro, factor, commodity, and sector theses on a schedule.
+3. Brain Journal
+   Persist the daily operator overview: what changed, what the Brain is curious
+   about, what was queued, and what blocked conclusions.
 
 4. Review packets and attention FSM adoption
    Every attention card should explain why it exists and how it resolves.

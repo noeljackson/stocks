@@ -458,6 +458,10 @@ position state      -> position
 outcome scoring     -> outcome
 ```
 
+Read APIs expose parent-brain links on ticker rows, watchlist rows, discovery
+candidates, and ticker thesis details. That keeps the macro/sector/theme ->
+ticker chain visible in the workflow instead of hiding it inside prompt context.
+
 Decision rows include structured disagreement feedback for skip/reject choices.
 Those reason codes are the canonical operator-feedback input for future
 classifier, discovery, freshness, LLM prompt, and risk tuning loops.

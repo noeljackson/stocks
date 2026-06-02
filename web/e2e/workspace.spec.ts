@@ -623,6 +623,17 @@ async function mockApi(
         symbol: "OKTA",
         cluster_id: "identity",
         cluster_thesis: null,
+        parent_themes: [{
+          key: "ai_compute_infrastructure",
+          name: "AI Compute Infrastructure",
+          scope: "theme",
+          state: "forming",
+          direction: "mixed",
+          role: "candidate",
+          conviction: 50,
+          rationale: "Identity security expression of AI infrastructure budget priority.",
+          summary: "AI capex remains the parent theme, but ticker selection must separate leaders from challengers.",
+        }],
         state: "forming",
         edge_rationale: "Identity platform consolidation can improve growth durability.",
         bull_case: "Growth stabilizes.",
@@ -1580,6 +1591,10 @@ test("theses tab renders current thesis despite duplicate history rows", async (
   await expect(page.getByText("confidence capped at low")).toBeVisible();
   await expect(page.getByText("context: narrative context is stale")).toBeVisible();
   await expect(page.getByText("Linked evidence")).toBeVisible();
+  const parentThemes = page.locator(".parent-theme-strip");
+  await expect(parentThemes).toContainText("AI Compute Infrastructure");
+  await expect(parentThemes).toContainText("theme · candidate · mixed · 50% fit");
+  await expect(parentThemes).toContainText("Identity security expression of AI infrastructure budget priority.");
   await expect(page.getByText("OKTA customer deployment article supports consolidation demand")).toBeVisible();
   await expect(page.getByText(/weight 90/)).toBeVisible();
   await expect(page.getByText(/polarity \+0\.60/)).toBeVisible();

@@ -2371,6 +2371,40 @@ impl Store {
         .await
         .context("theses_for_symbol")?;
 
+        let parent_themes_row = sqlx::query(
+            r#"SELECT COALESCE(jsonb_agg(
+                         jsonb_build_object(
+                           'key', bt.key,
+                           'name', bt.name,
+                           'scope', bt.scope,
+                           'state', bt.state,
+                           'direction', bt.direction,
+                           'role', btt.role,
+                           'conviction', btt.conviction,
+                           'rationale', btt.rationale,
+                           'summary', bt.summary,
+                           'core_claim', bt.core_claim,
+                           'why_now', bt.why_now
+                         )
+                         ORDER BY CASE bt.scope
+                                    WHEN 'macro' THEN 0
+                                    WHEN 'sector' THEN 1
+                                    ELSE 2
+                                  END,
+                                  COALESCE(btt.conviction, 0) DESC,
+                                  bt.name
+                       ), '[]'::jsonb) AS parent_themes
+                  FROM brain_thesis_ticker btt
+                  JOIN brain_thesis bt ON bt.id = btt.brain_thesis_id
+                 WHERE btt.symbol = $1
+                   AND bt.active = true"#,
+        )
+        .bind(symbol)
+        .fetch_one(&self.pool)
+        .await
+        .context("thesis parent_themes")?;
+        let parent_themes: serde_json::Value = parent_themes_row.try_get("parent_themes")?;
+
         let freshness = self.thesis_freshness_for_symbol(symbol).await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
@@ -2500,6 +2534,7 @@ impl Store {
                 symbol: row.try_get("symbol")?,
                 cluster_id: row.try_get("cluster_id").ok(),
                 cluster_thesis: row.try_get("cluster_thesis").ok(),
+                parent_themes: parent_themes.clone(),
                 state,
                 edge_rationale: row.try_get("edge_rationale")?,
                 bull_case: row.try_get("bull_case").ok(),

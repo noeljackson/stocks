@@ -4696,6 +4696,7 @@ mod tests {
             symbol: "NVDA".to_string(),
             cluster_id: Some("ai".to_string()),
             cluster_thesis: None,
+            parent_themes: json!([]),
             state: ThesisState::Armed,
             edge_rationale: "edge".to_string(),
             bull_case: None,

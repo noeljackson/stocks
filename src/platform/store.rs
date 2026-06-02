@@ -1644,13 +1644,22 @@ impl Store {
                       tech.technical_state              AS technical_state,
                       tech.entry_stance                 AS entry_stance,
                       tech.pct_vs_200d                  AS technical_pct_vs_200d,
+                      freshness.status                  AS freshness_status,
+                      COALESCE(attention.open_count, 0) AS open_attention,
+                      COALESCE(attention.states, '[]'::jsonb) AS attention_states,
+                      COALESCE(attention.owners, '[]'::jsonb) AS attention_owners,
+                      COALESCE(evidence.open_count, 0) AS open_evidence,
+                      COALESCE(evidence.blocking_count, 0) AS blocking_evidence,
+                      COALESCE(tasks.due_count, 0) AS due_source_tasks,
+                      COALESCE(brain.parent_themes, '[]'::jsonb) AS parent_themes,
                       (SELECT count(*) FROM thesis th
                         WHERE th.symbol = t.symbol
                           AND th.state NOT IN ('closed','disqualified')) AS open_theses
                  FROM ticker t
             LEFT JOIN cluster c ON c.id = t.cluster_id
             LEFT JOIN LATERAL (
-                SELECT th.thesis_id, th.state, th.forecast->>'direction' AS direction
+                SELECT th.thesis_id, th.state, th.forecast->>'direction' AS direction,
+                       COALESCE(th.last_evaluated_at, th.updated_at) AS evaluated_at
                   FROM thesis th
                  WHERE th.symbol = t.symbol
                    AND th.state NOT IN ('closed','disqualified')
@@ -1702,6 +1711,108 @@ impl Store {
                        pct_vs_200d
                   FROM classified
             ) tech ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT tc.created_at AS context_at
+                  FROM ticker_context tc
+                 WHERE tc.symbol = t.symbol
+              ORDER BY tc.version DESC
+                 LIMIT 1
+            ) ctx ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT count(*) AS rows_count,
+                       count(*) FILTER (WHERE er.blocking_state <> 'satisfied') AS open_count,
+                       count(*) FILTER (
+                         WHERE er.priority = 'blocking'
+                           AND er.blocking_state <> 'satisfied'
+                       ) AS blocking_count
+                  FROM evidence_requirement er
+                 WHERE er.symbol = t.symbol
+            ) evidence ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT count(*) FILTER (
+                         WHERE st.state IN ('queued', 'no_rows', 'failed', 'rate_limited', 'blocked')
+                           AND st.due_at <= now()
+                       ) AS due_count,
+                       count(*) FILTER (
+                         WHERE st.state = 'fetching'
+                           AND st.updated_at < now() - interval '30 minutes'
+                       ) AS stale_fetching_count,
+                       count(*) FILTER (
+                         WHERE st.state IN ('failed', 'rate_limited', 'blocked')
+                       ) AS blocked_count
+                  FROM source_task st
+                 WHERE st.scope = 'symbol'
+                   AND st.target_id = t.symbol
+            ) tasks ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT CASE
+                         WHEN COALESCE(evidence.blocking_count, 0) > 0
+                           OR COALESCE(tasks.blocked_count, 0) > 0 THEN 'blocked'
+                         WHEN latest.thesis_id IS NULL
+                           OR ctx.context_at IS NULL
+                           OR COALESCE(evidence.rows_count, 0) = 0 THEN 'missing'
+                         WHEN COALESCE(evidence.open_count, 0) > 0
+                           OR COALESCE(tasks.due_count, 0) > 0
+                           OR COALESCE(tasks.stale_fetching_count, 0) > 0
+                           OR ctx.context_at < now() - interval '12 hours'
+                           OR latest.evaluated_at IS NULL
+                           OR latest.evaluated_at < now() - interval '30 minutes' THEN 'stale'
+                         ELSE 'fresh'
+                       END AS status
+            ) freshness ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT
+                    (SELECT count(*)
+                       FROM attention_item ai
+                      WHERE ai.symbol = t.symbol
+                        AND ai.status = 'open'
+                        AND (ai.fsm_state <> 'operator_deferred'
+                             OR (ai.resurface_at IS NOT NULL AND ai.resurface_at <= now()))) AS open_count,
+                    COALESCE((
+                        SELECT jsonb_agg(jsonb_build_object('state', s.fsm_state, 'count', s.n)
+                                         ORDER BY s.n DESC, s.fsm_state)
+                          FROM (
+                              SELECT ai.fsm_state, count(*) AS n
+                                FROM attention_item ai
+                               WHERE ai.symbol = t.symbol
+                                 AND ai.status = 'open'
+                                 AND (ai.fsm_state <> 'operator_deferred'
+                                      OR (ai.resurface_at IS NOT NULL AND ai.resurface_at <= now()))
+                            GROUP BY ai.fsm_state
+                          ) s
+                    ), '[]'::jsonb) AS states,
+                    COALESCE((
+                        SELECT jsonb_agg(jsonb_build_object('owner', o.owner, 'count', o.n)
+                                         ORDER BY o.n DESC, o.owner)
+                          FROM (
+                              SELECT ai.owner, count(*) AS n
+                                FROM attention_item ai
+                               WHERE ai.symbol = t.symbol
+                                 AND ai.status = 'open'
+                                 AND (ai.fsm_state <> 'operator_deferred'
+                                      OR (ai.resurface_at IS NOT NULL AND ai.resurface_at <= now()))
+                            GROUP BY ai.owner
+                          ) o
+                    ), '[]'::jsonb) AS owners
+            ) attention ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(jsonb_agg(
+                         jsonb_build_object(
+                           'key', bt.key,
+                           'name', bt.name,
+                           'scope', bt.scope,
+                           'state', bt.state,
+                           'direction', bt.direction,
+                           'role', btt.role,
+                           'conviction', btt.conviction
+                         )
+                         ORDER BY COALESCE(btt.conviction, 0) DESC, bt.name
+                       ), '[]'::jsonb) AS parent_themes
+                  FROM brain_thesis_ticker btt
+                  JOIN brain_thesis bt ON bt.id = btt.brain_thesis_id
+                 WHERE btt.symbol = t.symbol
+                   AND bt.active = true
+            ) brain ON TRUE
                 WHERE t.status = 'active'
              ORDER BY t.tier ASC, t.symbol ASC"#,
         )
@@ -1725,6 +1836,22 @@ impl Store {
                     technical_state: row.try_get("technical_state").ok(),
                     entry_stance: row.try_get("entry_stance").ok(),
                     technical_pct_vs_200d: row.try_get("technical_pct_vs_200d").ok(),
+                    freshness_status: row
+                        .try_get("freshness_status")
+                        .unwrap_or_else(|_| "missing".to_string()),
+                    open_attention: row.try_get::<i64, _>("open_attention").unwrap_or(0),
+                    attention_states: row
+                        .try_get("attention_states")
+                        .unwrap_or_else(|_| serde_json::json!([])),
+                    attention_owners: row
+                        .try_get("attention_owners")
+                        .unwrap_or_else(|_| serde_json::json!([])),
+                    open_evidence: row.try_get::<i64, _>("open_evidence").unwrap_or(0),
+                    blocking_evidence: row.try_get::<i64, _>("blocking_evidence").unwrap_or(0),
+                    due_source_tasks: row.try_get::<i64, _>("due_source_tasks").unwrap_or(0),
+                    parent_themes: row
+                        .try_get("parent_themes")
+                        .unwrap_or_else(|_| serde_json::json!([])),
                 })
             })
             .collect()
@@ -2389,12 +2516,21 @@ impl Store {
                       tech.technical_state AS technical_state,
                       tech.entry_stance AS entry_stance,
                       tech.pct_vs_200d AS technical_pct_vs_200d,
+                      freshness.status AS freshness_status,
+                      COALESCE(attention.open_count, 0) AS open_attention,
+                      COALESCE(attention.states, '[]'::jsonb) AS attention_states,
+                      COALESCE(attention.owners, '[]'::jsonb) AS attention_owners,
+                      COALESCE(evidence.open_count, 0) AS open_evidence,
+                      COALESCE(evidence.blocking_count, 0) AS blocking_evidence,
+                      COALESCE(tasks.due_count, 0) AS due_source_tasks,
+                      COALESCE(brain.parent_themes, '[]'::jsonb) AS parent_themes,
                       (SELECT count(*) FROM thesis th
                         WHERE th.symbol = wm.symbol
                           AND th.state NOT IN ('closed','disqualified')) AS open_theses
                  FROM watchlist_member wm
             LEFT JOIN LATERAL (
-                SELECT th.thesis_id, th.state, th.forecast->>'direction' AS direction
+                SELECT th.thesis_id, th.state, th.forecast->>'direction' AS direction,
+                       COALESCE(th.last_evaluated_at, th.updated_at) AS evaluated_at
                   FROM thesis th
                  WHERE th.symbol = wm.symbol
                    AND th.state NOT IN ('closed','disqualified')
@@ -2446,6 +2582,108 @@ impl Store {
                        pct_vs_200d
                   FROM classified
             ) tech ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT tc.created_at AS context_at
+                  FROM ticker_context tc
+                 WHERE tc.symbol = wm.symbol
+              ORDER BY tc.version DESC
+                 LIMIT 1
+            ) ctx ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT count(*) AS rows_count,
+                       count(*) FILTER (WHERE er.blocking_state <> 'satisfied') AS open_count,
+                       count(*) FILTER (
+                         WHERE er.priority = 'blocking'
+                           AND er.blocking_state <> 'satisfied'
+                       ) AS blocking_count
+                  FROM evidence_requirement er
+                 WHERE er.symbol = wm.symbol
+            ) evidence ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT count(*) FILTER (
+                         WHERE st.state IN ('queued', 'no_rows', 'failed', 'rate_limited', 'blocked')
+                           AND st.due_at <= now()
+                       ) AS due_count,
+                       count(*) FILTER (
+                         WHERE st.state = 'fetching'
+                           AND st.updated_at < now() - interval '30 minutes'
+                       ) AS stale_fetching_count,
+                       count(*) FILTER (
+                         WHERE st.state IN ('failed', 'rate_limited', 'blocked')
+                       ) AS blocked_count
+                  FROM source_task st
+                 WHERE st.scope = 'symbol'
+                   AND st.target_id = wm.symbol
+            ) tasks ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT CASE
+                         WHEN COALESCE(evidence.blocking_count, 0) > 0
+                           OR COALESCE(tasks.blocked_count, 0) > 0 THEN 'blocked'
+                         WHEN latest.thesis_id IS NULL
+                           OR ctx.context_at IS NULL
+                           OR COALESCE(evidence.rows_count, 0) = 0 THEN 'missing'
+                         WHEN COALESCE(evidence.open_count, 0) > 0
+                           OR COALESCE(tasks.due_count, 0) > 0
+                           OR COALESCE(tasks.stale_fetching_count, 0) > 0
+                           OR ctx.context_at < now() - interval '12 hours'
+                           OR latest.evaluated_at IS NULL
+                           OR latest.evaluated_at < now() - interval '30 minutes' THEN 'stale'
+                         ELSE 'fresh'
+                       END AS status
+            ) freshness ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT
+                    (SELECT count(*)
+                       FROM attention_item ai
+                      WHERE ai.symbol = wm.symbol
+                        AND ai.status = 'open'
+                        AND (ai.fsm_state <> 'operator_deferred'
+                             OR (ai.resurface_at IS NOT NULL AND ai.resurface_at <= now()))) AS open_count,
+                    COALESCE((
+                        SELECT jsonb_agg(jsonb_build_object('state', s.fsm_state, 'count', s.n)
+                                         ORDER BY s.n DESC, s.fsm_state)
+                          FROM (
+                              SELECT ai.fsm_state, count(*) AS n
+                                FROM attention_item ai
+                               WHERE ai.symbol = wm.symbol
+                                 AND ai.status = 'open'
+                                 AND (ai.fsm_state <> 'operator_deferred'
+                                      OR (ai.resurface_at IS NOT NULL AND ai.resurface_at <= now()))
+                            GROUP BY ai.fsm_state
+                          ) s
+                    ), '[]'::jsonb) AS states,
+                    COALESCE((
+                        SELECT jsonb_agg(jsonb_build_object('owner', o.owner, 'count', o.n)
+                                         ORDER BY o.n DESC, o.owner)
+                          FROM (
+                              SELECT ai.owner, count(*) AS n
+                                FROM attention_item ai
+                               WHERE ai.symbol = wm.symbol
+                                 AND ai.status = 'open'
+                                 AND (ai.fsm_state <> 'operator_deferred'
+                                      OR (ai.resurface_at IS NOT NULL AND ai.resurface_at <= now()))
+                            GROUP BY ai.owner
+                          ) o
+                    ), '[]'::jsonb) AS owners
+            ) attention ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(jsonb_agg(
+                         jsonb_build_object(
+                           'key', bt.key,
+                           'name', bt.name,
+                           'scope', bt.scope,
+                           'state', bt.state,
+                           'direction', bt.direction,
+                           'role', btt.role,
+                           'conviction', btt.conviction
+                         )
+                         ORDER BY COALESCE(btt.conviction, 0) DESC, bt.name
+                       ), '[]'::jsonb) AS parent_themes
+                  FROM brain_thesis_ticker btt
+                  JOIN brain_thesis bt ON bt.id = btt.brain_thesis_id
+                 WHERE btt.symbol = wm.symbol
+                   AND bt.active = true
+            ) brain ON TRUE
                 WHERE wm.watchlist_id = $1
              ORDER BY wm.added_at DESC"#,
         )
@@ -2467,6 +2705,22 @@ impl Store {
                     entry_stance: r.try_get("entry_stance").ok(),
                     technical_pct_vs_200d: r.try_get("technical_pct_vs_200d").ok(),
                     open_theses: r.try_get::<i64, _>("open_theses").unwrap_or(0),
+                    freshness_status: r
+                        .try_get("freshness_status")
+                        .unwrap_or_else(|_| "missing".to_string()),
+                    open_attention: r.try_get::<i64, _>("open_attention").unwrap_or(0),
+                    attention_states: r
+                        .try_get("attention_states")
+                        .unwrap_or_else(|_| serde_json::json!([])),
+                    attention_owners: r
+                        .try_get("attention_owners")
+                        .unwrap_or_else(|_| serde_json::json!([])),
+                    open_evidence: r.try_get::<i64, _>("open_evidence").unwrap_or(0),
+                    blocking_evidence: r.try_get::<i64, _>("blocking_evidence").unwrap_or(0),
+                    due_source_tasks: r.try_get::<i64, _>("due_source_tasks").unwrap_or(0),
+                    parent_themes: r
+                        .try_get("parent_themes")
+                        .unwrap_or_else(|_| serde_json::json!([])),
                 })
             })
             .collect()

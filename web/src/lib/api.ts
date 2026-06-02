@@ -36,6 +36,14 @@ export interface Ticker {
   technical_state?: string | null;
   entry_stance?: string | null;
   technical_pct_vs_200d?: number | null;
+  freshness_status?: string | null;
+  open_attention?: number;
+  attention_states?: WatchlistAttentionState[];
+  attention_owners?: WatchlistAttentionOwner[];
+  open_evidence?: number;
+  blocking_evidence?: number;
+  due_source_tasks?: number;
+  parent_themes?: WatchlistParentTheme[];
 }
 
 export async function fetchAlerts(opts?: { unacked?: boolean }): Promise<Alert[]> {
@@ -562,6 +570,26 @@ export interface Watchlist {
   member_count: number;
 }
 
+export interface WatchlistAttentionState {
+  state: string;
+  count: number;
+}
+
+export interface WatchlistAttentionOwner {
+  owner: string;
+  count: number;
+}
+
+export interface WatchlistParentTheme {
+  key: string;
+  name: string;
+  scope: string;
+  state: string;
+  direction: string;
+  role: string;
+  conviction?: number | null;
+}
+
 export interface WatchlistMember {
   watchlist_id: string;
   symbol: string;
@@ -574,6 +602,14 @@ export interface WatchlistMember {
   entry_stance?: string | null;
   technical_pct_vs_200d?: number | null;
   open_theses?: number;
+  freshness_status?: string | null;
+  open_attention?: number;
+  attention_states?: WatchlistAttentionState[];
+  attention_owners?: WatchlistAttentionOwner[];
+  open_evidence?: number;
+  blocking_evidence?: number;
+  due_source_tasks?: number;
+  parent_themes?: WatchlistParentTheme[];
 }
 
 export async function fetchWatchlists(): Promise<Watchlist[]> {
@@ -709,6 +745,14 @@ export interface PoolMember {
   entry_stance?: string | null;
   technical_pct_vs_200d?: number | null;
   open_theses?: number;
+  freshness_status?: string | null;
+  open_attention?: number;
+  attention_states?: WatchlistAttentionState[];
+  attention_owners?: WatchlistAttentionOwner[];
+  open_evidence?: number;
+  blocking_evidence?: number;
+  due_source_tasks?: number;
+  parent_themes?: WatchlistParentTheme[];
 }
 
 export async function fetchDiscoveryPool(): Promise<PoolMember[]> {

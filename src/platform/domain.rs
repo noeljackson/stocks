@@ -108,6 +108,14 @@ pub struct TickerRow {
     pub technical_state: Option<String>,
     pub entry_stance: Option<String>,
     pub technical_pct_vs_200d: Option<f64>,
+    pub freshness_status: String,
+    pub open_attention: i64,
+    pub attention_states: serde_json::Value,
+    pub attention_owners: serde_json::Value,
+    pub open_evidence: i64,
+    pub blocking_evidence: i64,
+    pub due_source_tasks: i64,
+    pub parent_themes: serde_json::Value,
 }
 
 /// User-curated multi-list ticker organization (#54).
@@ -137,6 +145,14 @@ pub struct WatchlistMember {
     pub entry_stance: Option<String>,
     pub technical_pct_vs_200d: Option<f64>,
     pub open_theses: i64,
+    pub freshness_status: String,
+    pub open_attention: i64,
+    pub attention_states: serde_json::Value,
+    pub attention_owners: serde_json::Value,
+    pub open_evidence: i64,
+    pub blocking_evidence: i64,
+    pub due_source_tasks: i64,
+    pub parent_themes: serde_json::Value,
 }
 
 /// A single thesis condition — the canonical shape used by the thesis engine,

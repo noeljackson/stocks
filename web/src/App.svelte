@@ -1494,10 +1494,11 @@
                 <li class="att-card sev-{g.severity}">
                   <div class="att-row1">
                     {#if g.symbol}
-                      <strong
+                      <button
+                        type="button"
                         class="att-symbol link-symbol"
                         onclick={() => g.symbol && selectSymbol(g.symbol)}
-                      >{g.symbol}</strong>
+                      >{g.symbol}</button>
                       <span class="att-tier muted">{tierLabel}</span>
                     {/if}
                     <span class="badge tiny state-{g.fsmState}">{attentionStateLabel(g.fsmState)}</span>
@@ -1625,14 +1626,19 @@
             <ul class="event-feed">
               {#each live.slice(0, 80) as e, i (i)}
                 {@const p = (e.payload ?? {}) as Record<string, unknown>}
-                <li
-                  onclick={() => p.symbol && selectSymbol(p.symbol as string)}
-                  class:linkable={!!p.symbol}
-                >
-                  <span class="kind" style="color:{kindColor(e.kind, p)}">{e.kind}</span>
-                  <code>{e.subject}</code>
-                  {#if p.symbol}<strong>{p.symbol as string}</strong>{/if}
-                  {#if e.kind === "risk" && p.veto}<span class="badge danger tiny">VETO {(p.reasons as string[])?.join(", ")}</span>{/if}
+                <li class:linkable={!!p.symbol}>
+                  {#if p.symbol}
+                    <button type="button" class="event-link" onclick={() => selectSymbol(p.symbol as string)}>
+                      <span class="kind" style="color:{kindColor(e.kind, p)}">{e.kind}</span>
+                      <code>{e.subject}</code>
+                      <strong>{p.symbol as string}</strong>
+                      {#if e.kind === "risk" && p.veto}<span class="badge danger tiny">VETO {(p.reasons as string[])?.join(", ")}</span>{/if}
+                    </button>
+                  {:else}
+                    <span class="kind" style="color:{kindColor(e.kind, p)}">{e.kind}</span>
+                    <code>{e.subject}</code>
+                    {#if e.kind === "risk" && p.veto}<span class="badge danger tiny">VETO {(p.reasons as string[])?.join(", ")}</span>{/if}
+                  {/if}
                 </li>
               {/each}
             </ul>
@@ -1645,7 +1651,7 @@
               {#each pending as c (c.id)}
                 <li class="disc-card">
                   <div class="disc-hdr">
-                    <strong class="link-symbol" onclick={() => selectSymbol(c.symbol)}>{c.symbol}</strong>
+                    <button type="button" class="link-symbol" onclick={() => selectSymbol(c.symbol)}>{c.symbol}</button>
                     {#if c.rank_bucket}
                       <span class="badge tiny rank-{c.rank_bucket}">
                         {c.rank_bucket} {Math.round(c.rank_score ?? 0)}
@@ -2847,6 +2853,11 @@
   }
   .event-feed li.linkable { cursor: pointer; }
   .event-feed li.linkable:hover { background: rgba(137, 180, 250, .08); }
+  .event-link {
+    appearance: none; border: 0; background: transparent; color: inherit;
+    padding: 0; margin: 0; font: inherit; cursor: pointer;
+    display: flex; gap: .4rem; align-items: baseline; text-align: left;
+  }
 
   /* Alerts */
   .alerts { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .2rem; }
@@ -2871,7 +2882,10 @@
     padding: .5rem .6rem;
   }
   .disc-hdr { display: flex; gap: .4rem; align-items: baseline; flex-wrap: wrap; }
-  .link-symbol { cursor: pointer; }
+  .link-symbol {
+    appearance: none; border: 0; background: transparent; color: inherit;
+    padding: 0; margin: 0; font: inherit; font-weight: 700; cursor: pointer;
+  }
   .link-symbol:hover { color: #89b4fa; }
   .disc-reasoning { margin: .3rem 0 .4rem; font-size: .8rem; }
   .disc-rank { margin: -.2rem 0 .4rem; font-size: .75rem; }

@@ -663,6 +663,14 @@ async function mockApi(page: Page): Promise<Calls> {
         ingest: {},
         discovery: { last_pass_at: null, open_candidates: 1, by_signal: [], pool_size: 0 },
         cognition: { contexts_24h: 1, contexts_total_symbols: 3, thesis_by_state: [] },
+        evidence: {
+          open_requirements: 3,
+          source_tasks_due: 2,
+          source_tasks_stale_fetching: 1,
+          by_state: [{ state: "missing", count: 2 }],
+          by_reason: [{ reason: "fetching_required_sources", count: 1 }],
+          source_tasks_by_state: [{ state: "fetching", count: 1 }],
+        },
         attention: { open_items: attentionOpen ? 1 : 0, by_kind: [] },
         llm: { calls_24h: 0, avg_latency_ms: null, by_prompt: [] },
       });
@@ -838,6 +846,19 @@ test("evidence tab shows source task acquisition state", async ({ page }) => {
   await expect(requirement).toContainText("high priority");
   await expect(requirement).toContainText("missing");
   await expect(requirement).toContainText("source tasks: fmp analyst estimates: queued");
+});
+
+test("diagnostics tab shows source task backlog state", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "diagnostics" }).click();
+
+  const evidence = page.locator(".diag").filter({ hasText: "Evidence" });
+  await expect(evidence).toContainText("open requirements");
+  await expect(evidence).toContainText("source tasks due");
+  await expect(evidence).toContainText("stale fetching");
+  await expect(evidence).toContainText("source fetching");
 });
 
 test("discovery tab shows candidate ranking reasons", async ({ page }) => {

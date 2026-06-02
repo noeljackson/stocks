@@ -583,6 +583,10 @@ What works now:
 - Every pipeline attempt is visible through `cognition_run`, Diagnostics, and
   the selected-symbol Brain card. Failed, blocked, declined, no-change, drafted,
   and reconciled runs are all recorded.
+- Diagnostics also separates source acquisition work into due source tasks and
+  stale `fetching` tasks. Due tasks are normal backlog; stale fetching tasks are
+  provider work that did not finish inside the reclaim window and should be
+  treated as a stuck worker/backoff problem, not as satisfied evidence.
 
 Current gaps:
 

@@ -2725,6 +2725,8 @@ async fn get_brain_status(
               (SELECT COALESCE(last_evaluated_at, updated_at) FROM thesis
                 WHERE symbol = $1 AND state NOT IN ('closed', 'disqualified')
                 ORDER BY updated_at DESC LIMIT 1) AS open_thesis_at,
+              (SELECT max(created_at) FROM attention_item
+                WHERE symbol = $1 AND kind = 'thesis_incomplete') AS latest_decline_at,
               (SELECT count(*) FROM evidence_requirement
                 WHERE symbol = $1) AS evidence_rows,
               (SELECT count(*) FROM evidence_requirement
@@ -2854,6 +2856,8 @@ async fn get_brain_status(
     let thesis_updated_at: Option<chrono::DateTime<chrono::Utc>> =
         row.try_get("open_thesis_updated_at").ok();
     let thesis_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("open_thesis_at").ok();
+    let latest_decline_at: Option<chrono::DateTime<chrono::Utc>> =
+        row.try_get("latest_decline_at").ok();
     let evidence_rows: i64 = row.try_get("evidence_rows").unwrap_or(0);
     let open_evidence: i64 = row.try_get("open_evidence").unwrap_or(0);
     let blocking_evidence: i64 = row.try_get("blocking_evidence").unwrap_or(0);
@@ -2887,12 +2891,27 @@ async fn get_brain_status(
     ]
     .iter()
     .any(|s| matches!(*s, "stale" | "missing" | "rate_limited" | "failed"));
+    let latest_source_task_outcome_at = task_rows
+        .iter()
+        .filter(|task| matches!(task.state.as_str(), "satisfied" | "no_rows"))
+        .filter_map(|task| task.updated_at)
+        .max();
+    let source_task_delta = latest_source_task_outcome_at.is_some_and(|at| {
+        if let Some(thesis_at) = thesis_at {
+            return at > thesis_at;
+        }
+        match latest_decline_at {
+            Some(decline_at) => at > decline_at,
+            None => true,
+        }
+    });
 
     let decision = decide(BrainDecisionInput {
         evidence_rows,
         open_evidence,
         blocking_evidence,
         due_evidence,
+        source_task_delta,
         has_context: context_at.is_some(),
         context_stale: context_freshness.as_str() == "stale",
         has_open_thesis: thesis_at.is_some(),

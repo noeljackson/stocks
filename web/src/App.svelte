@@ -201,6 +201,8 @@
   }
 
   function brainActionLabel(action: string): string {
+    if (action === "reevaluate_after_source_update") return "re-evaluate after source update";
+    if (action === "draft_after_source_update") return "draft after source update";
     return action.replace(/_/g, " ");
   }
 

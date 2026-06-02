@@ -639,6 +639,11 @@ async def _load_parent_context(pool: asyncpg.Pool, thesis: dict[str, Any]) -> di
                       summary, strength, polarity, url
                  FROM evidence_item
                 WHERE symbol = ANY($1::text[])
+                  AND NOT (
+                      kind = 'product_research'
+                      AND source = 'web_research'
+                      AND COALESCE((source_ref->'relevance'->>'accepted')::boolean, false) = false
+                  )
              ORDER BY observed_at DESC, id DESC
                 LIMIT 80""",
             symbols,

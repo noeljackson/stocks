@@ -55,6 +55,26 @@ class SearchResult:
     source_ref: dict
 
 
+@dataclass(frozen=True)
+class ResearchRelevance:
+    accepted: bool
+    score: float
+    reasons: tuple[str, ...]
+    matched_terms: tuple[str, ...]
+    rejected_reason: str | None = None
+    unrelated_tickers: tuple[str, ...] = ()
+
+    def source_ref(self) -> dict:
+        return {
+            "accepted": self.accepted,
+            "score": self.score,
+            "reasons": list(self.reasons),
+            "matched_terms": list(self.matched_terms),
+            "rejected_reason": self.rejected_reason,
+            "unrelated_tickers": list(self.unrelated_tickers),
+        }
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None or raw == "":
@@ -199,6 +219,208 @@ def build_queries(
         if len(queries) >= max_queries:
             break
     return queries
+
+
+COMPANY_SUFFIX_RE = re.compile(
+    r"\b(?:"
+    r"inc|incorporated|corp|corporation|company|co|ltd|limited|plc|"
+    r"holdings|holding|group|llc|lp|sa|ag|nv|se|ordinary|common|stock"
+    r")\b\.?",
+    re.IGNORECASE,
+)
+NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+SPECIFIC_PRODUCT_WORDS = {
+    "blackwell",
+    "cuda",
+    "cowos",
+    "poweredge",
+    "rocm",
+    "vllm",
+}
+COMMON_TICKER_COLLISIONS = {
+    "AI",
+    "API",
+    "CEO",
+    "CFO",
+    "EPS",
+    "ETF",
+    "GPU",
+    "HBM",
+    "Q1",
+    "Q2",
+    "Q3",
+    "Q4",
+    "SEC",
+    "USA",
+}
+
+
+def _normalized_phrase(value: str | None) -> str:
+    if not value:
+        return ""
+    return NON_ALNUM_RE.sub(" ", value.lower()).strip()
+
+
+def _phrase_in_text(phrase: str, normalized_text: str) -> bool:
+    normalized = _normalized_phrase(phrase)
+    if not normalized:
+        return False
+    return f" {normalized} " in f" {normalized_text} "
+
+
+def _company_aliases(symbol: str, profile: dict | None) -> list[str]:
+    raw_company = str((profile or {}).get("company_name") or "").strip()
+    aliases: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str | None) -> None:
+        normalized = _normalized_phrase(value)
+        if len(normalized) < 3 or normalized in seen:
+            return
+        seen.add(normalized)
+        aliases.append(normalized)
+
+    if raw_company:
+        add(raw_company.split(",", 1)[0])
+        cleaned = COMPANY_SUFFIX_RE.sub(" ", raw_company.replace(",", " "))
+        cleaned = " ".join(cleaned.split())
+        add(cleaned)
+
+    base_symbol = symbol.split(".", 1)[0]
+    if not base_symbol.isdigit():
+        add(base_symbol)
+    return aliases
+
+
+def _symbol_in_text(symbol: str, raw_text: str) -> bool:
+    base_symbol = symbol.split(".", 1)[0].upper()
+    if not base_symbol:
+        return False
+    flags = 0 if len(base_symbol) <= 2 else re.IGNORECASE
+    return bool(
+        re.search(
+            rf"(?<![A-Za-z0-9]){re.escape(base_symbol)}(?![A-Za-z0-9])",
+            raw_text,
+            flags,
+        )
+    )
+
+
+def _result_text(result: SearchResult) -> tuple[str, str]:
+    parsed = urlparse(result.url)
+    raw = " ".join(
+        part
+        for part in (
+            result.title,
+            result.summary or "",
+            result.publisher or "",
+            parsed.netloc,
+            parsed.path.replace("-", " ").replace("_", " "),
+        )
+        if part
+    )
+    return raw, _normalized_phrase(raw)
+
+
+def _product_terms(symbol: str, query: str, tags: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(term: str | None) -> None:
+        if not term:
+            return
+        cleaned = " ".join(str(term).split())
+        key = cleaned.lower()
+        if not cleaned or key == symbol.lower() or key in seen:
+            return
+        seen.add(key)
+        out.append(cleaned)
+
+    for term in STATIC_PRODUCT_TERMS.get(symbol.upper(), []):
+        add(term)
+    for term in tags:
+        add(term)
+    for match in PRODUCT_TOKEN_RE.finditer(query):
+        add(match.group(0))
+    return out
+
+
+def _specific_product_term(term: str) -> bool:
+    lowered = term.lower()
+    return (
+        any(ch.isdigit() for ch in term)
+        or lowered in SPECIFIC_PRODUCT_WORDS
+        or bool(PRODUCT_TOKEN_RE.search(term))
+    )
+
+
+def _unrelated_tickers(raw_text: str, symbol: str) -> tuple[str, ...]:
+    base_symbol = symbol.split(".", 1)[0].upper()
+    candidates = set(re.findall(r"\(([A-Z]{1,6})\)", raw_text))
+    candidates.update(re.findall(r"\b([A-Z]{2,6})\s+Q[1-4]\s+20\d{2}\s+Earnings", raw_text))
+    return tuple(sorted(
+        candidate
+        for candidate in candidates
+        if candidate != base_symbol and candidate not in COMMON_TICKER_COLLISIONS
+    ))
+
+
+def research_relevance(
+    symbol: str,
+    profile: dict | None,
+    query: str,
+    result: SearchResult,
+    tags: list[str],
+) -> ResearchRelevance:
+    raw_text, normalized_text = _result_text(result)
+    score = 0.0
+    reasons: list[str] = []
+    matched_terms: list[str] = []
+
+    if _symbol_in_text(symbol, raw_text):
+        score = max(score, 0.9)
+        reasons.append("symbol")
+        matched_terms.append(symbol.split(".", 1)[0].upper())
+
+    for alias in _company_aliases(symbol, profile):
+        if _phrase_in_text(alias, normalized_text):
+            score = max(score, 0.85)
+            reasons.append("company_alias")
+            matched_terms.append(alias)
+            break
+
+    for term in _product_terms(symbol, query, tags):
+        if not _phrase_in_text(term, normalized_text):
+            continue
+        matched_terms.append(term)
+        if _specific_product_term(term):
+            score = max(score, 0.75)
+            reasons.append("specific_product_term")
+        else:
+            score = max(score, 0.45)
+            reasons.append("generic_theme_term")
+
+    unique_reasons = tuple(dict.fromkeys(reasons))
+    unique_terms = tuple(dict.fromkeys(matched_terms))
+    unrelated = _unrelated_tickers(raw_text, symbol)
+    accepted = score >= 0.7
+    rejected_reason = None
+    if not accepted:
+        if unrelated:
+            rejected_reason = "dominant_unrelated_ticker"
+        elif unique_terms:
+            rejected_reason = "generic_theme_without_symbol_or_company"
+        else:
+            rejected_reason = "no_symbol_company_or_product_match"
+
+    return ResearchRelevance(
+        accepted=accepted,
+        score=round(score, 3),
+        reasons=unique_reasons,
+        matched_terms=unique_terms,
+        rejected_reason=rejected_reason,
+        unrelated_tickers=unrelated,
+    )
 
 
 class GdeltProvider:
@@ -378,6 +600,9 @@ async def _record_run(
     query: str,
     status: str,
     result_count: int,
+    accepted_count: int = 0,
+    rejected_count: int = 0,
+    rejection_reasons: dict[str, int] | None = None,
     last_error: str | None = None,
 ) -> None:
     await pool.execute(
@@ -390,7 +615,12 @@ async def _record_run(
         status,
         result_count,
         _truncate(last_error),
-        json.dumps({"source": SOURCE}),
+        json.dumps({
+            "source": SOURCE,
+            "accepted_results": accepted_count,
+            "rejected_results": rejected_count,
+            "rejection_reasons": rejection_reasons or {},
+        }),
     )
 
 
@@ -402,8 +632,12 @@ async def _insert_result(
     provider: str,
     result: SearchResult,
     tags: list[str],
+    relevance: ResearchRelevance | None = None,
 ) -> bool:
     content_hash = hashlib.sha256(f"{symbol}|{result.url}".encode()).hexdigest()
+    source_ref = dict(result.source_ref or {})
+    if relevance is not None:
+        source_ref["relevance"] = relevance.source_ref()
     row = await pool.fetchrow(
         """INSERT INTO research_evidence
              (symbol, query, url, title, publisher, published_at, provider,
@@ -437,7 +671,7 @@ async def _insert_result(
         result.credibility,
         result.summary,
         tags,
-        json.dumps(result.source_ref),
+        json.dumps(source_ref),
         content_hash,
     )
     if not row:
@@ -450,6 +684,7 @@ async def _insert_result(
         provider=provider,
         result=result,
         tags=tags,
+        relevance=relevance,
     )
     return bool(row["inserted"])
 
@@ -463,6 +698,7 @@ async def _upsert_product_research_evidence_item(
     provider: str,
     result: SearchResult,
     tags: list[str],
+    relevance: ResearchRelevance | None = None,
 ) -> None:
     observed_at = result.published_at or dt.datetime.now(dt.UTC)
     source_ref = {
@@ -476,6 +712,8 @@ async def _upsert_product_research_evidence_item(
         "tags": tags,
         **(result.source_ref or {}),
     }
+    if relevance is not None:
+        source_ref["relevance"] = relevance.source_ref()
     await pool.execute(
         """INSERT INTO evidence_item
              (symbol, kind, observed_at, source, source_id, source_ref,
@@ -571,14 +809,26 @@ async def refresh_research_evidence(
                     results = await provider.search(query, max_results=max_results)
                     query_had_success = True
                     rows_seen += len(results)
+                    accepted_results = 0
+                    rejected_results = 0
+                    rejection_reasons: dict[str, int] = {}
                     for result in results:
+                        tags = [symbol, *(STATIC_PRODUCT_TERMS.get(symbol.upper(), [])[:5])]
+                        relevance = research_relevance(symbol, profile, query, result, tags)
+                        if not relevance.accepted:
+                            rejected_results += 1
+                            reason = relevance.rejected_reason or "rejected"
+                            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                            continue
+                        accepted_results += 1
                         inserted = await _insert_result(
                             pool,
                             symbol=symbol,
                             query=query,
                             provider=provider.name,
                             result=result,
-                            tags=[symbol, *(STATIC_PRODUCT_TERMS.get(symbol.upper(), [])[:5])],
+                            tags=tags,
+                            relevance=relevance,
                         )
                         rows_inserted += int(inserted)
                     await _record_run(
@@ -588,8 +838,11 @@ async def refresh_research_evidence(
                         query=query,
                         status="ok" if results else "no_results",
                         result_count=len(results),
+                        accepted_count=accepted_results,
+                        rejected_count=rejected_results,
+                        rejection_reasons=rejection_reasons,
                     )
-                    if results:
+                    if accepted_results:
                         break
                 except Exception as exc:  # noqa: BLE001
                     provider_failures += 1
@@ -642,6 +895,7 @@ async def load_research_evidence(
     *,
     limit: int = 20,
 ) -> list[dict]:
+    profile = await _company_profile(pool, symbol)
     rows = await pool.fetch(
         """WITH ranked AS (
               SELECT DISTINCT ON (lower(title), COALESCE(published_at, retrieved_at))
@@ -661,10 +915,30 @@ async def load_research_evidence(
                  retrieved_at DESC
            LIMIT $2""",
         symbol,
-        limit,
+        limit * 4,
     )
-    return [
-        {
+    out: list[dict] = []
+    for r in rows:
+        result = SearchResult(
+            title=r["title"],
+            url=r["url"],
+            publisher=r["publisher"],
+            published_at=r["published_at"],
+            summary=r["summary"],
+            source_type=r["source_type"],
+            credibility=r["credibility"],
+            source_ref={},
+        )
+        relevance = research_relevance(
+            symbol,
+            profile,
+            r["query"],
+            result,
+            list(r["tags"] or []),
+        )
+        if not relevance.accepted:
+            continue
+        out.append({
             "id": r["id"],
             "query": r["query"],
             "url": r["url"],
@@ -677,9 +951,11 @@ async def load_research_evidence(
             "credibility": r["credibility"],
             "summary": r["summary"],
             "tags": list(r["tags"] or []),
-        }
-        for r in rows
-    ]
+            "relevance": relevance.source_ref(),
+        })
+        if len(out) >= limit:
+            break
+    return out
 
 
 async def _run_cli(symbol: str, *, force: bool) -> None:

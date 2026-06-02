@@ -3095,11 +3095,16 @@ fn source_health_group(
         .collect::<Vec<_>>();
     let last_checked_at = matching
         .iter()
-        .filter_map(|r| r.last_success_at.or(r.last_started_at))
+        .flat_map(|r| [r.last_success_at, r.last_started_at])
+        .flatten()
         .max();
     let retry_after_at = matching.iter().filter_map(|r| r.retry_after_at).max();
     let last_error = matching.iter().find_map(|r| r.last_error.clone());
     let failure_kind = matching.iter().find_map(|r| r.last_failure_kind.clone());
+    let has_fresh_running = matching.iter().any(|r| {
+        r.last_status == "running"
+            && !source_health_effective_status(&r.last_status, r.last_started_at, now).1
+    });
     let status = if matching.is_empty() {
         "missing"
     } else if matching
@@ -3109,7 +3114,7 @@ fn source_health_group(
         "rate_limited"
     } else if matching.iter().any(|r| r.last_status == "failed") {
         "failed"
-    } else if matching.iter().any(|r| r.last_status == "running") {
+    } else if has_fresh_running {
         "running"
     } else {
         crate::platform::brain::age_freshness(now, last_checked_at, max_age).as_str()
@@ -4509,6 +4514,65 @@ mod tests {
         assert_eq!(status, "ok");
         assert!(!stale);
         assert_eq!(age, None);
+    }
+
+    #[test]
+    fn source_health_group_treats_stale_running_as_stale() {
+        let now = Utc.with_ymd_and_hms(2026, 6, 1, 12, 30, 0).unwrap();
+        let started = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
+        let rows = vec![SourceHealthSnapshot {
+            source: "xbrl".to_string(),
+            last_status: "running".to_string(),
+            last_success_at: None,
+            last_started_at: Some(started),
+            last_failure_kind: None,
+            last_error: None,
+            retry_after_at: None,
+        }];
+
+        let out = source_health_group(&rows, &["xbrl"], now, chrono::Duration::minutes(15));
+
+        assert_eq!(out["status"], "stale");
+    }
+
+    #[test]
+    fn source_health_group_keeps_fresh_running_active() {
+        let now = Utc.with_ymd_and_hms(2026, 6, 1, 12, 10, 0).unwrap();
+        let started = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
+        let rows = vec![SourceHealthSnapshot {
+            source: "xbrl".to_string(),
+            last_status: "running".to_string(),
+            last_success_at: None,
+            last_started_at: Some(started),
+            last_failure_kind: None,
+            last_error: None,
+            retry_after_at: None,
+        }];
+
+        let out = source_health_group(&rows, &["xbrl"], now, chrono::Duration::minutes(15));
+
+        assert_eq!(out["status"], "running");
+    }
+
+    #[test]
+    fn source_health_group_uses_newest_source_activity_time() {
+        let now = Utc.with_ymd_and_hms(2026, 6, 1, 12, 10, 0).unwrap();
+        let started = Utc.with_ymd_and_hms(2026, 6, 1, 12, 9, 0).unwrap();
+        let success = Utc.with_ymd_and_hms(2026, 6, 1, 11, 0, 0).unwrap();
+        let rows = vec![SourceHealthSnapshot {
+            source: "xbrl".to_string(),
+            last_status: "running".to_string(),
+            last_success_at: Some(success),
+            last_started_at: Some(started),
+            last_failure_kind: None,
+            last_error: None,
+            retry_after_at: None,
+        }];
+
+        let out = source_health_group(&rows, &["xbrl"], now, chrono::Duration::minutes(15));
+
+        assert_eq!(out["status"], "running");
+        assert_eq!(out["last_checked_at"], serde_json::json!(started));
     }
 
     #[test]

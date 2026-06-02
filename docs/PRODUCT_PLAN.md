@@ -1093,9 +1093,12 @@ evidence, open questions, invalidation conditions, and beneficiary/loser lists
 from normalized linked evidence. Reflection now snapshots the active parent
 macro/sector/theme links into ticker prediction claims when a thesis becomes
 actionable, so parent-theme expression calibration can be reported separately
-from global ticker-thesis calibration. The remaining Phase 3 work is broader
-factor coverage: normalized commodity prices/fundamentals, sector breadth,
-credit, earnings breadth, and better parent-direction inputs.
+from global ticker-thesis calibration. Macro internals now derive from local
+data: market breadth from daily price bars, sector relative strength from
+sector baskets, earnings breadth from estimate revisions, and HY OAS trend from
+FRED observations. The remaining Phase 3 work is broader external factor
+coverage: normalized commodity fundamentals, inventories, fund flows, and deeper
+credit-quality buckets.
 
 ### Phase 4: Improve Discovery Ranking
 

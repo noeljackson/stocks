@@ -167,7 +167,12 @@ def test_macro_update_derives_direction_from_market_state_and_source_freshness()
             "as_of": now.isoformat(),
             "regime": "risk_off",
             "capitulation": False,
-            "indicators": {},
+            "indicators": {
+                "market_breadth_internals": {
+                    "symbol_count": 500,
+                    "pct_above_200d": 0.42,
+                },
+            },
             "subsector_rs": {},
         },
         now=now,
@@ -176,6 +181,59 @@ def test_macro_update_derives_direction_from_market_state_and_source_freshness()
     assert update["direction"] == "risk_off"
     assert update["missing_evidence"] == ["earnings_breadth"]
     assert update["source_ref"]["maintainer"]["sources"]["fred"]["freshness"] == "fresh"
+
+
+def test_macro_update_clears_derived_internal_requirements() -> None:
+    now = dt.datetime(2026, 6, 1, 15, 0, tzinfo=dt.UTC)
+    update = build_macro_update(
+        {
+            "state": "forming",
+            "direction": "neutral",
+            "missing_evidence": [
+                "earnings_breadth",
+                "market_breadth_internals",
+                "sector_relative_strength",
+                "credit_internals_trend",
+            ],
+            "evidence": [],
+            "source_ref": {},
+        },
+        {
+            "fred": {
+                "source": "fred",
+                "last_status": "no_new_rows",
+                "last_success_at": now,
+                "rows_seen": 4,
+                "rows_inserted": 0,
+            },
+            "cboe": {
+                "source": "cboe",
+                "last_status": "no_new_rows",
+                "last_success_at": now,
+                "rows_seen": 2,
+                "rows_inserted": 0,
+            },
+        },
+        {
+            "as_of": now.isoformat(),
+            "regime": "risk_on",
+            "capitulation": False,
+            "indicators": {
+                "market_breadth_internals": {"symbol_count": 500},
+                "earnings_breadth": {"signals": 120, "net_revision_breadth": 0.2},
+                "sector_relative_strength": {
+                    "sectors": [{"sector": "Technology", "return_20d": 0.08}],
+                },
+                "credit_internals_trend": {"latest_hy_oas_pct": 2.72, "trend": "stable"},
+            },
+            "subsector_rs": {},
+        },
+        now=now,
+    )
+
+    assert update["state"] == "active"
+    assert update["direction"] == "risk_on"
+    assert update["missing_evidence"] == []
 
 
 def test_brain_llm_due_on_changed_deterministic_fingerprint() -> None:

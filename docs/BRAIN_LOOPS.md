@@ -111,6 +111,16 @@ macro/sector-direction contradictions. Ticker thesis drafting receives the
 linked parent theses as input, so a symbol-level view can inherit, reject, or
 explicitly contradict the parent theme instead of guessing in isolation.
 
+The macro parent thesis now receives deterministic internals before the LLM pass:
+market breadth from local daily `price_bar` rows, sector relative strength from
+`discovery_pool` sector baskets plus price bars, earnings breadth from recent
+`estimate_revision` rows, and a credit trend proxy from FRED HY OAS observations.
+These metrics clear the canonical macro requirements
+`market_breadth_internals`, `sector_relative_strength`, `earnings_breadth`, and
+`credit_internals_trend` when enough local data exists. The Brain tab shows the
+headline values so the operator can audit why the macro thesis is active,
+neutral, risk-on, or risk-off.
+
 ## Data Acquisition Loops
 
 These loops feed the brain. They should be broad enough to cover:
@@ -383,9 +393,11 @@ Current status and gaps:
   commodities, financials, energy, staples, and housing/rates. Reflection
   snapshots the relevant macro/sector/theme links into ticker prediction claims
   when a thesis becomes actionable, so calibration can report parent-theme
-  expression results separately from global ticker-thesis calibration. Remaining
-  work is richer factor data coverage for breadth, credit, inventories, flows,
-  and earnings.
+  expression results separately from global ticker-thesis calibration. Local
+  macro internals now cover breadth, sector relative strength, earnings revision
+  breadth, and HY OAS trend; remaining work is richer external factor coverage
+  for inventories, flows, commodity fundamentals, and deeper credit quality
+  buckets.
 - Discovery ranking reads `brain_thesis_ticker` fit today; it still needs
   active parent-thesis direction and contradiction penalties.
 

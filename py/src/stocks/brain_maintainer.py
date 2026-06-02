@@ -94,6 +94,15 @@ def _iso(value: Any) -> str | None:
     return parsed.isoformat() if parsed else None
 
 
+def _round_float(value: Any, digits: int = 4) -> float | None:
+    if value is None:
+        return None
+    try:
+        return round(float(value), digits)
+    except (TypeError, ValueError):
+        return None
+
+
 def normalize_symbol(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -430,24 +439,62 @@ def _macro_missing_evidence(
     sources: dict[str, dict[str, Any]],
     market_state: dict[str, Any] | None,
 ) -> list[str]:
+    indicators = (market_state or {}).get("indicators") or {}
+    if not isinstance(indicators, dict):
+        indicators = {}
+    subsector_rs = (market_state or {}).get("subsector_rs") or {}
+    if not isinstance(subsector_rs, dict):
+        subsector_rs = {}
+
+    def has_market_breadth() -> bool:
+        breadth = indicators.get("market_breadth_internals")
+        if isinstance(breadth, dict) and breadth.get("symbol_count", 0):
+            return True
+        return "breadth_pct_above_200d" in indicators
+
+    def has_sector_rs() -> bool:
+        rs = indicators.get("sector_relative_strength")
+        return bool(subsector_rs) or (isinstance(rs, dict) and bool(rs.get("sectors")))
+
+    def has_earnings_breadth() -> bool:
+        breadth = indicators.get("earnings_breadth")
+        return isinstance(breadth, dict) and breadth.get("signals", 0) > 0
+
+    def has_credit_internals() -> bool:
+        credit = indicators.get("credit_internals_trend")
+        return isinstance(credit, dict) and credit.get("latest_hy_oas_pct") is not None
+
+    def requirement_satisfied(item: str) -> bool:
+        low = item.lower()
+        if low == "fred_macro":
+            return _source_is_usable(sources["fred"])
+        if low in {"market_breadth", "market_breadth_internals"}:
+            return has_market_breadth()
+        if low == "credit_spreads":
+            return _source_is_usable(sources["fred"])
+        if low == "credit_internals_trend":
+            return _source_is_usable(sources["fred"]) and has_credit_internals()
+        if low in {"sector_relative_strength", "subsector_rs"}:
+            return has_sector_rs()
+        if low == "earnings_breadth":
+            return has_earnings_breadth()
+        if low == "sentiment_volatility":
+            return _source_is_usable(sources["cboe"])
+        return False
+
     missing: list[str] = []
     fred = sources["fred"]
     cboe = sources["cboe"]
     if not _source_is_usable(fred):
         missing.append("fred_macro")
-    if not market_state:
-        missing.append("market_breadth")
+    if not has_market_breadth():
+        missing.append("market_breadth_internals")
     if not _source_is_usable(fred):
         missing.append("credit_spreads")
     if not _source_is_usable(cboe):
         missing.append("sentiment_volatility")
     for item in _baseline_missing(thesis):
-        low = item.lower()
-        if low == "fred_macro" and _source_is_usable(fred):
-            continue
-        if low == "market_breadth" and market_state:
-            continue
-        if low == "credit_spreads" and _source_is_usable(fred):
+        if requirement_satisfied(item):
             continue
         missing.append(item)
     return _dedupe(missing)
@@ -524,6 +571,247 @@ async def _load_source_health(pool: asyncpg.Pool) -> dict[str, dict[str, Any]]:
     return {row["source"]: dict(row) for row in rows}
 
 
+async def _load_market_breadth_internals(pool: asyncpg.Pool) -> dict[str, Any] | None:
+    row = await pool.fetchrow(
+        """WITH ranked AS (
+               SELECT symbol, ts, close::double precision AS close,
+                      row_number() OVER (PARTITION BY symbol ORDER BY ts DESC) AS rn
+                 FROM price_bar
+                WHERE close IS NOT NULL
+           ), per_symbol AS (
+               SELECT symbol,
+                      max(ts) FILTER (WHERE rn = 1) AS as_of,
+                      max(close) FILTER (WHERE rn = 1) AS latest_close,
+                      max(close) FILTER (WHERE rn = 2) AS prev_close,
+                      avg(close) FILTER (WHERE rn <= 50) AS sma50,
+                      avg(close) FILTER (WHERE rn <= 200) AS sma200,
+                      max(close) FILTER (WHERE rn <= 252) AS high252,
+                      min(close) FILTER (WHERE rn <= 252) AS low252,
+                      count(*) AS bars
+                 FROM ranked
+                WHERE rn <= 252
+             GROUP BY symbol
+           )
+           SELECT max(as_of) AS as_of,
+                  count(*) FILTER (WHERE bars >= 50) AS symbol_count,
+                  count(*) FILTER (WHERE bars >= 50 AND latest_close > prev_close) AS advancers,
+                  count(*) FILTER (WHERE bars >= 50 AND latest_close < prev_close) AS decliners,
+                  count(*) FILTER (WHERE bars >= 50 AND latest_close >= sma50) AS above_50d,
+                  count(*) FILTER (WHERE bars >= 200 AND latest_close >= sma200) AS above_200d,
+                  count(*) FILTER (
+                    WHERE bars >= 252 AND latest_close >= high252 * 0.995
+                  ) AS new_highs_252d,
+                  count(*) FILTER (
+                    WHERE bars >= 252 AND latest_close <= low252 * 1.005
+                  ) AS new_lows_252d
+             FROM per_symbol
+            WHERE latest_close IS NOT NULL""",
+    )
+    if row is None or int(row["symbol_count"] or 0) == 0:
+        return None
+    symbol_count = int(row["symbol_count"] or 0)
+    advancers = int(row["advancers"] or 0)
+    decliners = int(row["decliners"] or 0)
+    above_50d = int(row["above_50d"] or 0)
+    above_200d = int(row["above_200d"] or 0)
+    new_highs = int(row["new_highs_252d"] or 0)
+    new_lows = int(row["new_lows_252d"] or 0)
+    return {
+        "as_of": _iso(row["as_of"]),
+        "symbol_count": symbol_count,
+        "advancers": advancers,
+        "decliners": decliners,
+        "advance_decline_ratio": _round_float(
+            advancers / decliners if decliners else float(advancers)
+        ),
+        "pct_above_50d": _round_float(above_50d / symbol_count),
+        "pct_above_200d": _round_float(above_200d / symbol_count),
+        "new_highs_252d": new_highs,
+        "new_lows_252d": new_lows,
+        "new_high_low_spread": new_highs - new_lows,
+        "source": "price_bar",
+    }
+
+
+async def _load_sector_relative_strength(pool: asyncpg.Pool) -> dict[str, Any] | None:
+    rows = await pool.fetch(
+        """WITH universe AS (
+               SELECT DISTINCT symbol, COALESCE(NULLIF(sector, ''), 'Unknown') AS sector
+                 FROM discovery_pool
+                WHERE dropped_at IS NULL
+           ), ranked AS (
+               SELECT pb.symbol, u.sector, pb.ts, pb.close::double precision AS close,
+                      row_number() OVER (PARTITION BY pb.symbol ORDER BY pb.ts DESC) AS rn
+                 FROM price_bar pb
+                 JOIN universe u ON u.symbol = pb.symbol
+                WHERE pb.close IS NOT NULL
+           ), per_symbol AS (
+               SELECT symbol, sector,
+                      max(ts) FILTER (WHERE rn = 1) AS as_of,
+                      max(close) FILTER (WHERE rn = 1) AS latest_close,
+                      max(close) FILTER (WHERE rn = 21) AS close_20d,
+                      max(close) FILTER (WHERE rn = 61) AS close_60d,
+                      max(close) FILTER (WHERE rn = 121) AS close_120d,
+                      count(*) AS bars
+                 FROM ranked
+                WHERE rn <= 121
+             GROUP BY symbol, sector
+           )
+           SELECT sector,
+                  max(as_of) AS as_of,
+                  count(*) FILTER (WHERE bars >= 21) AS symbol_count,
+                  avg((latest_close / NULLIF(close_20d, 0)) - 1)
+                    FILTER (WHERE bars >= 21 AND close_20d IS NOT NULL) AS return_20d,
+                  avg((latest_close / NULLIF(close_60d, 0)) - 1)
+                    FILTER (WHERE bars >= 61 AND close_60d IS NOT NULL) AS return_60d,
+                  avg((latest_close / NULLIF(close_120d, 0)) - 1)
+                    FILTER (WHERE bars >= 121 AND close_120d IS NOT NULL) AS return_120d
+             FROM per_symbol
+            WHERE latest_close IS NOT NULL
+         GROUP BY sector
+           HAVING count(*) FILTER (WHERE bars >= 21) >= 3
+         ORDER BY return_20d DESC NULLS LAST, sector""",
+    )
+    sectors = []
+    for row in rows:
+        sectors.append({
+            "sector": row["sector"],
+            "as_of": _iso(row["as_of"]),
+            "symbol_count": int(row["symbol_count"] or 0),
+            "return_20d": _round_float(row["return_20d"]),
+            "return_60d": _round_float(row["return_60d"]),
+            "return_120d": _round_float(row["return_120d"]),
+        })
+    if not sectors:
+        return None
+    return {
+        "as_of": sectors[0]["as_of"],
+        "sectors": sectors,
+        "leaders_20d": [item["sector"] for item in sectors[:3]],
+        "laggards_20d": [item["sector"] for item in sectors[-3:]],
+        "source": "price_bar+discovery_pool",
+    }
+
+
+async def _load_earnings_breadth(pool: asyncpg.Pool) -> dict[str, Any] | None:
+    row = await pool.fetchrow(
+        """WITH recent AS (
+               SELECT er.symbol, er.direction,
+                      COALESCE(NULLIF(dp.sector, ''), 'Unknown') AS sector
+                 FROM estimate_revision er
+            LEFT JOIN discovery_pool dp ON dp.symbol = er.symbol AND dp.dropped_at IS NULL
+                WHERE er.detected_at > now() - interval '30 days'
+           ), sector_stats AS (
+               SELECT sector,
+                      jsonb_build_object(
+                        'signals', count(*),
+                        'symbols', count(DISTINCT symbol),
+                        'up', count(*) FILTER (WHERE direction = 'up'),
+                        'down', count(*) FILTER (WHERE direction = 'down'),
+                        'mixed', count(*) FILTER (WHERE direction = 'mixed'),
+                        'coverage_change', count(*) FILTER (WHERE direction = 'coverage_change')
+                      ) AS stats
+                 FROM recent
+             GROUP BY sector
+           ), totals AS (
+               SELECT count(*) AS signals,
+                      count(DISTINCT symbol) AS symbol_count,
+                      count(*) FILTER (WHERE direction = 'up') AS up,
+                      count(*) FILTER (WHERE direction = 'down') AS down,
+                      count(*) FILTER (WHERE direction = 'mixed') AS mixed,
+                      count(*) FILTER (WHERE direction = 'coverage_change') AS coverage_change
+                 FROM recent
+           )
+           SELECT totals.*,
+                  (
+                    SELECT jsonb_object_agg(sector, stats ORDER BY sector)
+                      FROM sector_stats
+                  ) AS sectors
+             FROM totals""",
+    )
+    if row is None or int(row["signals"] or 0) == 0:
+        return None
+    signals = int(row["signals"] or 0)
+    up = int(row["up"] or 0)
+    down = int(row["down"] or 0)
+    mixed = int(row["mixed"] or 0)
+    coverage_change = int(row["coverage_change"] or 0)
+    return {
+        "window_days": 30,
+        "signals": signals,
+        "symbol_count": int(row["symbol_count"] or 0),
+        "up": up,
+        "down": down,
+        "mixed": mixed,
+        "coverage_change": coverage_change,
+        "net_revision_breadth": _round_float((up - down) / signals),
+        "sectors": _json(row["sectors"], {}) or {},
+        "source": "estimate_revision",
+    }
+
+
+async def _load_credit_internals_trend(pool: asyncpg.Pool) -> dict[str, Any] | None:
+    row = await pool.fetchrow(
+        """WITH obs AS (
+               SELECT source_ts,
+                      NULLIF(payload->>'value', '.')::double precision AS value,
+                      row_number() OVER (ORDER BY source_ts DESC) AS rn
+                 FROM ingest_event
+                WHERE source = 'fred'
+                  AND payload->>'series' = 'BAMLH0A0HYM2'
+                  AND NULLIF(payload->>'value', '.') IS NOT NULL
+           )
+           SELECT max(source_ts) FILTER (WHERE rn = 1) AS as_of,
+                  max(value) FILTER (WHERE rn = 1) AS latest,
+                  max(value) FILTER (WHERE rn = 5) AS prior_5_obs,
+                  max(value) FILTER (WHERE rn = 20) AS prior_20_obs,
+                  count(*) AS observations
+             FROM obs
+            WHERE rn <= 20""",
+    )
+    if row is None or row["latest"] is None:
+        return None
+    latest = float(row["latest"])
+    prior_5 = None if row["prior_5_obs"] is None else float(row["prior_5_obs"])
+    prior_20 = None if row["prior_20_obs"] is None else float(row["prior_20_obs"])
+    delta_5 = None if prior_5 is None else latest - prior_5
+    delta_20 = None if prior_20 is None else latest - prior_20
+    trend = "stable"
+    if delta_5 is not None:
+        if delta_5 <= -0.15:
+            trend = "tightening"
+        elif delta_5 >= 0.15:
+            trend = "widening"
+    return {
+        "as_of": _iso(row["as_of"]),
+        "latest_hy_oas_pct": _round_float(latest),
+        "delta_5_obs_pct": _round_float(delta_5),
+        "delta_20_obs_pct": _round_float(delta_20),
+        "trend": trend,
+        "observations": int(row["observations"] or 0),
+        "source": "fred:BAMLH0A0HYM2",
+    }
+
+
+async def _load_macro_internals(pool: asyncpg.Pool) -> dict[str, Any]:
+    breadth, sector_rs, earnings, credit = await asyncio.gather(
+        _load_market_breadth_internals(pool),
+        _load_sector_relative_strength(pool),
+        _load_earnings_breadth(pool),
+        _load_credit_internals_trend(pool),
+    )
+    out: dict[str, Any] = {}
+    if breadth:
+        out["market_breadth_internals"] = breadth
+    if sector_rs:
+        out["sector_relative_strength"] = sector_rs
+    if earnings:
+        out["earnings_breadth"] = earnings
+    if credit:
+        out["credit_internals_trend"] = credit
+    return out
+
+
 async def _load_market_state(pool: asyncpg.Pool) -> dict[str, Any] | None:
     row = await pool.fetchrow(
         """SELECT as_of, regime, capitulation, indicators, subsector_rs
@@ -533,12 +821,27 @@ async def _load_market_state(pool: asyncpg.Pool) -> dict[str, Any] | None:
     )
     if row is None:
         return None
+    internals = await _load_macro_internals(pool)
+    indicators = _json(row["indicators"], {})
+    if not isinstance(indicators, dict):
+        indicators = {}
+    indicators = {**indicators, **internals}
+    subsector_rs = _json(row["subsector_rs"], {})
+    if not isinstance(subsector_rs, dict):
+        subsector_rs = {}
+    sector_rs = internals.get("sector_relative_strength")
+    if isinstance(sector_rs, dict):
+        subsector_rs = {
+            item["sector"]: item
+            for item in sector_rs.get("sectors", [])
+            if isinstance(item, dict) and item.get("sector")
+        }
     return {
         "as_of": _iso(row["as_of"]),
         "regime": row["regime"],
         "capitulation": bool(row["capitulation"]),
-        "indicators": _json(row["indicators"], {}),
-        "subsector_rs": _json(row["subsector_rs"], {}),
+        "indicators": indicators,
+        "subsector_rs": subsector_rs,
     }
 
 

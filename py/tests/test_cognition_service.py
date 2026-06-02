@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+import stocks.cognition_service as cognition_service
 from stocks.cognition_service import (
     _await_with_ack_progress,
     _decline_attention_assignment,
@@ -12,6 +13,23 @@ from stocks.cognition_service import (
     _status_for_thesis_result,
     _sweep_trigger,
 )
+
+
+class FakePool:
+    def __init__(self, open_theses: int = 0) -> None:
+        self.open_theses = open_theses
+        self.finish_args = None
+
+    async def fetchval(self, sql: str, *_args):
+        if "INSERT INTO cognition_run" in sql:
+            return 42
+        if "count(*)" in sql:
+            return self.open_theses
+        raise AssertionError(f"unexpected fetchval: {sql}")
+
+    async def execute(self, sql: str, *args) -> None:
+        if "UPDATE cognition_run" in sql:
+            self.finish_args = args
 
 
 class FakeMsg:
@@ -67,6 +85,54 @@ async def test_run_symbol_once_releases_symbol_after_pipeline() -> None:
 
     assert ran
     assert in_flight == set()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_reconciles_existing_open_thesis(monkeypatch: pytest.MonkeyPatch) -> None:
+    pool = FakePool(open_theses=1)
+    draft_calls: list[str] = []
+
+    async def refresh_context(symbol: str) -> int:
+        assert symbol == "MU"
+        return 7
+
+    async def load_open_evidence_requirements(pool_arg, symbol: str) -> list[dict]:
+        assert pool_arg is pool
+        assert symbol == "MU"
+        return []
+
+    async def draft_thesis(symbol: str) -> dict:
+        draft_calls.append(symbol)
+        return {
+            "_thesis_id": "11111111-1111-4111-8111-111111111111",
+            "_reconciled_existing_thesis": True,
+            "_reconciliation_classification": "no_change",
+        }
+
+    async def noop(thesis_id: str) -> None:
+        assert thesis_id == "11111111-1111-4111-8111-111111111111"
+
+    monkeypatch.setattr(cognition_service, "refresh_context", refresh_context)
+    monkeypatch.setattr(
+        cognition_service,
+        "load_open_evidence_requirements",
+        load_open_evidence_requirements,
+    )
+    monkeypatch.setattr(cognition_service, "draft_thesis", draft_thesis)
+    monkeypatch.setattr(cognition_service, "sharpen_thesis", noop)
+    monkeypatch.setattr(cognition_service, "challenge_thesis", noop)
+
+    await cognition_service._run_pipeline(
+        pool,
+        "mu",
+        source_ref={"trigger": "open_thesis_update_loop"},
+    )
+
+    assert draft_calls == ["MU"]
+    assert pool.finish_args is not None
+    assert pool.finish_args[1] == "no_change"
+    assert pool.finish_args[3] == 7
+    assert pool.finish_args[5] == "no_change"
 
 
 def test_sweep_trigger_marks_open_thesis_update_when_evidence_exists() -> None:

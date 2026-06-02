@@ -2121,8 +2121,7 @@ impl Store {
                    WHERE dc.status = 'proposed'
                 ORDER BY dc.symbol, dc.signal_name, dc.proposed_at DESC
                ) latest
-            ORDER BY proposed_at DESC
-               LIMIT 100"#,
+            ORDER BY proposed_at DESC"#,
         )
         .fetch_all(&self.pool)
         .await
@@ -2175,7 +2174,21 @@ impl Store {
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| b.1.cmp(&a.1))
         });
-        Ok(ranked.into_iter().map(|(_, _, value)| value).collect())
+        let mut research_nominations = 0usize;
+        Ok(ranked
+            .into_iter()
+            .filter_map(|(_, _, value)| {
+                if value.get("signal_name").and_then(serde_json::Value::as_str)
+                    == Some("research_nomination")
+                {
+                    if research_nominations >= 100 {
+                        return None;
+                    }
+                    research_nominations += 1;
+                }
+                Some(value)
+            })
+            .collect())
     }
 
     /// Confirm a candidate to one or more watchlists. Updates status, adds

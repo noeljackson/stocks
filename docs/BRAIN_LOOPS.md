@@ -356,6 +356,12 @@ What works now:
 - Raw signals are composed with price-extension context.
 - Proactive names are queued as reasoned `research_nomination` items, not
   generic inspections.
+- Research nominations have an explicit review budget: only the best 100 open
+  nominations remain in `candidate_review`. Lower-ranked proactive suggestions
+  are superseded automatically so the operator is not asked to review the whole
+  screener pool. Real signal candidates such as breakouts, exhaustion, and
+  estimate/news shifts are not part of that nomination budget and are always
+  returned by the pending-candidate API alongside the top nominations.
 - Pending candidates are ranked before review using deterministic signal
   quality, domain fit, active parent-theme fit, proposed tier, and
   watchlist-classifier confidence. The API includes the linked parent themes so

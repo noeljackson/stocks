@@ -17,6 +17,7 @@ use super::{rate_limit, source_health};
 
 const MIN_MARKET_CAP: i64 = 5_000_000_000; // $5B floor
 const MAX_RESEARCH_NOMINATIONS_PER_PASS: i64 = 25;
+const MAX_OPEN_RESEARCH_NOMINATIONS: i64 = 100;
 const RESEARCH_NOMINATION_SIGNAL: &str = "research_nomination";
 const RESEARCH_NOMINATION_CONFIG_VERSION: &str = "research_nomination:v1";
 const MIN_NOMINATION_EVIDENCE_SCORE: i32 = 2;
@@ -342,6 +343,19 @@ pub async fn run_once(
                 0
             }
         };
+    let trimmed = match trim_open_research_nominations(pool, MAX_OPEN_RESEARCH_NOMINATIONS).await {
+        Ok(n) => n,
+        Err(e) => {
+            warn!(error = %e, "research nomination review budget trim failed");
+            0
+        }
+    };
+    if trimmed > 0 {
+        info!(
+            trimmed,
+            "research nomination review budget trimmed stale candidates"
+        );
+    }
     Ok((inserted, refreshed, dropped, nominations))
 }
 
@@ -508,6 +522,85 @@ async fn queue_research_nominations(pool: &PgPool, limit: i64) -> Result<usize> 
         created += 1;
     }
     Ok(created)
+}
+
+async fn trim_open_research_nominations(pool: &PgPool, keep: i64) -> Result<u64> {
+    use crate::attention::kind;
+    let res = sqlx::query(
+        r#"WITH ranked AS (
+             SELECT id,
+                    row_number() OVER (
+                        ORDER BY proposed_tier ASC,
+                                 COALESCE(signal_value, 0) DESC,
+                                 COALESCE(domain_fit, 0) DESC,
+                                 proposed_at DESC,
+                                 symbol ASC
+                    ) AS rn
+               FROM discovery_candidate
+              WHERE status = 'proposed'
+                AND signal_name = $1
+           ),
+           stale AS (
+             UPDATE discovery_candidate dc
+                SET status = 'superseded',
+                    decided_at = COALESCE(decided_at, now())
+               FROM ranked r
+              WHERE dc.id = r.id
+                AND r.rn > $2
+          RETURNING dc.id, dc.symbol, dc.signal_name
+           ),
+           matched AS (
+             SELECT ai.id, ai.fsm_state, stale.symbol, stale.signal_name
+               FROM attention_item ai
+               JOIN stale ON ai.candidate_id = stale.id
+              WHERE ai.kind = $3
+                AND ai.status = 'open'
+              FOR UPDATE OF ai
+           ),
+           updated AS (
+             UPDATE attention_item ai
+                SET status = 'dismissed',
+                    fsm_state = 'dismissed',
+                    owner = 'system',
+                    resolved_at = COALESCE(resolved_at, now()),
+                    resolution_kind = 'superseded_by_research_nomination_review_budget',
+                    resolution_ref = jsonb_build_object(
+                        'symbol', matched.symbol,
+                        'signal_name', matched.signal_name,
+                        'keep', $2
+                    ),
+                    next_retry_at = NULL,
+                    resurface_at = NULL,
+                    state_reason = 'superseded_by_research_nomination_review_budget'
+               FROM matched
+              WHERE ai.id = matched.id
+          RETURNING ai.id,
+                    matched.fsm_state AS from_state,
+                    ai.fsm_state AS to_state,
+                    ai.owner,
+                    ai.state_reason,
+                    ai.next_retry_at,
+                    ai.resurface_at,
+                    ai.resolution_ref
+           ),
+           inserted AS (
+             INSERT INTO attention_state_history
+                  (attention_id, from_state, to_state, owner, reason,
+                   next_retry_at, resurface_at, source_ref)
+             SELECT id, from_state, to_state, owner, state_reason,
+                    next_retry_at, resurface_at, resolution_ref
+               FROM updated
+          RETURNING 1
+           )
+           SELECT COUNT(*) AS n FROM stale"#,
+    )
+    .bind(RESEARCH_NOMINATION_SIGNAL)
+    .bind(keep.max(0))
+    .bind(kind::CANDIDATE_REVIEW)
+    .fetch_one(pool)
+    .await
+    .context("trim open research nominations")?;
+    Ok(res.try_get::<i64, _>("n").unwrap_or(0).max(0) as u64)
 }
 
 pub async fn run(pool: PgPool, adapter: FmpScreenerAdapter, interval: Duration) -> Result<()> {

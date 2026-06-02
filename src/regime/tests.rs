@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use pretty_assertions::assert_eq;
 
 use super::expr::eval;
+use super::service::{regime_evidence_polarity, regime_evidence_strength, regime_evidence_summary};
 use super::{Config, classify};
 use crate::platform::domain::Regime;
 
@@ -65,6 +66,49 @@ fn classify_degrades_to_neutral_without_spx() {
 fn classify_tie_goes_neutral() {
     let r = classify(&cfg(), &inputs(&[("hy_oas_pct", 6.0)]));
     assert_eq!(r.regime, Regime::Neutral);
+}
+
+#[test]
+fn regime_evidence_summary_names_transition_and_trigger() {
+    let summary = regime_evidence_summary(
+        Some(Regime::Neutral),
+        Regime::RiskOff,
+        false,
+        true,
+        "hy_oas_pct",
+        8.25,
+    );
+
+    assert_eq!(
+        summary,
+        "Market regime changed neutral -> risk_off after hy_oas_pct=8.25",
+    );
+}
+
+#[test]
+fn regime_evidence_summary_marks_capitulation_flip() {
+    let summary = regime_evidence_summary(
+        Some(Regime::RiskOff),
+        Regime::RiskOff,
+        false,
+        true,
+        "vix",
+        31.0,
+    );
+
+    assert_eq!(
+        summary,
+        "Market regime risk_off capitulation changed false -> true after vix=31.00",
+    );
+}
+
+#[test]
+fn regime_evidence_strength_and_polarity_are_directional() {
+    assert_eq!(regime_evidence_strength(true), 0.9);
+    assert_eq!(regime_evidence_strength(false), 0.7);
+    assert_eq!(regime_evidence_polarity(Regime::RiskOn), 0.5);
+    assert_eq!(regime_evidence_polarity(Regime::Neutral), 0.0);
+    assert_eq!(regime_evidence_polarity(Regime::RiskOff), -0.5);
 }
 
 #[test]

@@ -658,8 +658,8 @@ Current gaps:
   context shifts. Context and thesis prompts receive those facts directly,
   thesis drafting/reconciliation records `thesis_evidence` links for the
   current fact set, and the thesis UI shows those linked facts. Remaining work
-  is producer coverage for filings/regime changes and more selective
-  LLM-picked support/contradiction labels.
+  is producer coverage for filings and more selective LLM-picked
+  support/contradiction labels.
 
 Selected-symbol status now exposes the first slice of #128:
 

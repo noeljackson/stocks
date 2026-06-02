@@ -195,6 +195,36 @@
     return Array.isArray(raw) ? raw.filter((s): s is string => typeof s === "string") : [];
   }
 
+  function candidateAvailableData(item: AttentionItem | null): string[] {
+    const available = item?.source_ref?.available_data;
+    if (!available || typeof available !== "object" || Array.isArray(available)) return [];
+    return Object.entries(available as Record<string, unknown>)
+      .filter(([, value]) => value === true)
+      .map(([key]) => key.replace(/_/g, " "));
+  }
+
+  function candidateNominationReason(item: AttentionItem | null): string {
+    if (!item) return "";
+    const nomination = item.source_ref?.nomination_reasons;
+    if (nomination && typeof nomination === "object" && !Array.isArray(nomination)) {
+      const n = nomination as Record<string, unknown>;
+      const theme = typeof n.theme === "string" ? n.theme : "";
+      const fit = typeof n.business_fit === "string" ? n.business_fit : "";
+      if (theme && fit) return `${theme}: ${fit}`;
+      if (theme || fit) return theme || fit;
+    }
+    return displayReason(item.reason ?? item.title);
+  }
+
+  function candidateAcceptanceText(item: AttentionItem | null): string {
+    const nomination = item?.source_ref?.nomination_reasons;
+    if (nomination && typeof nomination === "object" && !Array.isArray(nomination)) {
+      const text = (nomination as Record<string, unknown>).acceptance_effect;
+      if (typeof text === "string" && text.trim()) return text;
+    }
+    return "add to monitored universe and run context/thesis";
+  }
+
   function displayReason(text: string): string {
     return text.replace(/vs SMA\b/g, "vs 200-day SMA");
   }
@@ -713,6 +743,17 @@
   let selectedSymbolAttention = $derived<AttentionItem[]>(
     attention.filter((item) => item.symbol === selectedSymbol),
   );
+  let selectedCandidateReviews = $derived<AttentionItem[]>(
+    selectedSymbolAttention.filter((item) => item.kind === "candidate_review"),
+  );
+  let selectedCandidateIds = $derived<number[]>([
+    ...new Set(
+      selectedCandidateReviews
+        .map((item) => item.candidate_id)
+        .filter((id): id is number => typeof id === "number"),
+    ),
+  ]);
+  let selectedCandidateReview = $derived<AttentionItem | null>(selectedCandidateReviews[0] ?? null);
   let retiredSymbolTheses = $derived.by<ThesisDetail[]>(() =>
     [...(symbolTheses ?? [])]
       .filter((t) => ["closed", "disqualified"].includes(t.state))
@@ -1069,6 +1110,7 @@
       const direction = thesisDirectionLabel(forecastDirectionFrom(currentSymbolThesis.forecast));
       return `${currentSymbolThesis.state.replace(/_/g, " ")} · ${direction}`;
     }
+    if (selectedCandidateReview) return "nominated";
     if ((symbolDeclines ?? []).length > 0) return "declined attempt";
     return "no thesis";
   }
@@ -1121,13 +1163,13 @@
     const decisionText = workflowDecisionText();
     const inPool = pool.some((item) => item.symbol === selectedSymbol);
 
-    if (!selectedTicker && inPool) {
+    if (selectedCandidateReview && !currentSymbolThesis) {
       return {
-        state: "Pool candidate",
+        state: "Awaiting promotion",
         tone: "candidate",
-        reason: "Not promoted into the active universe yet.",
-        primary: "Review candidate",
-        action: "attention",
+        reason: candidateNominationReason(selectedCandidateReview),
+        primary: "Review nomination",
+        action: "thesis",
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
@@ -1141,6 +1183,19 @@
         reason: "Loading context, evidence, thesis, and decision state.",
         primary: "Overview",
         action: "overview",
+        attention: attentionText,
+        evidence: evidenceText,
+        thesis: thesisText,
+        decision: decisionText,
+      };
+    }
+    if (!selectedTicker && inPool) {
+      return {
+        state: "Pool candidate",
+        tone: "candidate",
+        reason: "Not promoted into the active universe yet.",
+        primary: "Review candidate",
+        action: "attention",
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
@@ -3159,6 +3214,38 @@
                     </section>
                   {/if}
                 {/if}
+                {#if (!symbolTheses || symbolTheses.length === 0) && selectedCandidateReview}
+                  {@const availableData = candidateAvailableData(selectedCandidateReview)}
+                  <section class="nomination-state">
+                    <div class="nomination-hdr">
+                      <span class="badge tiny state-{selectedCandidateReview.fsm_state ?? 'ready_for_review'}">nominated</span>
+                      <strong>Awaiting promotion</strong>
+                      <span class="muted">{shortTs(selectedCandidateReview.created_at)}</span>
+                    </div>
+                    <p>{candidateNominationReason(selectedCandidateReview)}</p>
+                    {#if availableData.length > 0}
+                      <div class="brain-line">
+                        <span class="muted">available</span>
+                        {#each availableData as item}
+                          <span class="brain-token">{item}</span>
+                        {/each}
+                      </div>
+                    {/if}
+                    <p class="muted">Confirming will {candidateAcceptanceText(selectedCandidateReview)}.</p>
+                    <div class="att-actions">
+                      <button
+                        class="confirm"
+                        disabled={selectedCandidateIds.length === 0}
+                        onclick={() => confirmGroup(selectedCandidateIds)}
+                      >Confirm nomination</button>
+                      <button
+                        class="reject"
+                        disabled={selectedCandidateIds.length === 0}
+                        onclick={() => rejectGroup(selectedCandidateIds, "not_now")}
+                      >Reject</button>
+                    </div>
+                  </section>
+                {/if}
                 {#if symbolDeclines && symbolDeclines.length > 0}
                   <section class="declines">
                     <h4>Declined thesis attempts</h4>
@@ -3176,7 +3263,7 @@
                     </ul>
                   </section>
                 {/if}
-                {#if (!symbolTheses || symbolTheses.length === 0) && (!symbolDeclines || symbolDeclines.length === 0)}
+                {#if (!symbolTheses || symbolTheses.length === 0) && (!symbolDeclines || symbolDeclines.length === 0) && !selectedCandidateReview}
                   <p class="muted">
                     No thesis attempts for <strong>{selectedSymbol}</strong> yet.
                     The system should either draft a monitoring thesis or show a
@@ -3996,6 +4083,24 @@
     display: flex; align-items: baseline; gap: .4rem; margin-bottom: .25rem;
   }
   .decline-card p { margin: 0; color: #bac2de; line-height: 1.35; }
+  .nomination-state {
+    border: 1px solid #1f2733;
+    border-left: 3px solid rgb(180, 190, 254);
+    border-radius: 4px;
+    background: #0c1019;
+    padding: .6rem .7rem;
+    font-size: .8rem;
+    display: flex;
+    flex-direction: column;
+    gap: .4rem;
+  }
+  .nomination-state p { margin: 0; color: #bac2de; line-height: 1.35; }
+  .nomination-hdr {
+    display: flex;
+    align-items: baseline;
+    gap: .4rem;
+    flex-wrap: wrap;
+  }
   .brain-card {
     margin-top: .65rem;
     border: 1px solid #1f2733;

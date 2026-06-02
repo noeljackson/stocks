@@ -442,7 +442,7 @@ async function mockApi(
       await json(route, attentionOpen ? attentionItems : []);
       return;
     }
-    if (path === "/api/discovery/candidates/44/confirm" && request.method() === "POST") {
+    if (/^\/api\/discovery\/candidates\/\d+\/confirm$/.test(path) && request.method() === "POST") {
       calls.confirmBody = await request.postDataJSON();
       attentionOpen = false;
       await route.fulfill({ status: 204 });
@@ -1085,6 +1085,64 @@ test("workflow rail shows selected ticker state and routes to thesis review", as
   await page.getByTestId("workflow-primary").click();
 
   await expect(page.locator(".tabs button.active")).toHaveText("theses");
+});
+
+test("theses tab shows nominated state for unpromoted tickers", async ({ page }) => {
+  const calls = await mockApi(page, {
+    attentionItems: [{
+      id: 8801,
+      kind: "candidate_review",
+      symbol: "ORCL",
+      thesis_id: null,
+      candidate_id: 880,
+      severity: "review",
+      status: "open",
+      fsm_state: "ready_for_review",
+      owner: "operator",
+      title: "ORCL: research nomination",
+      reason: "Research nomination: Oracle fits software infrastructure for AI/cloud operations.",
+      source: "discovery",
+      source_ref: {
+        interpretation_kind: "research_nomination",
+        available_data: { price: true, news: true, estimates: true, fundamentals: true },
+        nomination_reasons: {
+          acceptance_effect: "add to monitored universe/watchlists and run context/thesis",
+          business_fit: "AI infrastructure needs secure, observable, automated cloud/software operations",
+          theme: "software infrastructure for AI/cloud operations",
+          suggested_watchlists: ["Software Infrastructure"],
+        },
+      },
+      created_at: "2026-06-01T00:00:00Z",
+      resolved_at: null,
+      resolution_kind: null,
+      next_retry_at: null,
+      resurface_at: null,
+      state_reason: "candidate_review",
+    }],
+  });
+  await page.goto("/symbol/ORCL");
+
+  const strip = page.getByTestId("workflow-strip");
+  await expect(strip).toContainText("ORCL");
+  await expect(strip).toContainText("Awaiting promotion");
+  await expect(strip).toContainText("nominated");
+
+  await page.getByRole("button", { name: "theses" }).click();
+
+  const nomination = page.locator(".nomination-state");
+  await expect(nomination).toContainText("Awaiting promotion");
+  await expect(nomination).toContainText("software infrastructure for AI/cloud operations");
+  await expect(nomination).toContainText("secure, observable, automated cloud/software operations");
+  await expect(nomination).toContainText("price");
+  await expect(nomination).toContainText("news");
+  await expect(nomination).toContainText("estimates");
+  await expect(nomination).toContainText("fundamentals");
+  await expect(nomination).toContainText("Confirming will add to monitored universe/watchlists and run context/thesis.");
+  await expect(page.getByText("No thesis attempts")).toHaveCount(0);
+
+  await nomination.getByRole("button", { name: "Confirm nomination" }).click();
+
+  await expect.poll(() => calls.confirmBody).toEqual({ watchlist_ids: [] });
 });
 
 test("workflow rail surfaces open position tracking and routes to decisions", async ({ page }) => {

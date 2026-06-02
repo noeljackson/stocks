@@ -374,7 +374,7 @@ What works now:
   watchlist-classifier confidence. The API includes the linked parent themes so
   the discovery tab can explain why a candidate is more than a raw alert.
 
-Current gaps:
+Current status and gaps:
 
 - #129: macro and sector theses exist as records, the cognition sweep maintains
   their coverage/freshness state, and a bounded parent-thesis LLM pass can
@@ -797,7 +797,10 @@ Current gaps:
   on narrative context older than 30 days. News-derived consensus components
   now require at least three articles in the last 14 days instead of treating
   thin coverage as a usable signal.
-- #90: separate system confidence from human conviction.
+- #90 implemented: thesis rows now carry machine `system_confidence` plus
+  `system_confidence_components`; decision rows carry operator
+  `human_conviction` plus freeform `reason`. Replay snapshots preserve both so
+  outcomes can later compare system/human agreement and override quality.
 - #13: challenge pass needs clearer surfaced adversarial flags.
 
 ## Chat Analyst Loop

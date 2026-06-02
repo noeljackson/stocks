@@ -682,6 +682,8 @@
   let decChoice = $state("deferred");
   let decDisagreementReason = $state("");
   let decDisagreementDetail = $state("");
+  let decHumanConviction = $state("");
+  let decReason = $state("");
   let decStatus = $state<string | null>(null);
   let replay = $state<DecisionReplay | null>(null);
   let replayStatus = $state<string | null>(null);
@@ -1520,6 +1522,10 @@
       decStatus = "describe the disagreement";
       return;
     }
+    if (!decHumanConviction) {
+      decStatus = "choose human conviction";
+      return;
+    }
     const qty = parseOptionalNumber(decQty);
     const fillPrice = parseOptionalNumber(decPrice);
     const fees = parseOptionalNumber(decFees) ?? 0;
@@ -1558,6 +1564,8 @@
         user_choice: decChoice,
         disagreement_reason: decDisagreementReason || undefined,
         disagreement_detail: decDisagreementDetail.trim() || undefined,
+        human_conviction: decHumanConviction,
+        reason: decReason.trim() || undefined,
         sizing: Object.keys(sizing).length > 0 ? sizing : undefined,
         manual_fill,
         chart_range_seen: `${chartState.range} ${chartState.interval}`,
@@ -2310,6 +2318,23 @@
               <select bind:value={decChoice}>
                 <option>confirmed</option><option>rejected</option><option>deferred</option>
               </select>
+            </label>
+            <label>
+              Human conviction
+              <select bind:value={decHumanConviction}>
+                <option value="">choose conviction…</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+              </select>
+            </label>
+            <label class="wide">
+              Decision reason
+              <textarea
+                bind:value={decReason}
+                rows="2"
+                placeholder="optional operator rationale"
+              ></textarea>
             </label>
             {#if decNeedsDisagreement}
               <label>
@@ -3156,6 +3181,7 @@
                         {#if d.thesis_direction}<span class="muted">thesis {d.thesis_direction}</span>{/if}
                         {#if d.instrument}<span class="muted">{d.instrument}</span>{/if}
                         {#if d.user_choice}<span class="muted">{d.user_choice}</span>{/if}
+                        {#if d.human_conviction}<span class="badge tiny">human {d.human_conviction}</span>{/if}
                         {#if d.disagreement_reason}
                           <span class="badge tiny reason">{disagreementLabel(d.disagreement_reason)}</span>
                         {/if}
@@ -3179,6 +3205,9 @@
                         {/if}
                         {#if d.disagreement_detail}
                           <p class="decision-detail">{d.disagreement_detail}</p>
+                        {/if}
+                        {#if d.reason}
+                          <p class="decision-detail">reason: {d.reason}</p>
                         {/if}
                       </li>
                     {/each}
@@ -3221,8 +3250,16 @@
                           {/if}
                         </p>
                       {/if}
+                      {#if replaySnapshotString(replay, "human_conviction") || replaySnapshotString(replay, "reason")}
+                        <p class="replay-risk">
+                          human conviction: {replaySnapshotString(replay, "human_conviction") || "n/a"}
+                          {#if replaySnapshotString(replay, "reason")}
+                            · {replaySnapshotString(replay, "reason")}
+                          {/if}
+                        </p>
+                      {/if}
                       {#if replay.system_confidence}
-                        <span class="badge tiny">confidence {replay.system_confidence}</span>
+                        <span class="badge tiny">system confidence {replay.system_confidence}</span>
                       {/if}
                       {#if replay.evidence_snapshot.length > 0}
                         <ul class="replay-evidence">

@@ -138,6 +138,8 @@ export interface ThesisDetail {
   fulfillment_conditions: Condition[];
   known_unknowns: KnownUnknown[];
   conviction_tier?: string | null;
+  system_confidence?: string | null;
+  system_confidence_components?: Record<string, unknown> | null;
   instrument?: string | null;
   intended_size: Record<string, unknown> | null;
   version: number;
@@ -864,6 +866,8 @@ export interface DecisionRow {
   user_choice?: string | null;
   disagreement_reason?: string | null;
   disagreement_detail?: string | null;
+  human_conviction?: string | null;
+  reason?: string | null;
   sizing?: Record<string, unknown> | null;
   thesis_state?: string | null;
   thesis_direction?: string | null;
@@ -934,6 +938,8 @@ export async function postDecision(d: {
   user_choice: string;
   disagreement_reason?: string;
   disagreement_detail?: string;
+  human_conviction: string;
+  reason?: string;
   sizing?: unknown;
   manual_fill?: unknown;
   chart_range_seen?: string;

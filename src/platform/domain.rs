@@ -284,6 +284,10 @@ pub struct ThesisDetail {
     pub fulfillment_conditions: serde_json::Value,
     pub known_unknowns: serde_json::Value,
     pub conviction_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_confidence: Option<String>,
+    #[serde(default)]
+    pub system_confidence_components: serde_json::Value,
     pub instrument: Option<String>,
     pub intended_size: serde_json::Value,
     pub version: i32,

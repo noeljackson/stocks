@@ -686,6 +686,7 @@ bull case
 bear case
 forecast
 technical_state link
+system_confidence + components
 conviction conditions
 trigger conditions
 invalidation conditions
@@ -702,6 +703,13 @@ confidence, what evidence to watch for, and the source/check date when known.
 If the model omits them, the engine derives a bounded list from
 `missing_evidence` rather than leaving the operator with a blank uncertainty
 surface. The thesis detail panel shows these questions next to linked evidence.
+
+`system_confidence` is the machine's evidence-strength judgment for the thesis,
+not the operator's belief. It is stored with `system_confidence_components`
+covering drivers such as evidence strength, freshness, missing evidence, known
+unknowns, and technical timing. `conviction_tier` remains the state-machine
+promotion/ranking tier. Human belief is recorded only when the operator records a
+decision, via `decision.human_conviction` and `decision.reason`.
 
 State transition principle:
 

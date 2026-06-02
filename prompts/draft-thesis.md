@@ -101,6 +101,14 @@ forward claim; otherwise it belongs in monitoring/no-edge rationale.
   "trigger_conditions": [ ... same shape as conviction_conditions ... ],
   "invalidation_conditions": [ ... same shape ... ],
   "fulfillment_conditions": [ ... same shape ... ],
+  "system_confidence": "very_high" | "high" | "medium" | "low",
+  "system_confidence_components": {
+    "evidence_strength": "short reason for the confidence bucket",
+    "freshness": "fresh" | "usable" | "stale" | "missing",
+    "missing_evidence_count": <number>,
+    "known_unknowns_count": <number>,
+    "technical_timing": "attractive" | "neutral" | "extended" | "broken"
+  },
   "conviction_tier": "high" | "medium" | "low",
   "instrument": "equity" | "leaps",
   "intended_size_pct": <number, percent of portfolio — soft proposal>,
@@ -120,20 +128,21 @@ forward claim; otherwise it belongs in monitoring/no-edge rationale.
 8. **Always include `known_unknowns`.** These are not missing inputs in disguise; they are the specific uncertainties that would materially change confidence in the thesis. Include at least one. Use `missing_evidence` when the system lacks a source, and `known_unknowns` when the source is expected but the answer is not known yet.
 9. **If `missing_evidence` contains blocking requirements**, decline and copy those requirements into the output `missing_evidence` list. Missing evidence is a retryable acquisition state, not a final conclusion.
 10. **If `missing_evidence` is non-empty but non-blocking**, you may draft a monitoring thesis only when the remaining context is enough to state a useful base case. Copy the still-missing requirements into the output list so the operator sees what weakens the view.
-11. **If the context is substantial but no edge exists**, set `thesis_kind: "monitoring"`, `edge_present: false`, `forecast.direction: "neutral"`, `conviction_tier: "low"`, and draft useful bull/bear/conditions. The conditions should describe what would make the thesis become actionable or invalid.
+11. **If the context is substantial but no edge exists**, set `thesis_kind: "monitoring"`, `edge_present: false`, `forecast.direction: "neutral"`, `system_confidence: "low"`, `conviction_tier: "low"`, and draft useful bull/bear/conditions. The conditions should describe what would make the thesis become actionable or invalid.
 12. **Use `parent_theses` as context, not as proof.** A bullish theme can explain why {{symbol}} deserves monitoring, but the ticker thesis still needs ticker-specific evidence. If the ticker contradicts a parent theme, say so directly in `bear_case`, `no_edge_reason`, or `cluster_thesis`.
 13. **Cite normalized facts.** When a claim is grounded in news, estimate revisions, rating changes, or other `evidence_items`, name the fact source/date in prose and condition `evidence_source`.
-14. **Conviction tier mapping**: `high` = ≥1 strong quant-anchored invalidation + bear case actually challenges + 6-12mo horizon; `medium` = some specificity, some hedging; `low` = clearly thin or monitoring.
-15. **Instrument**: `equity` by default; `leaps` only if there's a specific catalyst with a defined window AND the bet is on a magnitude move, not a directional drift.
-16. **Forecast direction is not technical state.** A symbol may have an `up`
+14. **System confidence is machine confidence, not operator conviction.** `very_high` requires fresh, multi-source, ticker-specific evidence with clear falsification and no blocking data gaps; `high` requires strong evidence and a real bear-case challenge; `medium` means useful but still materially uncertain; `low` means thin, monitoring, stale, or missing important inputs. Put the drivers in `system_confidence_components`.
+15. **Conviction tier is only the promotion/ranking tier used by the state machine.** Map `very_high` and `high` system confidence to `conviction_tier: "high"`, `medium` to `"medium"`, and `low` to `"low"`.
+16. **Instrument**: `equity` by default; `leaps` only if there's a specific catalyst with a defined window AND the bet is on a magnitude move, not a directional drift.
+17. **Forecast direction is not technical state.** A symbol may have an `up`
 forecast and still be technically extended. Use `forecast.technical_state` to
 separate the fundamental/narrative thesis from current chart regime.
-17. **Respect overextension without pretending it invalidates the thesis.** If
+18. **Respect overextension without pretending it invalidates the thesis.** If
 `context.market.price_snapshot` shows price more than 20% above the 200-day
 SMA, within 2% of the available-window high, or RSI 14 above 70, mark
 `technical_state.state` as `extended` unless the supplied context gives a
 better technical reason. Explain what that implies for timing/decision quality.
 Always name the SMA window.
-18. **Do not say there is no public data about a named product/theme unless `missing_evidence` includes `product_research` or the context shows an empty/failed research retrieval pass.** If retrieved research sources are present, either use them or explain why they are not relevant.
+19. **Do not say there is no public data about a named product/theme unless `missing_evidence` includes `product_research` or the context shows an empty/failed research retrieval pass.** If retrieved research sources are present, either use them or explain why they are not relevant.
 
 Output the JSON. Nothing else.

@@ -23,6 +23,7 @@
     fetchPositions,
     fetchRegime,
     fetchResearchEvidence,
+    fetchTechnicalState,
     fetchThesisDeclines,
     fetchTheses,
     fetchTickerContext,
@@ -50,6 +51,7 @@
     type PositionRow,
     type ResearchEvidence,
     type StreamEvent,
+    type TechnicalState,
     type ThesisDetail,
     type ThesisDecline,
     type Ticker,
@@ -58,12 +60,13 @@
     type WatchlistMember,
   } from "./lib/api";
   import ContextPanel from "./lib/ContextPanel.svelte";
+  import TechnicalStatePanel from "./lib/TechnicalStatePanel.svelte";
   import ThesisDetails from "./lib/ThesisDetails.svelte";
   import ChartPanel from "./lib/ChartPanel.svelte";
   import { PaneGroup, Pane, PaneResizer } from "paneforge";
 
   // ---------- workspace state ----------
-  type RightTab = "overview" | "context" | "evidence" | "theses" | "alerts" | "decisions";
+  type RightTab = "overview" | "technical" | "context" | "evidence" | "theses" | "alerts" | "decisions";
   type BottomMode = "brain" | "attention" | "events" | "discovery" | "decisions" | "calibration" | "diagnostics";
 
   let selectedSymbol = $state<string | null>(null);
@@ -504,6 +507,7 @@
   let symbolEvidence = $state<EvidenceRequirement[] | undefined>(undefined);
   let symbolEvidenceItems = $state<EvidenceItem[] | undefined>(undefined);
   let symbolResearch = $state<ResearchEvidence[] | undefined>(undefined);
+  let symbolTechnical = $state<TechnicalState | null | undefined>(undefined);
   let symbolBrain = $state<BrainStatus | null | undefined>(undefined);
   let symbolTheses = $state<ThesisDetail[] | null | undefined>(undefined);
   let symbolDeclines = $state<ThesisDecline[] | null | undefined>(undefined);
@@ -764,17 +768,19 @@
     symbolEvidence = undefined;
     symbolEvidenceItems = undefined;
     symbolResearch = undefined;
+    symbolTechnical = undefined;
     symbolBrain = undefined;
     symbolTheses = undefined;
     symbolDeclines = undefined;
     symbolDecisions = undefined;
     symbolPositions = undefined;
     // Fetch detail in parallel.
-    const [ctx, evidence, evidenceItems, research, brain, theses, declines, decisions, positions] = await Promise.all([
+    const [ctx, evidence, evidenceItems, research, technical, brain, theses, declines, decisions, positions] = await Promise.all([
       fetchTickerContext(symbol).catch(() => null),
       fetchEvidenceRequirements(symbol).catch(() => []),
       fetchEvidenceItems(symbol).catch(() => []),
       fetchResearchEvidence(symbol).catch(() => []),
+      fetchTechnicalState(symbol).catch(() => null),
       fetchBrainStatus(symbol).catch(() => null),
       fetchTheses(symbol).catch(() => []),
       fetchThesisDeclines(symbol).catch(() => []),
@@ -785,6 +791,7 @@
     symbolEvidence = evidence;
     symbolEvidenceItems = evidenceItems;
     symbolResearch = research;
+    symbolTechnical = technical;
     symbolBrain = brain;
     symbolTheses = theses;
     symbolDeclines = declines;
@@ -1964,7 +1971,7 @@
       <section class="detail-section">
         {#if selectedSymbol}
           <nav class="tabs">
-            {#each ["overview", "context", "evidence", "theses", "alerts", "decisions"] as RightTab[] as t}
+            {#each ["overview", "technical", "context", "evidence", "theses", "alerts", "decisions"] as RightTab[] as t}
               <button class:active={rightTab === t} onclick={() => (rightTab = t)}>{t}</button>
             {/each}
           </nav>
@@ -2052,6 +2059,32 @@
                   </ul>
                 </section>
               {/if}
+              <section class="brain-card technical-overview">
+                <div class="brain-hdr">
+                  <span class="brain-title">Technical</span>
+                  {#if symbolTechnical === undefined}
+                    <span class="muted">loading</span>
+                  {:else if symbolTechnical}
+                    <span class="badge tiny tech-{symbolTechnical.state}">
+                      {symbolTechnical.state.replace(/_/g, " ")}
+                    </span>
+                    {#if symbolTechnical.daily}
+                      {@const sma200 = symbolTechnical.daily.sma.find((s) => s.window === 200)}
+                      {#if sma200?.pct_vs !== null && sma200?.pct_vs !== undefined}
+                        <span class="muted">{sma200.pct_vs > 0 ? "+" : ""}{sma200.pct_vs.toFixed(1)}% vs 200D</span>
+                      {/if}
+                    {/if}
+                    <button type="button" class="text-action" onclick={() => (rightTab = "technical")}>open</button>
+                  {:else}
+                    <span class="muted">unavailable</span>
+                  {/if}
+                </div>
+                {#if symbolTechnical}
+                  <p>{symbolTechnical.summary}</p>
+                {/if}
+              </section>
+            {:else if rightTab === "technical"}
+              <TechnicalStatePanel state={symbolTechnical} />
             {:else if rightTab === "context"}
               {#if symbolContext === undefined}
                 <p class="muted">Loading…</p>
@@ -2764,6 +2797,7 @@
   .brain-card.brain-stale,
   .brain-card.brain-waiting_on_evidence { border-left-color: rgb(249,226,175); }
   .brain-card.brain-blocked { border-left-color: rgb(243,139,168); }
+  .brain-card.technical-overview { border-left-color: #6c7693; }
   .brain-card p {
     margin: .35rem 0;
     color: #bac2de;
@@ -2931,6 +2965,11 @@
   .badge.brain-source-rate_limited { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
   .badge.brain-dir-risk_off,
   .badge.brain-dir-bearish { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
+  .badge.tech-constructive,
+  .badge.tech-base_building { background: rgba(166,227,161,.18); color: rgb(166,227,161); }
+  .badge.tech-extended { background: rgba(249,226,175,.15); color: rgb(249,226,175); }
+  .badge.tech-deteriorating { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
+  .badge.tech-unknown { background: rgba(108,112,134,.2); color: #9aa3b8; }
 
   /* Attention queue (#86) — grouped card design */
   .att-toolbar { display: flex; gap: .5rem; align-items: baseline; margin-bottom: .5rem; flex-wrap: wrap; }

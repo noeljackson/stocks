@@ -644,11 +644,13 @@ What works now:
   attention instead of fake `thesis.updated` events.
 - The draft-thesis prompt now asks for `forecast.technical_state` so fresh
   thesis runs can separate direction from chart regime.
+- `/api/technical-state?symbol=SYMBOL` now serves a derived technical package
+  from stored bars, and the symbol detail panel exposes it as a Technical tab.
 
 Current gaps:
 
-- The technical-state package itself is not yet persisted as a first-class
-  table/API with multi-timeframe RSI/SMA analog history.
+- The technical-state package is not persisted yet and is not automatically
+  attached to thesis/context/chat prompt inputs.
 - #141: reconciliation history needs a clearer operator-facing timeline.
 - #96: theses should declare known unknowns.
 - #97: stale evidence should reduce confidence, not just show as a warning.
@@ -852,7 +854,7 @@ implemented first slice
 missing
   full producer adoption for attention retry/blocked transitions
   broader macro/factor/commodity data coverage for parent thesis generation
-  first-class technical_state table/API with multi-timeframe analogs
+  persisted technical_state history and prompt-loop ingestion
   chat analyst routed prompt loop
   paid semantic research provider if GDELT recall is insufficient
   real broker/position execution state

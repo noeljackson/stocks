@@ -22,7 +22,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tracing::warn;
 
 use super::Gateway;
-use crate::platform::subjects;
+use crate::platform::{subjects, technical::build_technical_state};
 use crate::web::Dist;
 
 pub(super) fn build(gw: Arc<Gateway>) -> Router {
@@ -46,6 +46,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         )
         .route("/api/ticker-context", get(get_ticker_context))
         .route("/api/candles", get(get_candles))
+        .route("/api/technical-state", get(get_technical_state))
         .route("/api/symbol-events", get(get_symbol_events))
         .route("/api/decisions", get(get_decisions).post(record_decision))
         .route("/api/positions", get(get_positions))
@@ -533,6 +534,86 @@ async fn get_candles(
         Err(e) => {
             warn!(symbol = %sym, error = %e, "get_candles failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn get_technical_state(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<ThesesQuery>,
+) -> impl IntoResponse {
+    let Some(sym) = q.symbol else {
+        return (StatusCode::BAD_REQUEST, "symbol query param required").into_response();
+    };
+    let daily = match gw.store.daily_technical_bars_for(&sym, 365 * 30).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!(symbol = %sym, error = %e, "get daily technical bars failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    };
+    let intraday_specs = [
+        ("30m", "30min", 90, 30),
+        ("2h", "1hour", 180, 120),
+        ("4h", "4hour", 365, 240),
+    ];
+    let mut intraday = Vec::new();
+    for (label, native_interval, lookback_days, bucket_minutes) in intraday_specs {
+        maybe_backfill_intraday(&gw, &sym, native_interval, lookback_days).await;
+        match gw
+            .store
+            .intraday_technical_bars_for(&sym, native_interval, lookback_days, bucket_minutes)
+            .await
+        {
+            Ok(rows) => intraday.push((label, rows)),
+            Err(e) => {
+                warn!(symbol = %sym, interval = native_interval, error = %e, "get intraday technical bars failed");
+                intraday.push((label, Vec::new()));
+            }
+        }
+    }
+    let state = build_technical_state(&sym, &daily, &intraday);
+    (StatusCode::OK, Json(state)).into_response()
+}
+
+async fn maybe_backfill_intraday(
+    gw: &Gateway,
+    symbol: &str,
+    native_interval: &str,
+    lookback_days: i64,
+) {
+    if !gw.fmp_intraday.configured() {
+        return;
+    }
+    let latest = match gw
+        .store
+        .latest_intraday_bar_ts(symbol, native_interval)
+        .await
+    {
+        Ok(latest) => latest,
+        Err(e) => {
+            warn!(symbol = %symbol, interval = native_interval, error = %e, "latest intraday technical bar lookup failed");
+            return;
+        }
+    };
+    let stale = latest
+        .map(|ts| chrono::Utc::now() - ts > chrono::Duration::minutes(30))
+        .unwrap_or(true);
+    if !stale {
+        return;
+    }
+    match gw
+        .fmp_intraday
+        .fetch_one(symbol, native_interval, lookback_days)
+        .await
+    {
+        Ok(rows) => {
+            if let Err(e) = gw.store.upsert_intraday_price_bars(&rows).await {
+                warn!(symbol = %symbol, interval = native_interval, error = %e, "persist intraday technical bars failed");
+            }
+        }
+        Err(e) => {
+            warn!(symbol = %symbol, interval = native_interval, error = %e, "fetch intraday technical bars failed");
         }
     }
 }

@@ -18,6 +18,7 @@ use crate::platform::domain::{
     Alert, AlertKind, Condition, MarketStateRow, ThesisDetail, ThesisSubstance, ThesisVersionEvent,
     TickerContextRow, TickerRow, Watchlist, WatchlistMember, WellFormedCondCounts,
 };
+use crate::platform::technical::TechnicalBar;
 use crate::thesis::substance::{self, Thesis as SubstanceInput};
 
 #[derive(Clone)]
@@ -1356,6 +1357,87 @@ impl Store {
                     "close": r.try_get::<f64, _>("close")?,
                     "volume": r.try_get::<f64, _>("volume")?,
                 }))
+            })
+            .collect()
+    }
+
+    pub async fn daily_technical_bars_for(
+        &self,
+        symbol: &str,
+        lookback_days: i64,
+    ) -> Result<Vec<TechnicalBar>> {
+        let rows = sqlx::query(
+            r#"WITH daily AS (
+                 SELECT (date_trunc('day', ts AT TIME ZONE 'UTC'))::date AS day,
+                        (array_agg(ts ORDER BY ts DESC))[1] AS ts,
+                        max(high::float8) AS high,
+                        min(low::float8) AS low,
+                        (array_agg(close::float8 ORDER BY ts DESC))[1] AS close
+                   FROM price_bar
+                  WHERE symbol = $1
+                    AND ts > now() - ($2 || ' days')::interval
+               GROUP BY 1
+             )
+             SELECT ts, close, high, low
+               FROM daily
+              ORDER BY day ASC"#,
+        )
+        .bind(symbol)
+        .bind(lookback_days.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .context("daily_technical_bars_for")?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(TechnicalBar {
+                    ts: r.try_get("ts")?,
+                    close: r.try_get("close")?,
+                    high: r.try_get("high")?,
+                    low: r.try_get("low")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn intraday_technical_bars_for(
+        &self,
+        symbol: &str,
+        native_interval: &str,
+        lookback_days: i64,
+        bucket_minutes: i64,
+    ) -> Result<Vec<TechnicalBar>> {
+        let rows = sqlx::query(
+            r#"WITH bucketed AS (
+                 SELECT to_timestamp(floor(extract(epoch FROM ts) / ($4::float8 * 60.0)) * ($4::float8 * 60.0)) AS bucket,
+                        ts, close::float8 AS close, high::float8 AS high, low::float8 AS low
+                   FROM price_bar_intraday
+                  WHERE symbol = $1
+                    AND interval = $2
+                    AND ts > now() - ($3 || ' days')::interval
+             )
+             SELECT bucket,
+                    (array_agg(close ORDER BY ts DESC))[1] AS close,
+                    max(high) AS high,
+                    min(low) AS low
+               FROM bucketed
+              GROUP BY bucket
+              ORDER BY bucket ASC"#,
+        )
+        .bind(symbol)
+        .bind(native_interval)
+        .bind(lookback_days.to_string())
+        .bind(bucket_minutes)
+        .fetch_all(&self.pool)
+        .await
+        .context("intraday_technical_bars_for")?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(TechnicalBar {
+                    ts: r.try_get("bucket")?,
+                    close: r.try_get("close")?,
+                    high: r.try_get("high")?,
+                    low: r.try_get("low")?,
+                })
             })
             .collect()
     }

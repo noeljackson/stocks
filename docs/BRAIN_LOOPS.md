@@ -684,8 +684,8 @@ chat-analyst prompt
         |
         +-> answer with citations
         +-> create missing source tasks when evidence is absent
-        +-> route material thesis changes to reconciliation
-        +-> route action implications to attention/review packet
+        +-> flag material thesis changes for reconciliation
+        +-> flag action implications for attention/review packet
 ```
 
 Rules:
@@ -696,6 +696,29 @@ no silent thesis mutation
 no direct trade decision
 all calls through prompt registry with llm_invocation audit
 ```
+
+Current implementation:
+
+- `POST /api/chat-analyst` loads the symbol evidence package, including
+  `technical_state`, current thesis/history, parent brain theses, evidence
+  facts, requirements/source tasks, decisions, and positions.
+- The route invokes `prompts/chat-analyst.md` through the audited prompt
+  registry and records `llm_invocation`.
+- Slow provider calls time out and return a deterministic evidence-only
+  fallback after recording a timeout `llm_invocation` row with the prompt hash.
+- Requested missing evidence is converted into `evidence_requirement` and
+  `source_task` rows for the selected symbol.
+- The right-side workspace has an Analyst tab for symbol, technical, and
+  decision questions.
+
+Current gaps:
+
+- Theme/macro-only analyst questions are package-light compared with symbol
+  questions.
+- Material thesis changes are returned as `thesis_impact`; they do not yet
+  auto-create reconciliation packets.
+- Action implications are returned as `attention_request`; they do not yet
+  auto-create review packets.
 
 ## Evaluation And Safety Loops
 

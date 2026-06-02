@@ -59,6 +59,7 @@
     type Watchlist,
     type WatchlistMember,
   } from "./lib/api";
+  import AnalystPanel from "./lib/AnalystPanel.svelte";
   import ContextPanel from "./lib/ContextPanel.svelte";
   import TechnicalStatePanel from "./lib/TechnicalStatePanel.svelte";
   import ThesisDetails from "./lib/ThesisDetails.svelte";
@@ -66,7 +67,7 @@
   import { PaneGroup, Pane, PaneResizer } from "paneforge";
 
   // ---------- workspace state ----------
-  type RightTab = "overview" | "technical" | "context" | "evidence" | "theses" | "alerts" | "decisions";
+  type RightTab = "overview" | "analyst" | "technical" | "context" | "evidence" | "theses" | "alerts" | "decisions";
   type BottomMode = "brain" | "attention" | "events" | "discovery" | "decisions" | "calibration" | "diagnostics";
 
   let selectedSymbol = $state<string | null>(null);
@@ -1971,7 +1972,7 @@
       <section class="detail-section">
         {#if selectedSymbol}
           <nav class="tabs">
-            {#each ["overview", "technical", "context", "evidence", "theses", "alerts", "decisions"] as RightTab[] as t}
+            {#each ["overview", "analyst", "technical", "context", "evidence", "theses", "alerts", "decisions"] as RightTab[] as t}
               <button class:active={rightTab === t} onclick={() => (rightTab = t)}>{t}</button>
             {/each}
           </nav>
@@ -2083,6 +2084,8 @@
                   <p>{symbolTechnical.summary}</p>
                 {/if}
               </section>
+            {:else if rightTab === "analyst"}
+              <AnalystPanel symbol={selectedSymbol} />
             {:else if rightTab === "technical"}
               <TechnicalStatePanel state={symbolTechnical} />
             {:else if rightTab === "context"}

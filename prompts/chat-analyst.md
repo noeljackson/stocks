@@ -18,6 +18,8 @@ Inputs:
 - `current_thesis`: current standing thesis and version history when available.
 - `evidence_items`: normalized facts with source, observed_at, strength, polarity,
   URL, and source row pointer.
+- `research_evidence`: retrieved public web research rows with title, publisher,
+  URL, publication/retrieval time, credibility, query, and summary.
 - `evidence_requirements`: missing or stale data state and source tasks.
 - `decisions` and `positions`: only when relevant to the question.
 

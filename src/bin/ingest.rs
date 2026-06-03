@@ -17,6 +17,8 @@ use stocks::ingest::fmp_estimates_service;
 use stocks::ingest::fmp_news::FmpNewsAdapter;
 use stocks::ingest::fmp_opinion::FmpOpinionAdapter;
 use stocks::ingest::fmp_opinion_service;
+use stocks::ingest::fmp_profile_calendar::FmpProfileCalendarAdapter;
+use stocks::ingest::fmp_profile_calendar_service;
 use stocks::ingest::fred::FredAdapter;
 use stocks::ingest::massive_news::MassiveNewsAdapter;
 use stocks::ingest::news_service::{self, NewsIngestService, ScorerFn};
@@ -366,6 +368,23 @@ async fn main() -> Result<()> {
             let interval = ingest::interval_secs_from_env("FMP_OPINION_INTERVAL_SECS", 30 * 60);
             if let Err(e) = fmp_opinion_service::run(pool, adapter, interval).await {
                 error!(error = %e, "fmp_analyst_opinion service exited");
+            }
+        });
+    }
+
+    // FMP profile + earnings calendar (#260): issuer metadata plus upcoming
+    // and recent earnings events. These feed context classification and
+    // catalyst timing, separate from estimates/opinion.
+    {
+        let pool = store.pool.clone();
+        let key = cfg.fmp_api_key.clone();
+        let base = cfg.fmp_base_url.clone();
+        tokio::spawn(async move {
+            let adapter = FmpProfileCalendarAdapter::new(&key, &base);
+            let interval =
+                ingest::interval_secs_from_env("FMP_PROFILE_CALENDAR_INTERVAL_SECS", 30 * 60);
+            if let Err(e) = fmp_profile_calendar_service::run(pool, adapter, interval).await {
+                error!(error = %e, "fmp_profile_calendar service exited");
             }
         });
     }

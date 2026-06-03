@@ -359,6 +359,13 @@
     return parts.length ? parts.join(" · ") : "not seen";
   }
 
+  function formatCompact(value: number): string {
+    return new Intl.NumberFormat("en-US", {
+      notation: "compact",
+      maximumFractionDigits: 1,
+    }).format(value);
+  }
+
   function sourceDetail(source: BrainSourceStatus): string {
     const parts: string[] = [];
     const detail = source.detail ?? {};
@@ -370,6 +377,12 @@
     const contextAge = detail.context_age_minutes;
     const normalizedItems = detail.normalized_items;
     const evidenceDelta = detail.evidence_delta;
+    const companyName = detail.company_name;
+    const sector = detail.sector;
+    const industry = detail.industry;
+    const marketCap = detail.market_cap;
+    const earningsEvents = detail.earnings_events;
+    const nextEarningsDate = detail.next_earnings_date;
     const rowsSeen = sourceHealth.rows_seen;
     const rowsInserted = sourceHealth.rows_inserted;
     const opinionCounts = [
@@ -384,6 +397,11 @@
     if (source.version !== null && source.version !== undefined) parts.push(`v${source.version}`);
     if (source.state) parts.push(source.direction ? `${source.state} ${source.direction}` : source.state);
     if (expectedSession || latestSession) parts.push(`session ${String(latestSession ?? "none")}/${String(expectedSession ?? "expected")}`);
+    if (companyName) parts.push(String(companyName));
+    if (sector || industry) parts.push([sector, industry].filter(Boolean).join(" / "));
+    if (typeof marketCap === "number") parts.push(`market cap ${formatCompact(marketCap)}`);
+    if (typeof earningsEvents === "number") parts.push(`${earningsEvents} earnings events`);
+    if (nextEarningsDate) parts.push(`next ${String(nextEarningsDate)}`);
     if (publishedAt) parts.push(`published ${relativeTime(String(publishedAt))}`);
     if (opinionCounts.length) parts.push(opinionCounts.join(" · "));
     if (typeof contextAge === "number") parts.push(`context ${Math.round(contextAge)}m old`);
@@ -597,9 +615,12 @@
     if (!counts || typeof counts !== "object" || Array.isArray(counts)) return "";
     const keyByRequirement: Record<string, string> = {
       price_history: "price_bars",
+      company_profile: "company_profiles",
       company_facts: "company_facts",
+      earnings_calendar: "earnings_calendar_events",
       recent_news: "recent_news",
       analyst_estimates: "estimate_snapshots",
+      analyst_opinion: "analyst_price_target_snapshots",
       product_research: "research_evidence",
     };
     const countKey = keyByRequirement[req.requirement_key];

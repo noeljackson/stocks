@@ -657,6 +657,21 @@ async function mockApi(
             source_health: { rows_seen: 12, rows_inserted: 1 },
           },
           {
+            source: "profile",
+            status: "fresh",
+            last_changed_at: "2026-06-01T00:00:00Z",
+            last_checked_at: "2026-06-01T00:00:00Z",
+            max_age_minutes: 30,
+            detail: {
+              company_profiles: 1,
+              company_name: "NVIDIA Corporation",
+              sector: "Technology",
+              industry: "Semiconductors",
+              market_cap: 5396923220000,
+            },
+            source_health: { rows_seen: 1, rows_inserted: 1 },
+          },
+          {
             source: "analyst_opinion",
             status: "fresh",
             last_changed_at: "2026-06-01T00:00:00Z",
@@ -676,6 +691,18 @@ async function mockApi(
               last_error: null,
               updated_at: "2026-06-01T00:00:00Z",
             }],
+          },
+          {
+            source: "earnings",
+            status: "fresh",
+            last_changed_at: "2026-06-01T00:00:00Z",
+            last_checked_at: "2026-06-01T00:00:00Z",
+            max_age_minutes: 30,
+            detail: {
+              earnings_events: 5,
+              next_earnings_date: "2026-08-26",
+            },
+            source_health: { rows_seen: 5, rows_inserted: 5 },
           },
           {
             source: "evidence",

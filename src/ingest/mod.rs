@@ -15,6 +15,8 @@ pub mod fmp_intraday;
 pub mod fmp_news;
 pub mod fmp_opinion;
 pub mod fmp_opinion_service;
+pub mod fmp_profile_calendar;
+pub mod fmp_profile_calendar_service;
 pub mod fmp_screener;
 pub mod fred;
 pub mod massive;

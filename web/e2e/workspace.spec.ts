@@ -1279,9 +1279,7 @@ test("pool-only symbol context does not imply active synthesis", async ({ page }
 
   await expect(page).toHaveURL(/\/symbol\/SNDK\?p=overview$/);
   await expect(page.getByTestId("workflow-strip")).toContainText("Pool candidate");
-  await expect(page.getByTestId("workflow-primary")).toHaveText("Review candidate");
-
-  await page.getByTestId("workflow-primary").click();
+  await expect(page.getByTestId("workflow-primary")).toHaveText("Promote to Universe");
 
   const review = page.getByTestId("pool-candidate-review");
   await expect(review).toContainText("Review SNDK");
@@ -1445,7 +1443,7 @@ test("theses tab shows nominated state for unpromoted tickers", async ({ page })
   await expect(strip).toContainText("ORCL");
   await expect(strip).toContainText("Nominated, not active");
   await expect(strip).toContainText("nominated");
-  await expect(page.getByTestId("workflow-primary")).toHaveText("Promote / reject");
+  await expect(page.getByTestId("workflow-primary")).toHaveText("Promote to Universe");
 
   const promotion = page.getByTestId("promotion-review");
   await expect(promotion).toContainText("Promote ORCL into active Universe");
@@ -1458,7 +1456,11 @@ test("theses tab shows nominated state for unpromoted tickers", async ({ page })
 
   await page.getByRole("button", { name: "theses" }).click();
 
-  const nomination = page.locator(".nomination-state");
+  const promotionPanel = page.getByTestId("thesis-promotion-panel");
+  await expect(promotionPanel).toContainText("Not active yet");
+  await expect(promotionPanel).toContainText("Promote to Universe");
+
+  const nomination = page.locator(".nomination-state").filter({ hasText: "Nominated, not active" });
   await expect(nomination).toContainText("Nominated, not active");
   await expect(nomination).toContainText("software infrastructure for AI/cloud operations");
   await expect(nomination).toContainText("secure, observable, automated cloud/software operations");

@@ -80,7 +80,7 @@
   const RIGHT_TABS: RightTab[] = ["overview", "analyst", "technical", "context", "evidence", "theses", "alerts", "decisions"];
   type BottomMode = "brain" | "attention" | "events" | "discovery" | "decisions" | "calibration" | "diagnostics";
   type AppPage = "workspace" | "journal";
-  type WorkflowAction = "attention" | "promotion" | "evidence" | "thesis" | "decision" | "tracking" | "overview";
+  type WorkflowAction = "attention" | "promotion" | "promote" | "evidence" | "thesis" | "decision" | "tracking" | "overview";
   type SymbolWorkflow = {
     state: string;
     tone: string;
@@ -1320,8 +1320,22 @@
         state: "Nominated, not active",
         tone: "candidate",
         reason: candidateNominationReason(selectedCandidateReview),
-        primary: "Promote / reject",
-        action: "promotion",
+        primary: "Promote to Universe",
+        action: "promote",
+        status: statusText,
+        attention: attentionText,
+        evidence: evidenceText,
+        thesis: thesisText,
+        decision: decisionText,
+      };
+    }
+    if (!selectedTicker) {
+      return {
+        state: inPool ? "Pool candidate" : "Not active",
+        tone: "candidate",
+        reason: selectedPlacement.detail,
+        primary: "Promote to Universe",
+        action: "promote",
         status: statusText,
         attention: attentionText,
         evidence: evidenceText,
@@ -1336,20 +1350,6 @@
         reason: "Loading context, evidence, thesis, and decision state.",
         primary: "Overview",
         action: "overview",
-        status: statusText,
-        attention: attentionText,
-        evidence: evidenceText,
-        thesis: thesisText,
-        decision: decisionText,
-      };
-    }
-    if (!selectedTicker && inPool) {
-      return {
-        state: "Pool candidate",
-        tone: "candidate",
-        reason: "Not promoted into the active universe yet.",
-        primary: "Review candidate",
-        action: "promotion",
         status: statusText,
         attention: attentionText,
         evidence: evidenceText,
@@ -1444,6 +1444,10 @@
   }
 
   function runWorkflowAction(action: WorkflowAction) {
+    if (action === "promote") {
+      void promoteSelectedToUniverse();
+      return;
+    }
     if (action === "promotion") {
       rightTab = "overview";
       return;
@@ -3936,6 +3940,24 @@
                 {/if}
                 <button type="button" class="text-action" onclick={() => (rightTab = "overview")}>overview</button>
               </section>
+              {#if selectedSymbol && !selectedTicker}
+                <section class="nomination-state" data-testid="thesis-promotion-panel">
+                  <div class="nomination-hdr">
+                    <span class="badge tiny placement-{selectedPlacement.tone}">{selectedPlacement.label}</span>
+                    <strong>Not active yet</strong>
+                  </div>
+                  <p>{selectedPlacement.detail}</p>
+                  <p class="muted">Promote this ticker into the active Universe before expecting context synthesis, thesis drafting, or thesis updates.</p>
+                  <div class="att-actions">
+                    <button
+                      class="confirm"
+                      disabled={promotionBusy || poolPromotionBusy}
+                      onclick={promoteSelectedToUniverse}
+                    >Promote to Universe</button>
+                    <button type="button" class="text-action" onclick={() => (rightTab = "overview")}>choose watchlists</button>
+                  </div>
+                </section>
+              {/if}
               {#if symbolTheses === undefined || symbolDeclines === undefined}
                 <p class="muted">Loading…</p>
               {:else}

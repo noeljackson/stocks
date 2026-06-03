@@ -474,11 +474,23 @@ export interface BrainJournal {
     by_category: Record<string, number>;
     all_by_category?: Record<string, number>;
   };
+  pagination?: {
+    page: number;
+    per_page: number;
+    total: number;
+    total_pages: number;
+    has_previous: boolean;
+    has_next: boolean;
+  };
   entries: BrainJournalEntry[];
 }
 
-export async function fetchBrainJournal(date?: string): Promise<BrainJournal> {
-  const q = date ? `?date=${encodeURIComponent(date)}` : "";
+export async function fetchBrainJournal(opts: { date?: string; page?: number; perPage?: number } = {}): Promise<BrainJournal> {
+  const params = new URLSearchParams();
+  if (opts.date) params.set("date", opts.date);
+  if (opts.page) params.set("page", String(opts.page));
+  if (opts.perPage) params.set("per_page", String(opts.perPage));
+  const q = params.size ? `?${params.toString()}` : "";
   const r = await fetch(`/api/brain-journal${q}`);
   if (!r.ok) throw new Error(`brain-journal ${r.status}`);
   return (await r.json()) as BrainJournal;

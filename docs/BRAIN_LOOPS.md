@@ -156,10 +156,10 @@ macro dislocation map
 brain_journal_entry  append-only, deduped by event_key
         |
         v
-GET /api/brain-journal?date=YYYY-MM-DD
+GET /api/brain-journal?date=YYYY-MM-DD&page=N&per_page=N
         |
         v
-Brain tab daily journal
+/journal/YYYY-MM-DD pageable history page
 ```
 
 Journal categories match the operator question:
@@ -177,6 +177,9 @@ The journal does not invent evidence. Entries link back to the source row throug
 `source_kind`, `source_id`, `symbol`, `thesis_id`, `brain_thesis_id`, and
 `source_ref`. A later LLM synthesis pass can summarize the deterministic entry
 set, but the durable facts are already present before any model writes prose.
+The Brain drawer should link to this page rather than embedding the journal;
+the drawer is for live macro/sector/attention state, while the journal is the
+pageable historical readout.
 
 ## Data Acquisition Loops
 

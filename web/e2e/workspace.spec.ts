@@ -368,6 +368,7 @@ async function mockApi(
         synthesis: null,
         summary: {
           total: 5,
+          visible: 5,
           by_category: {
             changed: 1,
             research: 1,
@@ -375,6 +376,21 @@ async function mockApi(
             crowded_or_extended: 1,
             ignored_or_hated: 1,
           },
+          all_by_category: {
+            changed: 1,
+            research: 1,
+            blocked: 1,
+            crowded_or_extended: 1,
+            ignored_or_hated: 1,
+          },
+        },
+        pagination: {
+          page: Number(url.searchParams.get("page") ?? "1"),
+          per_page: Number(url.searchParams.get("per_page") ?? "50"),
+          total: 5,
+          total_pages: 1,
+          has_previous: false,
+          has_next: false,
         },
         entries: [
           {
@@ -1328,14 +1344,15 @@ test("brain tab shows macro and theme theses with linked tickers", async ({ page
   await expect(theme.getByRole("button", { name: /OKTA/ })).toContainText("forming");
 });
 
-test("brain tab shows daily journal and routes ticker entries", async ({ page }) => {
+test("journal page shows daily history and routes ticker entries", async ({ page }) => {
   await mockApi(page);
-  await page.goto("/");
+  await page.goto("/journal/2026-06-01");
 
-  await page.getByRole("button", { name: "brain" }).click();
+  await expect(page.getByRole("button", { name: "Journal" })).toHaveClass(/active/);
 
-  const journal = page.locator(".brain-journal");
+  const journal = page.locator("[data-testid='brain-journal-page']");
   await expect(journal).toContainText("Brain Journal");
+  await expect(journal).toContainText("5 total entries");
   await expect(journal).toContainText("we think this changed");
   await expect(journal).toContainText("OKTA thesis updated to v2");
   await expect(journal).toContainText("needs research");
@@ -1348,8 +1365,23 @@ test("brain tab shows daily journal and routes ticker entries", async ({ page })
   await expect(journal).toContainText("Data blocked: MSFT analyst estimates");
 
   await journal.getByRole("button", { name: /OKTA thesis updated to v2/ }).click();
+  await expect(page).toHaveURL(/\/symbol\/OKTA/);
   await expect(page.locator(".symbol-box input")).toHaveValue("OKTA");
   await expect(page.locator(".right .tabs button.active")).toHaveText("theses");
+});
+
+test("brain tab links to journal without embedding it", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "brain" }).click();
+
+  await expect(page.locator("[data-testid='brain-journal-page']")).toHaveCount(0);
+  await expect(page.locator(".brain-board")).not.toContainText("Brain Journal");
+
+  await page.getByRole("button", { name: "Journal" }).click();
+  await expect(page).toHaveURL(/\/journal\/\d{4}-\d{2}-\d{2}/);
+  await expect(page.locator("[data-testid='brain-journal-page']")).toContainText("Brain Journal");
 });
 
 test("calibration tab shows parent theme expression results", async ({ page }) => {

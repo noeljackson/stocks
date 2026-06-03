@@ -40,7 +40,6 @@
     type Alert,
     type AttentionItem,
     type BrainJournal,
-    type BrainJournalCategory,
     type BrainJournalEntry,
     type BrainOverview,
     type CognitionRun,
@@ -69,6 +68,7 @@
   } from "./lib/api";
   import AnalystPanel from "./lib/AnalystPanel.svelte";
   import ContextPanel from "./lib/ContextPanel.svelte";
+  import BrainJournalPage from "./lib/BrainJournalPage.svelte";
   import TechnicalStatePanel from "./lib/TechnicalStatePanel.svelte";
   import ThesisDetails from "./lib/ThesisDetails.svelte";
   import ChartPanel from "./lib/ChartPanel.svelte";
@@ -77,6 +77,7 @@
   // ---------- workspace state ----------
   type RightTab = "overview" | "analyst" | "technical" | "context" | "evidence" | "theses" | "alerts" | "decisions";
   type BottomMode = "brain" | "attention" | "events" | "discovery" | "decisions" | "calibration" | "diagnostics";
+  type AppPage = "workspace" | "journal";
   type WorkflowAction = "attention" | "evidence" | "thesis" | "decision" | "tracking" | "overview";
   type SymbolWorkflow = {
     state: string;
@@ -101,6 +102,7 @@
   ];
 
   let selectedSymbol = $state<string | null>(null);
+  let routePage = $state<AppPage>("workspace");
   let rightTab = $state<RightTab>("overview");
   let bottomMode = $state<BottomMode>("attention");
   let bottomOpen = $state(true);
@@ -109,6 +111,12 @@
   let regime = $state<MarketState | null>(null);
   let brainOverview = $state<BrainOverview | null>(null);
   let brainJournal = $state<BrainJournal | null>(null);
+  let journalDate = $state(todayIsoDate());
+  let journalPage = $state(1);
+  let journalLoading = $state(false);
+  let journalError = $state<string | null>(null);
+  let journalLoadSeq = 0;
+  const JOURNAL_PER_PAGE = 50;
   let calibration = $state<Calibration | null>(null);
   // System status (#92) — populated on demand when diagnostics tab is open.
   let sysStatus = $state<Record<string, unknown> | null>(null);
@@ -404,43 +412,9 @@
     return direction.replace(/_/g, " ");
   }
 
-  function journalCategoryLabel(category: BrainJournalCategory | string): string {
-    switch (category) {
-      case "changed":              return "we think this changed";
-      case "curious":              return "we are curious";
-      case "research":             return "needs research";
-      case "crowded_or_extended":  return "crowded or extended";
-      case "ignored_or_hated":     return "ignored or hated";
-      case "blocked":              return "blocked";
-      default:                     return category.replace(/_/g, " ");
-    }
-  }
-
-  let journalGroups = $derived.by<{ category: BrainJournalCategory | string; entries: BrainJournalEntry[] }[]>(() => {
-    const order = ["changed", "ignored_or_hated", "crowded_or_extended", "research", "curious", "blocked"];
-    const map = new Map<string, BrainJournalEntry[]>();
-    for (const entry of brainJournal?.entries ?? []) {
-      const bucket = map.get(entry.category) ?? [];
-      bucket.push(entry);
-      map.set(entry.category, bucket);
-    }
-    return [...map.entries()]
-      .sort(([a], [b]) => {
-        const ai = order.indexOf(a);
-        const bi = order.indexOf(b);
-        return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
-      })
-      .map(([category, entries]) => ({
-        category,
-        entries: entries
-          .sort((a, b) => b.importance - a.importance || Date.parse(b.occurred_at) - Date.parse(a.occurred_at))
-          .slice(0, 5),
-      }));
-  });
-  let journalVisibleCount = $derived(journalGroups.reduce((count, group) => count + group.entries.length, 0));
-
   async function openJournalEntry(entry: BrainJournalEntry) {
     if (!entry.symbol) return;
+    routePage = "workspace";
     await selectSymbol(entry.symbol);
     rightTab = entry.thesis_id ? "theses" : "overview";
   }
@@ -1543,14 +1517,85 @@
     return symbol;
   }
 
+  function todayIsoDate(): string {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  function normalizeDate(value: string | null | undefined): string | null {
+    if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+    return value;
+  }
+
   function symbolFromRoute(): string | null {
     const match = window.location.pathname.match(/^\/symbol\/([^/]+)\/?$/);
     return match ? normalizeSymbol(decodeURIComponent(match[1])) : null;
   }
 
+  function journalFromRoute(): { date: string; page: number } | null {
+    const match = window.location.pathname.match(/^\/journal(?:\/(\d{4}-\d{2}-\d{2}))?\/?$/);
+    if (!match) return null;
+    const params = new URLSearchParams(window.location.search);
+    const parsedPage = Number(params.get("page") ?? "1");
+    return {
+      date: normalizeDate(match[1]) ?? todayIsoDate(),
+      page: Number.isFinite(parsedPage) && parsedPage > 0 ? Math.floor(parsedPage) : 1,
+    };
+  }
+
   function syncSymbolRoute(symbol: string, replace = false) {
     const path = `/symbol/${encodeURIComponent(symbol)}`;
     if (window.location.pathname === path) return;
+    const method = replace ? "replaceState" : "pushState";
+    window.history[method](null, "", path);
+  }
+
+  function syncJournalRoute(date: string, page = 1, replace = false) {
+    const query = page > 1 ? `?page=${page}` : "";
+    const path = `/journal/${date}${query}`;
+    if (`${window.location.pathname}${window.location.search}` === path) return;
+    const method = replace ? "replaceState" : "pushState";
+    window.history[method](null, "", path);
+  }
+
+  async function loadBrainJournal(date = journalDate, page = journalPage) {
+    const seq = ++journalLoadSeq;
+    journalLoading = true;
+    journalError = null;
+    try {
+      const next = await fetchBrainJournal({ date, page, perPage: JOURNAL_PER_PAGE });
+      if (seq !== journalLoadSeq) return;
+      brainJournal = next;
+      journalDate = next.date;
+      journalPage = next.pagination?.page ?? page;
+    } catch (e) {
+      if (seq !== journalLoadSeq) return;
+      journalError = e instanceof Error ? e.message : String(e);
+    } finally {
+      if (seq === journalLoadSeq) journalLoading = false;
+    }
+  }
+
+  function openJournalPage(date = journalDate, page = journalPage, replace = false) {
+    routePage = "journal";
+    journalDate = normalizeDate(date) ?? todayIsoDate();
+    journalPage = page > 0 ? page : 1;
+    syncJournalRoute(journalDate, journalPage, replace);
+    void loadBrainJournal(journalDate, journalPage);
+  }
+
+  function changeJournalDate(date: string) {
+    openJournalPage(date, 1);
+  }
+
+  function changeJournalPage(page: number) {
+    openJournalPage(journalDate, page);
+  }
+
+  function openWorkspace(replace = false) {
+    routePage = "workspace";
+    const path = selectedSymbol ? `/symbol/${encodeURIComponent(selectedSymbol)}` : "/";
+    const current = `${window.location.pathname}${window.location.search}`;
+    if (current === path) return;
     const method = replace ? "replaceState" : "pushState";
     window.history[method](null, "", path);
   }
@@ -1562,7 +1607,10 @@
   ) {
     const symbol = normalizeSymbol(value);
     if (!symbol) return;
-    if (opts.updateRoute ?? true) syncSymbolRoute(symbol, opts.replaceRoute ?? false);
+    if (opts.updateRoute ?? true) {
+      routePage = "workspace";
+      syncSymbolRoute(symbol, opts.replaceRoute ?? false);
+    }
     if (selectedSymbol === symbol) return;
     selectedSymbol = symbol;
     symbolContext = undefined;
@@ -1805,7 +1853,7 @@
           fetchTickers().then((t) => (tickers = t)).catch(() => {}),
           refreshAttention(),
           fetchBrainOverview().then((b) => (brainOverview = b)).catch(() => {}),
-          fetchBrainJournal().then((j) => (brainJournal = j)).catch(() => {}),
+          routePage === "journal" ? loadBrainJournal(journalDate, journalPage) : Promise.resolve(),
         ]);
       }
     } catch (err) {
@@ -1819,7 +1867,6 @@
     fetchRegime().then((r) => (regime = r)).catch((e) => (error = String(e)));
     fetchTickers().then((t) => (tickers = t)).catch((e) => (error = String(e)));
     fetchBrainOverview().then((b) => (brainOverview = b)).catch(() => {});
-    fetchBrainJournal().then((j) => (brainJournal = j)).catch(() => {});
     fetchCalibration().then((c) => (calibration = c)).catch(() => {});
     refreshWatchlists();
     refreshPending();
@@ -1858,7 +1905,7 @@
 
   $effect(() => {
     // Once tickers and watchlists arrive, auto-pick the first symbol.
-    if (!selectedSymbol && (tickers.length > 0 || watchlists.length > 0)) {
+    if (routePage === "workspace" && !selectedSymbol && (tickers.length > 0 || watchlists.length > 0)) {
       pickFirstSymbol();
     }
   });
@@ -1888,10 +1935,24 @@
   });
 
   onMount(() => {
-    const routedSymbol = symbolFromRoute();
-    if (routedSymbol) void selectSymbol(routedSymbol, { replaceRoute: true });
+    const routedJournal = journalFromRoute();
+    if (routedJournal) {
+      openJournalPage(routedJournal.date, routedJournal.page, true);
+    } else {
+      const routedSymbol = symbolFromRoute();
+      if (routedSymbol) void selectSymbol(routedSymbol, { replaceRoute: true });
+    }
     refreshAll();
     const onPopState = () => {
+      const journal = journalFromRoute();
+      if (journal) {
+        routePage = "journal";
+        journalDate = journal.date;
+        journalPage = journal.page;
+        void loadBrainJournal(journal.date, journal.page);
+        return;
+      }
+      routePage = "workspace";
       const routed = symbolFromRoute();
       if (routed) void selectSymbol(routed, { updateRoute: false });
     };
@@ -1905,7 +1966,7 @@
         if (e.kind === "state_transition" || e.kind === "risk") {
           fetchAlerts({ unacked: !showAcked }).then((a) => (alerts = a)).catch(() => {});
           fetchBrainOverview().then((b) => (brainOverview = b)).catch(() => {});
-          fetchBrainJournal().then((j) => (brainJournal = j)).catch(() => {});
+          if (routePage === "journal") void loadBrainJournal(journalDate, journalPage);
           refreshAttention();
         }
         if (e.subject?.startsWith("decision.") && selectedSymbol) {
@@ -1953,6 +2014,15 @@
   <header class="top">
     <div class="brand">stocks <span class="muted">intel</span></div>
 
+    <nav class="top-nav" aria-label="Primary">
+      <button type="button" class:active={routePage === "workspace"} onclick={() => openWorkspace()}>
+        Workspace
+      </button>
+      <button type="button" class:active={routePage === "journal"} onclick={() => openJournalPage()}>
+        Journal
+      </button>
+    </nav>
+
     <div class="symbol-box">
       <input
         type="text"
@@ -1999,6 +2069,19 @@
     <div class="error error-bar">{error} <button class="x" onclick={() => (error = null)} aria-label="dismiss">✕</button></div>
   {/if}
 
+  {#if routePage === "journal"}
+    <BrainJournalPage
+      journal={brainJournal}
+      date={journalDate}
+      today={todayIsoDate()}
+      loading={journalLoading}
+      error={journalError}
+      onDateChange={changeJournalDate}
+      onPageChange={changeJournalPage}
+      onOpenEntry={openJournalEntry}
+      onBack={() => openWorkspace()}
+    />
+  {:else}
   <section class={`workflow-strip tone-${selectedWorkflow.tone}`} data-testid="workflow-strip">
     <div class="workflow-main">
       <div class="workflow-copy">
@@ -2094,64 +2177,6 @@
                   <span class="badge tiny">market {brainOverview.market_state.regime}</span>
                 {/if}
               </section>
-
-              {#if brainJournal}
-                <section class="brain-journal">
-                  <div class="brain-theme-hdr">
-                    <div>
-                      <strong>Brain Journal</strong>
-                      <span class="muted">{brainJournal.date}</span>
-                    </div>
-                    <div class="brain-badges">
-                      <span class="badge tiny">{journalVisibleCount} shown</span>
-                      {#if brainJournal.synthesis}<span class="badge tiny brain-dir-neutral">synthesized</span>{/if}
-                    </div>
-                  </div>
-                  {#if brainJournal.synthesis}
-                    <p>{brainJournal.synthesis}</p>
-                  {/if}
-                  {#if journalGroups.length}
-                    <div class="journal-grid">
-                      {#each journalGroups as group (group.category)}
-                        <div class="journal-group journal-{group.category}">
-                          <div class="journal-group-title">
-                            <span>{journalCategoryLabel(group.category)}</span>
-                            <span class="badge tiny">{group.entries.length}</span>
-                          </div>
-                          {#each group.entries as entry (entry.event_key)}
-                            {#if entry.symbol}
-                              <button type="button" class="journal-entry" onclick={() => openJournalEntry(entry)}>
-                                <span class="journal-entry-title">
-                                  <strong>{entry.symbol}</strong>
-                                  {entry.title}
-                                </span>
-                                <span class="muted">{entry.summary}</span>
-                                <span class="journal-meta">
-                                  {entry.source_kind.replace(/_/g, " ")}
-                                  · importance {entry.importance}
-                                  · {relativeTime(entry.occurred_at)}
-                                </span>
-                              </button>
-                            {:else}
-                              <div class="journal-entry static">
-                                <span class="journal-entry-title">{entry.title}</span>
-                                <span class="muted">{entry.summary}</span>
-                                <span class="journal-meta">
-                                  {entry.source_kind.replace(/_/g, " ")}
-                                  · importance {entry.importance}
-                                  · {relativeTime(entry.occurred_at)}
-                                </span>
-                              </div>
-                            {/if}
-                          {/each}
-                        </div>
-                      {/each}
-                    </div>
-                  {:else}
-                    <p class="muted">No journal entries recorded for this date.</p>
-                  {/if}
-                </section>
-              {/if}
 
               {#if brainOverview.macro}
                 {@const macro = brainOverview.macro}
@@ -3634,6 +3659,7 @@
       </aside>
     </Pane>
   </PaneGroup>
+  {/if}
 
 </div>
 
@@ -3675,6 +3701,30 @@
     height: 44px;
   }
   .brand { font-weight: 600; font-size: 1rem; }
+  .top-nav {
+    display: flex;
+    align-items: center;
+    gap: .25rem;
+  }
+  .top-nav button {
+    background: transparent;
+    color: #9aa3b8;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: .22rem .5rem;
+    font: inherit;
+    font-size: .82rem;
+    cursor: pointer;
+  }
+  .top-nav button:hover {
+    color: #cdd6f4;
+    background: #162033;
+  }
+  .top-nav button.active {
+    color: #cdd6f4;
+    background: #0a0d14;
+    border-color: #2a3548;
+  }
   .symbol-box { display: flex; gap: .5rem; align-items: baseline; }
   .symbol-box input {
     background: #0a0d14; color: #cdd6f4; border: 1px solid #2a3548; border-radius: 4px;
@@ -4059,77 +4109,6 @@
   }
   .brain-theme.macro-theme {
     background: #0a0d14;
-  }
-  .brain-journal {
-    border: 1px solid #1f2733;
-    border-left: 3px solid #89b4fa;
-    background: #0a0d14;
-    border-radius: 4px;
-    padding: .55rem .65rem;
-    display: grid;
-    gap: .55rem;
-  }
-  .journal-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: .5rem;
-  }
-  .journal-group {
-    display: grid;
-    align-content: start;
-    gap: .3rem;
-    min-width: 0;
-  }
-  .journal-group-title {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: .4rem;
-    color: #bac2de;
-    font-size: .78rem;
-    text-transform: uppercase;
-  }
-  .journal-entry {
-    text-align: left;
-    display: grid;
-    gap: .16rem;
-    width: 100%;
-    border: 1px solid #1f2733;
-    border-left: 3px solid #45567a;
-    background: #0c1019;
-    color: #cdd6f4;
-    border-radius: 4px;
-    padding: .4rem .5rem;
-    font: inherit;
-  }
-  button.journal-entry {
-    cursor: pointer;
-  }
-  button.journal-entry:hover {
-    border-color: #45567a;
-    background: #11161f;
-  }
-  .journal-changed .journal-entry { border-left-color: rgb(137,180,250); }
-  .journal-research .journal-entry { border-left-color: rgb(249,226,175); }
-  .journal-curious .journal-entry { border-left-color: rgb(203,166,247); }
-  .journal-blocked .journal-entry { border-left-color: rgb(243,139,168); }
-  .journal-crowded_or_extended .journal-entry { border-left-color: rgb(245,194,231); }
-  .journal-ignored_or_hated .journal-entry { border-left-color: rgb(166,227,161); }
-  .journal-entry-title {
-    display: flex;
-    align-items: baseline;
-    gap: .35rem;
-    flex-wrap: wrap;
-    font-size: .84rem;
-  }
-  .journal-entry .muted {
-    font-size: .78rem;
-    line-height: 1.35;
-  }
-  .journal-meta {
-    color: #6c7086;
-    font-size: .7rem;
-    text-transform: uppercase;
   }
   .brain-theme.freshness-fresh { border-left-color: rgb(166,227,161); }
   .brain-theme.freshness-stale,

@@ -1305,25 +1305,51 @@ test("theses tab shows nominated state for unpromoted tickers", async ({ page })
 
   const strip = page.getByTestId("workflow-strip");
   await expect(strip).toContainText("ORCL");
-  await expect(strip).toContainText("Awaiting promotion");
+  await expect(strip).toContainText("Nominated, not active");
   await expect(strip).toContainText("nominated");
+  await expect(page.getByTestId("workflow-primary")).toHaveText("Promote / reject");
+
+  const promotion = page.getByTestId("promotion-review");
+  await expect(promotion).toContainText("Promote ORCL into active Universe");
+  await expect(promotion).toContainText("Discovery nominated ORCL for operator review.");
+  await expect(promotion).toContainText("software infrastructure for AI/cloud operations");
+  await expect(promotion).toContainText("What confirming does");
+  await expect(promotion).toContainText("publishes discovery.confirmed");
+  await expect(promotion).toContainText("Universe always included");
+  await expect(promotion).toContainText("promote as Universe-only");
 
   await page.getByRole("button", { name: "theses" }).click();
 
   const nomination = page.locator(".nomination-state");
-  await expect(nomination).toContainText("Awaiting promotion");
+  await expect(nomination).toContainText("Nominated, not active");
   await expect(nomination).toContainText("software infrastructure for AI/cloud operations");
   await expect(nomination).toContainText("secure, observable, automated cloud/software operations");
   await expect(nomination).toContainText("price");
   await expect(nomination).toContainText("news");
   await expect(nomination).toContainText("estimates");
   await expect(nomination).toContainText("fundamentals");
-  await expect(nomination).toContainText("Confirming will add to monitored universe/watchlists and run context/thesis.");
+  await expect(nomination).toContainText("Promotion will add to monitored universe/watchlists and run context/thesis.");
   await expect(page.getByText("No thesis attempts")).toHaveCount(0);
 
-  await nomination.getByRole("button", { name: "Confirm nomination" }).click();
+  await promotion.getByRole("button", { name: "Promote to Universe" }).click();
 
   await expect.poll(() => calls.confirmBody).toEqual({ watchlist_ids: [] });
+});
+
+test("selected promotion review posts checked watchlist destinations", async ({ page }) => {
+  const calls = await mockApi(page);
+  await page.goto("/symbol/NVDA");
+
+  const promotion = page.getByTestId("promotion-review");
+  await expect(promotion).toContainText("Promote NVDA into active Universe");
+  await expect(promotion).toContainText("Core");
+  await expect(promotion).toContainText("AI infrastructure fit");
+  const corePick = promotion.locator("label", { hasText: "Core" }).getByRole("checkbox");
+  await expect(corePick).toBeChecked();
+
+  await promotion.getByRole("button", { name: "Promote to Universe" }).click();
+
+  await expect.poll(() => calls.confirmBody).toEqual({ watchlist_ids: ["wl-core"] });
 });
 
 test("workflow rail surfaces open position tracking and routes to decisions", async ({ page }) => {
@@ -1538,7 +1564,7 @@ test("discovery tab shows candidate ranking reasons", async ({ page }) => {
   await expect(card).toContainText("high-confidence watchlist fit");
 });
 
-test("attention Confirm posts selected watchlist memberships", async ({ page }) => {
+test("attention Promote posts selected watchlist memberships", async ({ page }) => {
   const calls = await mockApi(page);
   await page.goto("/");
 
@@ -1547,7 +1573,7 @@ test("attention Confirm posts selected watchlist memberships", async ({ page }) 
   await expect(card).toContainText("2.4x volume vs 200-day SMA");
   await expect(page.locator(".att-section-head").filter({ hasText: "ready for review" })).toContainText("operator owns next step");
 
-  await card.getByRole("button", { name: "Confirm" }).click();
+  await card.getByRole("button", { name: "Promote" }).click();
 
   await expect.poll(() => calls.confirmBody).toEqual({ watchlist_ids: ["wl-core"] });
   await expect(page.getByText("No open attention. The system is quiet.")).toBeVisible();

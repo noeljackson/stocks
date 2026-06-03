@@ -662,7 +662,7 @@ async function mockApi(
             last_changed_at: "2026-06-01T00:00:00Z",
             last_checked_at: "2026-06-01T00:00:00Z",
             max_age_minutes: 30,
-            detail: { price_target_snapshots: 1, recommendation_snapshots: 1, price_target_events: 2 },
+            detail: { price_target_snapshots: 1, recommendation_snapshots: 1, price_target_events: 2, rating_events: 1 },
             source_health: { rows_seen: 4, rows_inserted: 3 },
             source_tasks: [{
               requirement_key: "analyst_opinion",

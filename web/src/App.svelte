@@ -376,6 +376,7 @@
       ["targets", detail.price_target_snapshots],
       ["ratings", detail.recommendation_snapshots],
       ["target events", detail.price_target_events],
+      ["grade changes", detail.rating_events],
     ]
       .filter(([, v]) => typeof v === "number")
       .map(([label, v]) => `${Number(v)} ${label}`);

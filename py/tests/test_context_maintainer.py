@@ -472,6 +472,7 @@ def test_assess_evidence_requirements_tracks_analyst_opinion() -> None:
         "fmp_price_target_consensus",
         "fmp_grades_historical",
         "fmp_price_target_news",
+        "fmp_grades_latest_news",
     ]
 
 

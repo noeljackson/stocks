@@ -70,6 +70,15 @@ export async function fetchTickers(): Promise<Ticker[]> {
   return ((await r.json()) as Ticker[] | null) ?? [];
 }
 
+export async function promoteTicker(symbol: string, watchlistIds: string[] = [], tier = 2): Promise<void> {
+  const r = await fetch("/api/tickers", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ symbol, tier, watchlist_ids: watchlistIds }),
+  });
+  if (!r.ok && r.status !== 204) throw new Error(`promote ticker ${r.status}`);
+}
+
 export interface Condition {
   type: "quantitative" | "narrative";
   name: string;

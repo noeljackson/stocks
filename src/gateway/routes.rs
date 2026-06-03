@@ -38,7 +38,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/alerts", get(list_alerts))
         .route("/api/alerts/{id}/ack", post(ack_alert))
         .route("/api/regime", get(get_regime))
-        .route("/api/tickers", get(list_tickers))
+        .route("/api/tickers", get(list_tickers).post(add_ticker))
         .route("/api/theses", get(list_theses))
         .route("/api/thesis-declines", get(list_thesis_declines))
         .route(
@@ -1995,6 +1995,63 @@ async fn list_discovery_pool(State(gw): State<Arc<Gateway>>) -> impl IntoRespons
         }
         Err(e) => {
             warn!(error = %e, "list_discovery_pool failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AddTickerReq {
+    symbol: String,
+    #[serde(default = "default_ticker_tier")]
+    tier: i32,
+    #[serde(default)]
+    watchlist_ids: Vec<uuid::Uuid>,
+    #[serde(default = "default_added_by")]
+    added_by: String,
+}
+
+fn default_ticker_tier() -> i32 {
+    2
+}
+
+async fn add_ticker(
+    State(gw): State<Arc<Gateway>>,
+    Json(req): Json<AddTickerReq>,
+) -> impl IntoResponse {
+    let symbol = req.symbol.trim().to_uppercase();
+    if symbol.is_empty() {
+        return (StatusCode::BAD_REQUEST, "symbol required").into_response();
+    }
+    if !(1..=3).contains(&req.tier) {
+        return (StatusCode::BAD_REQUEST, "tier must be 1, 2, or 3").into_response();
+    }
+    match gw
+        .store
+        .promote_ticker(&symbol, req.tier, &req.watchlist_ids, &req.added_by)
+        .await
+    {
+        Ok(()) => {
+            let payload = serde_json::json!({
+                "symbol": symbol,
+                "tier": req.tier,
+                "watchlist_ids": req.watchlist_ids,
+                "source": "ticker.promoted",
+            });
+            if let Err(e) = gw
+                .bus
+                .publish(
+                    subjects::DISCOVERY_CONFIRMED,
+                    payload.to_string().as_bytes(),
+                )
+                .await
+            {
+                warn!(symbol = %symbol, error = %e, "publish ticker promotion cognition kickoff failed (non-fatal)");
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => {
+            warn!(symbol = %symbol, error = %e, "add_ticker failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }

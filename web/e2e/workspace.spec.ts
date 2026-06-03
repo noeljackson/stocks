@@ -3,6 +3,7 @@ import { expect, type Page, type Route, test } from "@playwright/test";
 type Calls = {
   candleUrls: URL[];
   confirmBody: unknown | null;
+  promoteBody: unknown | null;
   decisionBody: unknown | null;
   addedSymbols: string[];
   refreshContextSymbols: string[];
@@ -78,7 +79,7 @@ async function mockApi(
   page: Page,
   options: { attentionItems?: Record<string, unknown>[] } = {},
 ): Promise<Calls> {
-  const calls: Calls = { candleUrls: [], confirmBody: null, decisionBody: null, addedSymbols: [], refreshContextSymbols: [] };
+  const calls: Calls = { candleUrls: [], confirmBody: null, promoteBody: null, decisionBody: null, addedSymbols: [], refreshContextSymbols: [] };
   let attentionOpen = true;
   const attentionItems = options.attentionItems ?? [{
     id: 7001,
@@ -169,6 +170,11 @@ async function mockApi(
     }
     if (path === "/api/regime") {
       await json(route, { regime: "neutral", capitulation: false, indicators: {}, as_of: "2026-06-01T00:00:00Z" });
+      return;
+    }
+    if (path === "/api/tickers" && request.method() === "POST") {
+      calls.promoteBody = await request.postDataJSON();
+      await route.fulfill({ status: 204 });
       return;
     }
     if (path === "/api/tickers") {
@@ -1271,7 +1277,22 @@ test("pool-only symbol context does not imply active synthesis", async ({ page }
   const calls = await mockApi(page);
   await page.goto("/symbol/SNDK");
 
-  await page.getByRole("button", { name: "context" }).click();
+  await expect(page).toHaveURL(/\/symbol\/SNDK\?p=overview$/);
+  await expect(page.getByTestId("workflow-strip")).toContainText("Pool candidate");
+  await expect(page.getByTestId("workflow-primary")).toHaveText("Review candidate");
+
+  await page.getByTestId("workflow-primary").click();
+
+  const review = page.getByTestId("pool-candidate-review");
+  await expect(review).toContainText("Review SNDK");
+  await expect(review).toContainText("Sandisk Corporation");
+  await expect(review).toContainText("Universe always included");
+  await expect(review).toContainText("not the active Universe");
+
+  await review.getByRole("button", { name: "Promote to Universe" }).click();
+  await expect.poll(() => calls.promoteBody).toEqual({ symbol: "SNDK", tier: 2, watchlist_ids: [] });
+
+  await page.getByRole("button", { name: "context", exact: true }).click();
 
   const context = page.locator(".empty").filter({ hasText: "SNDK" });
   await expect(context).toContainText("Context");
@@ -1280,6 +1301,7 @@ test("pool-only symbol context does not imply active synthesis", async ({ page }
   await expect(context).toContainText("Promote the ticker first");
   await expect(page.getByText("synthesizing…")).toHaveCount(0);
   await expect.poll(() => calls.refreshContextSymbols).toEqual([]);
+  await expect(page).toHaveURL(/\/symbol\/SNDK\?p=context$/);
 });
 
 test("overview explains selected symbol brain status and stale source", async ({ page }) => {
@@ -1548,21 +1570,25 @@ test("overview shows selected ticker parent brain context", async ({ page }) => 
 
 test("symbol routes deep-link selected ticker and keep navigation state", async ({ page }) => {
   await mockApi(page);
-  await page.goto("/symbol/2454.TW");
+  await page.goto("/symbol/2454.TW?p=context");
 
   await expect(page.locator(".symbol-box input")).toHaveValue("2454.TW");
-  await expect(page).toHaveURL(/\/symbol\/2454\.TW$/);
+  await expect(page.locator(".tabs button.active")).toHaveText("context");
+  await expect(page).toHaveURL(/\/symbol\/2454\.TW\?p=context$/);
+
+  await page.getByRole("button", { name: "theses" }).click();
+  await expect(page).toHaveURL(/\/symbol\/2454\.TW\?p=theses$/);
 
   await page.locator(".wl-row").filter({ hasText: "Core" }).click();
   await page.locator(".wl-mem").filter({ hasText: "OKTA" }).getByRole("button", { name: "OKTA" }).click();
 
   await expect(page.locator(".symbol-box input")).toHaveValue("OKTA");
-  await expect(page).toHaveURL(/\/symbol\/OKTA$/);
+  await expect(page).toHaveURL(/\/symbol\/OKTA\?p=theses$/);
 
   await page.goBack();
 
   await expect(page.locator(".symbol-box input")).toHaveValue("2454.TW");
-  await expect(page).toHaveURL(/\/symbol\/2454\.TW$/);
+  await expect(page).toHaveURL(/\/symbol\/2454\.TW\?p=theses$/);
 });
 
 test("event stream surfaces connection events in the drawer", async ({ page }) => {

@@ -3880,6 +3880,43 @@ impl Store {
         Ok(())
     }
 
+    pub async fn promote_ticker(
+        &self,
+        symbol: &str,
+        tier: i32,
+        watchlist_ids: &[uuid::Uuid],
+        added_by: &str,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await.context("begin tx")?;
+        sqlx::query(
+            r#"INSERT INTO ticker (symbol, tier, status, last_promoted_at)
+               VALUES ($1, $2, 'active', now())
+               ON CONFLICT (symbol) DO UPDATE
+                  SET status = 'active',
+                      tier = LEAST(ticker.tier, EXCLUDED.tier),
+                      last_promoted_at = now()"#,
+        )
+        .bind(symbol)
+        .bind(tier)
+        .execute(&mut *tx)
+        .await
+        .context("promote ticker")?;
+        for id in watchlist_ids {
+            sqlx::query(
+                r#"INSERT INTO watchlist_member (watchlist_id, symbol, added_by)
+                   VALUES ($1, $2, $3) ON CONFLICT DO NOTHING"#,
+            )
+            .bind(id)
+            .bind(symbol)
+            .bind(added_by)
+            .execute(&mut *tx)
+            .await
+            .context("promote ticker watchlist member")?;
+        }
+        tx.commit().await.context("commit tx")?;
+        Ok(())
+    }
+
     pub async fn remove_from_watchlist(
         &self,
         watchlist_id: uuid::Uuid,

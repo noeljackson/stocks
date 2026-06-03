@@ -3507,7 +3507,12 @@
               {#if symbolContext === undefined}
                 <p class="muted">Loading…</p>
               {:else}
-                <ContextPanel ctx={symbolContext ?? null} symbol={selectedSymbol} />
+                <ContextPanel
+                  ctx={symbolContext ?? null}
+                  symbol={selectedSymbol}
+                  autoSynthesize={symbolBrain?.active_ticker ?? false}
+                  blockedReason={symbolBrain?.active_ticker ? "" : (symbolBrain?.reason ?? "")}
+                />
               {/if}
             {:else if rightTab === "evidence"}
               {#if symbolEvidence === undefined}

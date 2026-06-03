@@ -87,10 +87,18 @@
     reason: string;
     primary: string;
     action: WorkflowAction;
+    status: string;
     attention: string;
     evidence: string;
     thesis: string;
     decision: string;
+  };
+  type SymbolPlacement = {
+    label: string;
+    short: string;
+    tone: string;
+    location: string;
+    detail: string;
   };
   const DISAGREEMENT_REASONS = [
     { value: "wrong_cluster", label: "wrong cluster" },
@@ -1292,6 +1300,7 @@
       reason: "Pick a ticker to inspect.",
       primary: "Overview",
       action: "overview",
+      status: "not selected",
       attention: "no attention",
       evidence: "no evidence",
       thesis: "no thesis",
@@ -1303,6 +1312,7 @@
     const evidenceText = workflowEvidenceText();
     const thesisText = workflowThesisText();
     const decisionText = workflowDecisionText();
+    const statusText = selectedPlacement.short;
     const inPool = pool.some((item) => item.symbol === selectedSymbol);
 
     if (selectedCandidateReview && !currentSymbolThesis) {
@@ -1312,6 +1322,7 @@
         reason: candidateNominationReason(selectedCandidateReview),
         primary: "Promote / reject",
         action: "promotion",
+        status: statusText,
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
@@ -1325,6 +1336,7 @@
         reason: "Loading context, evidence, thesis, and decision state.",
         primary: "Overview",
         action: "overview",
+        status: statusText,
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
@@ -1338,6 +1350,7 @@
         reason: "Not promoted into the active universe yet.",
         primary: "Review candidate",
         action: "promotion",
+        status: statusText,
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
@@ -1351,6 +1364,7 @@
         reason: symbolBrain?.reason ?? "Evidence/context is not ready for thesis work.",
         primary: "Open evidence",
         action: "evidence",
+        status: statusText,
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
@@ -1364,6 +1378,7 @@
         reason: "A position is open; conditions and exits matter now.",
         primary: "Track position",
         action: "tracking",
+        status: statusText,
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
@@ -1377,6 +1392,7 @@
         reason: "A decision exists; review replay and follow-up conditions.",
         primary: "Track decision",
         action: "tracking",
+        status: statusText,
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
@@ -1392,6 +1408,7 @@
         reason: currentSymbolThesis.edge_rationale,
         primary: isActionable ? "Record decision" : "Review thesis",
         action: isActionable ? "decision" : "thesis",
+        status: statusText,
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
@@ -1405,6 +1422,7 @@
         reason: symbolDeclines?.[0]?.reason ?? "The system declined to invent an edge.",
         primary: "Review decline",
         action: "thesis",
+        status: statusText,
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
@@ -1417,6 +1435,7 @@
       reason: symbolBrain?.reason ?? "Context exists; cognition should draft or decline a thesis.",
       primary: "Check cognition",
       action: "overview",
+      status: statusText,
       attention: attentionText,
       evidence: evidenceText,
       thesis: thesisText,
@@ -1528,6 +1547,73 @@
     if (listId === UNIVERSE_ID) return universeMembers;
     if (listId === POOL_ID) return poolMembers;
     return watchlistMembers[listId] ?? [];
+  }
+
+  function watchlistsForSymbol(symbol: string | null): Watchlist[] {
+    if (!symbol) return [];
+    return watchlists.filter((w) =>
+      (watchlistMembers[w.id] ?? []).some((m) => m.symbol === symbol),
+    );
+  }
+
+  function watchlistSummary(lists: Watchlist[]): string {
+    if (lists.length === 0) return "no watchlist";
+    return lists.map((w) => w.name).slice(0, 3).join(", ") + (lists.length > 3 ? ` +${lists.length - 3}` : "");
+  }
+
+  function placementForSelectedSymbol(): SymbolPlacement {
+    if (!selectedSymbol) {
+      return {
+        label: "No symbol",
+        short: "not selected",
+        tone: "missing",
+        location: "None",
+        detail: "Pick a ticker to inspect.",
+      };
+    }
+    if (selectedTicker) {
+      return {
+        label: "Active Universe",
+        short: `Universe T${selectedTicker.tier}`,
+        tone: "active",
+        location: "Active Universe",
+        detail: "The scheduled brain loop may refresh context, evidence, thesis, and decisions for this ticker.",
+      };
+    }
+    if (selectedCandidateReview) {
+      return {
+        label: "Nominated",
+        short: "nomination",
+        tone: "candidate",
+        location: "Attention queue",
+        detail: "Discovery queued this ticker for promotion review. It is not monitored until promotion adds it to the active Universe.",
+      };
+    }
+    if (selectedPoolMember) {
+      return {
+        label: "Discovery Pool",
+        short: "pool only",
+        tone: "pool",
+        location: "Discovery pool",
+        detail: "This ticker is known to discovery, but the scheduled context/thesis loop will not run until it is promoted.",
+      };
+    }
+    if (selectedWatchlistPlacements.length > 0) {
+      return {
+        label: "Watchlisted Only",
+        short: "watchlist only",
+        tone: "pool",
+        location: "Watchlist",
+        detail: "This ticker is in a watchlist, but it is not in the active Universe, so the scheduled context/thesis loop will not run until it is promoted.",
+      };
+    }
+    return {
+      label: "Not Tracked",
+      short: "not tracked",
+      tone: "unknown",
+      location: "Outside current system",
+      detail: "The chart may load if price data exists, but this ticker is not in the active Universe, discovery pool, or watchlists.",
+    };
   }
 
   function filteredMembersFor(listId: string): WatchlistMember[] {
@@ -1747,6 +1833,12 @@
     watchlistMembers = next;
   }
 
+  async function refreshKnownWatchlistMembers() {
+    const ids = watchlists.map((w) => w.id).filter((id) => !watchlistMembers[id]);
+    if (ids.length === 0) return;
+    await refreshSelectedWatchlistMembers(ids);
+  }
+
   // ---------- selection logic ----------
   async function selectSymbol(
     value: string,
@@ -1764,7 +1856,10 @@
     poolPromotionStatus = null;
     poolPromotionLists = {};
     clearSelectedSymbolDetails();
-    await loadSelectedSymbolDetails(symbol);
+    await Promise.all([
+      loadSelectedSymbolDetails(symbol),
+      refreshKnownWatchlistMembers(),
+    ]);
   }
 
   function pickFirstSymbol() {
@@ -1883,6 +1978,7 @@
   async function refreshWatchlists() {
     try {
       watchlists = await fetchWatchlists();
+      if (selectedSymbol) await refreshKnownWatchlistMembers();
     } catch (e) {
       error = String(e);
     }
@@ -2159,6 +2255,8 @@
 
   let selectedTicker = $derived(tickerFor(selectedSymbol));
   let selectedPoolMember = $derived(pool.find((item) => item.symbol === selectedSymbol) ?? null);
+  let selectedWatchlistPlacements = $derived.by<Watchlist[]>(() => watchlistsForSymbol(selectedSymbol));
+  let selectedPlacement = $derived.by<SymbolPlacement>(() => placementForSelectedSymbol());
   let selectedWorkflow = $derived.by<SymbolWorkflow>(() => buildWorkflow());
   let selectedParentTheses = $derived<BrainThesis[]>(
     brainOverview?.sectors.filter((thesis) =>
@@ -2270,6 +2368,10 @@
     </div>
 
     <div class="workflow-rail" aria-label="Selected ticker workflow">
+      <button type="button" class="workflow-step" onclick={() => runWorkflowAction("overview")}>
+        <span>Status</span>
+        <strong>{selectedWorkflow.status}</strong>
+      </button>
       <button type="button" class="workflow-step" onclick={() => runWorkflowAction("attention")}>
         <span>Attention</span>
         <strong>{selectedWorkflow.attention}</strong>
@@ -3528,6 +3630,31 @@
                   </div>
                 </section>
               {/if}
+              <section class="brain-card symbol-status-card placement-{selectedPlacement.tone}" data-testid="symbol-status-card">
+                <div class="brain-hdr">
+                  <span class="brain-title">System Placement</span>
+                  <span class="badge tiny placement-{selectedPlacement.tone}">{selectedPlacement.label}</span>
+                  {#if selectedTicker}<span class="muted">T{selectedTicker.tier}</span>{/if}
+                </div>
+                <p>{selectedPlacement.detail}</p>
+                <dl class="meta-list inline">
+                  <dt>location</dt><dd>{selectedPlacement.location}</dd>
+                  <dt>watchlists</dt>
+                  <dd>
+                    {#if selectedWatchlistPlacements.length > 0}
+                      <span class="placement-tags">
+                        {#each selectedWatchlistPlacements as w (w.id)}
+                          <span class="brain-token">{w.name}</span>
+                        {/each}
+                      </span>
+                    {:else}
+                      <span class="muted">none</span>
+                    {/if}
+                  </dd>
+                  <dt>thesis</dt><dd>{workflowThesisText()}</dd>
+                  <dt>attention</dt><dd>{workflowAttentionText()}</dd>
+                </dl>
+              </section>
               {#if selectedTicker}
                 <dl class="meta-list">
                   <dt>Symbol</dt><dd><strong>{selectedTicker.symbol}</strong></dd>
@@ -3744,6 +3871,12 @@
                 </section>
               {/if}
             {:else if rightTab === "theses"}
+              <section class="symbol-placement-strip placement-{selectedPlacement.tone}" data-testid="thesis-placement-strip">
+                <span class="badge tiny placement-{selectedPlacement.tone}">{selectedPlacement.label}</span>
+                <strong>{selectedPlacement.short}</strong>
+                <span class="muted">{watchlistSummary(selectedWatchlistPlacements)}</span>
+                <button type="button" class="text-action" onclick={() => (rightTab = "overview")}>overview</button>
+              </section>
               {#if symbolTheses === undefined || symbolDeclines === undefined}
                 <p class="muted">Loading…</p>
               {:else}
@@ -4217,7 +4350,7 @@
   }
   .workflow-rail {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: .35rem;
   }
   .workflow-step {
@@ -4256,6 +4389,59 @@
   .workflow-strip.tone-ready .workflow-main { border-left-color: rgb(249,226,175); }
   .workflow-strip.tone-declined .workflow-main,
   .workflow-strip.tone-missing .workflow-main { border-left-color: #6c7693; }
+  .symbol-status-card {
+    margin-bottom: .65rem;
+  }
+  .symbol-status-card.placement-active,
+  .symbol-placement-strip.placement-active { border-left-color: rgb(166, 227, 161); }
+  .symbol-status-card.placement-candidate,
+  .symbol-placement-strip.placement-candidate { border-left-color: rgb(180, 190, 254); }
+  .symbol-status-card.placement-pool,
+  .symbol-placement-strip.placement-pool { border-left-color: rgb(249, 226, 175); }
+  .symbol-status-card.placement-unknown,
+  .symbol-status-card.placement-missing,
+  .symbol-placement-strip.placement-unknown,
+  .symbol-placement-strip.placement-missing { border-left-color: #6c7693; }
+  .symbol-placement-strip {
+    display: flex;
+    align-items: center;
+    gap: .45rem;
+    flex-wrap: wrap;
+    border: 1px solid #1f2733;
+    border-left: 3px solid #6c7693;
+    border-radius: 4px;
+    background: #0a0d14;
+    padding: .4rem .5rem;
+    margin-bottom: .55rem;
+  }
+  .symbol-placement-strip strong {
+    color: #cdd6f4;
+  }
+  .symbol-placement-strip .text-action {
+    margin-left: auto;
+  }
+  .placement-tags {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: .25rem;
+  }
+  .badge.placement-active {
+    color: #a6e3a1;
+    background: rgba(166, 227, 161, .16);
+  }
+  .badge.placement-candidate {
+    color: #b4befe;
+    background: rgba(180, 190, 254, .16);
+  }
+  .badge.placement-pool {
+    color: #f9e2af;
+    background: rgba(249, 226, 175, .16);
+  }
+  .badge.placement-unknown,
+  .badge.placement-missing {
+    color: #9aa3b8;
+    background: rgba(108, 118, 147, .16);
+  }
   .promotion-review {
     grid-column: 1 / -1;
     display: grid;

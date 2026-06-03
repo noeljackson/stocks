@@ -1355,6 +1355,19 @@ test("overview explains evidence-updated brain action", async ({ page }) => {
   await expect(evidence).toContainText("newer than thesis");
 });
 
+test("overview shows selected symbol placement and watchlists", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/symbol/OKTA?p=overview");
+
+  const placement = page.getByTestId("symbol-status-card");
+  await expect(placement).toContainText("System Placement");
+  await expect(placement).toContainText("Active Universe");
+  await expect(placement).toContainText("T2");
+  await expect(placement).toContainText("Core");
+  await expect(placement).toContainText("forming · bull");
+  await expect(placement).toContainText("The scheduled brain loop may refresh context");
+});
+
 test("workflow rail shows selected ticker state and routes to thesis review", async ({ page }) => {
   await mockApi(page);
   await page.goto("/");
@@ -1362,6 +1375,7 @@ test("workflow rail shows selected ticker state and routes to thesis review", as
   const strip = page.getByTestId("workflow-strip");
   await expect(strip).toContainText("MSFT");
   await expect(strip).toContainText("Declined thesis");
+  await expect(strip).toContainText("Universe T1");
   await expect(strip).toContainText("1 open evidence");
   await expect(strip).toContainText("declined attempt");
   await expect(page.getByTestId("workflow-primary")).toHaveText("Review decline");
@@ -1725,6 +1739,10 @@ test("attention thesis review opens selected ticker thesis panel", async ({ page
 
   await expect(page.locator(".tabs button.active")).toHaveText("theses");
   await expect(page.getByTestId("workflow-strip")).toContainText("OKTA");
+  const placement = page.getByTestId("thesis-placement-strip");
+  await expect(placement).toContainText("Active Universe");
+  await expect(placement).toContainText("Universe T2");
+  await expect(placement).toContainText("Core");
 });
 
 test("watchlist add form posts ticker and refreshes members", async ({ page }) => {

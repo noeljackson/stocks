@@ -1924,6 +1924,17 @@
   function selectedPoolPromotionWatchlists(): string[] {
     return Object.entries(poolPromotionLists).filter(([, checked]) => checked).map(([id]) => id);
   }
+  function setPoolPromotionList(wlId: string, checked: boolean) {
+    poolPromotionLists = { ...poolPromotionLists, [wlId]: checked };
+  }
+  async function promoteSelectedToUniverse() {
+    if (!selectedSymbol || selectedTicker) return;
+    if (selectedCandidateIds.length > 0) {
+      await confirmGroup(selectedCandidateIds);
+      return;
+    }
+    await promoteSelectedPoolCandidate();
+  }
   async function promoteSelectedPoolCandidate() {
     if (!selectedSymbol) return;
     const watchlistIds = selectedPoolPromotionWatchlists();
@@ -3603,12 +3614,7 @@
                           <input
                             type="checkbox"
                             checked={poolPromotionLists[w.id] ?? false}
-                            onchange={(event) => {
-                              poolPromotionLists = {
-                                ...poolPromotionLists,
-                                [w.id]: (event.currentTarget as HTMLInputElement).checked,
-                              };
-                            }}
+                            onchange={(event) => setPoolPromotionList(w.id, (event.currentTarget as HTMLInputElement).checked)}
                           />
                           {w.name}
                         </label>
@@ -3654,6 +3660,51 @@
                   <dt>thesis</dt><dd>{workflowThesisText()}</dd>
                   <dt>attention</dt><dd>{workflowAttentionText()}</dd>
                 </dl>
+                {#if selectedSymbol && !selectedTicker}
+                  <div class="placement-promote" data-testid="placement-promote">
+                    <div class="promotion-destinations compact">
+                      <span class="badge tiny">Universe always included</span>
+                      {#if selectedCandidateIds.length > 0 && selectedPromotionLists.length > 0}
+                        {#each selectedPromotionLists as proposed (proposed.watchlist_id)}
+                          <label class="att-pick promotion-pick">
+                            <input
+                              type="checkbox"
+                              checked={selectedPromotionListChecked(proposed.watchlist_id)}
+                              onchange={(event) => setSelectedPromotionList(proposed.watchlist_id, (event.currentTarget as HTMLInputElement).checked)}
+                            />
+                            {proposed.watchlist_name}
+                            <span class="badge tiny conf-{proposed.confidence}">{proposed.confidence}</span>
+                          </label>
+                        {/each}
+                      {:else if selectedCandidateIds.length > 0}
+                        <span class="muted">No watchlist match attached; promote as Universe-only.</span>
+                      {:else if watchlists.length > 0}
+                        {#each watchlists as w (w.id)}
+                          <label class="att-pick promotion-pick">
+                            <input
+                              type="checkbox"
+                              checked={poolPromotionLists[w.id] ?? false}
+                              onchange={(event) => setPoolPromotionList(w.id, (event.currentTarget as HTMLInputElement).checked)}
+                            />
+                            {w.name}
+                          </label>
+                        {/each}
+                      {:else}
+                        <span class="muted">No watchlists yet; promote as Universe-only.</span>
+                      {/if}
+                    </div>
+                    <div class="promotion-actions">
+                      <button
+                        class="confirm"
+                        disabled={promotionBusy || poolPromotionBusy}
+                        onclick={promoteSelectedToUniverse}
+                      >Promote to Universe</button>
+                      {#if promotionStatus || poolPromotionStatus}
+                        <span class="muted">{promotionStatus ?? poolPromotionStatus}</span>
+                      {/if}
+                    </div>
+                  </div>
+                {/if}
               </section>
               {#if selectedTicker}
                 <dl class="meta-list">
@@ -3875,6 +3926,14 @@
                 <span class="badge tiny placement-{selectedPlacement.tone}">{selectedPlacement.label}</span>
                 <strong>{selectedPlacement.short}</strong>
                 <span class="muted">{watchlistSummary(selectedWatchlistPlacements)}</span>
+                {#if selectedSymbol && !selectedTicker}
+                  <button
+                    type="button"
+                    class="confirm"
+                    disabled={promotionBusy || poolPromotionBusy}
+                    onclick={promoteSelectedToUniverse}
+                  >Promote</button>
+                {/if}
                 <button type="button" class="text-action" onclick={() => (rightTab = "overview")}>overview</button>
               </section>
               {#if symbolTheses === undefined || symbolDeclines === undefined}
@@ -4419,6 +4478,36 @@
   }
   .symbol-placement-strip .text-action {
     margin-left: auto;
+  }
+  .symbol-placement-strip .confirm,
+  .promotion-actions .confirm {
+    background: rgba(166, 227, 161, .12);
+    color: #cdd6f4;
+    border: 1px solid rgba(166, 227, 161, .42);
+    border-radius: 4px;
+    padding: .24rem .58rem;
+    font: inherit;
+    font-size: .76rem;
+    cursor: pointer;
+  }
+  .symbol-placement-strip .confirm:hover,
+  .promotion-actions .confirm:hover {
+    background: rgba(166, 227, 161, .2);
+  }
+  .symbol-placement-strip .confirm:disabled,
+  .promotion-actions .confirm:disabled {
+    opacity: .55;
+    cursor: default;
+  }
+  .placement-promote {
+    display: grid;
+    gap: .45rem;
+    margin-top: .55rem;
+    padding-top: .55rem;
+    border-top: 1px solid #1f2733;
+  }
+  .promotion-destinations.compact {
+    align-items: baseline;
   }
   .placement-tags {
     display: inline-flex;

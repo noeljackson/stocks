@@ -9,8 +9,10 @@
 #
 # Architecture:
 #   - Each Rust service runs `cargo watch -x 'run --bin X'` in its own
-#     container. Source bind-mounted; target/ + cargo registry on named
-#     volumes so the first build is the only slow one.
+#     container. Source bind-mounted; target/ stays on the repo mount so
+#     large build artifacts do not consume the small Docker root overlay.
+#     The cargo registry remains a named volume so dependency downloads are
+#     shared across service containers.
 #   - Vite dev server in a node container exposes HMR on :5173.
 #   - Secrets come from the SHELL env (Infisical injects them via
 #     `infisical run --env=dev -- ...` wrapping the compose command).
@@ -24,7 +26,6 @@ x-rust-common: &rust-common
   volumes:
     - ../..:/app                       # bind whole repo (Rust + prompts/ + web/dist)
     - cargo-cache:/usr/local/cargo/registry
-    - cargo-target:/app/target
   environment:
     # Defaults — override via shell env (Infisical-injected) when needed.
     - DATABASE_URL=postgres://stocks:stocks_dev_only@postgres:5432/stocks?sslmode=disable
@@ -234,5 +235,4 @@ services:
 
 volumes:
   cargo-cache:
-  cargo-target:
   web-node-modules:

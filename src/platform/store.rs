@@ -6,7 +6,7 @@
 //! SQLX_OFFLINE=true + checking in the sqlx-data.json.
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
 use sqlx::{
     Row,
     postgres::{PgPool, PgPoolOptions},
@@ -48,6 +48,23 @@ struct FreshnessThresholds {
     fresh: ChronoDuration,
     stale: ChronoDuration,
     old: ChronoDuration,
+}
+
+#[derive(Debug, Clone)]
+struct BrainJournalDraft {
+    journal_date: NaiveDate,
+    category: String,
+    source_kind: String,
+    source_id: String,
+    event_key: String,
+    symbol: Option<String>,
+    brain_thesis_id: Option<uuid::Uuid>,
+    thesis_id: Option<uuid::Uuid>,
+    title: String,
+    summary: String,
+    importance: i32,
+    occurred_at: DateTime<Utc>,
+    source_ref: serde_json::Value,
 }
 
 fn age_component(
@@ -173,6 +190,52 @@ fn confidence_cap(score: f64, components: &[ThesisFreshnessComponent]) -> Option
         return Some("medium".to_string());
     }
     None
+}
+
+fn journal_attention_category(kind: &str, severity: &str) -> (&'static str, i32) {
+    match kind {
+        "candidate_review" | "thesis_review" => ("research", 70),
+        "thesis_actionable" | "invalidation_hit" | "risk_review" => ("changed", 85),
+        "context_stale" | "thesis_incomplete" => ("blocked", 70),
+        _ if severity == "blocked" => ("blocked", 75),
+        _ if severity == "decision" => ("changed", 80),
+        _ => ("curious", 55),
+    }
+}
+
+fn journal_source_task_category(
+    state: &str,
+    result: Option<&str>,
+    priority: &str,
+) -> (&'static str, i32) {
+    match (state, result) {
+        ("satisfied", Some("rows_seen")) => ("changed", 78),
+        ("failed" | "blocked" | "rate_limited", _) => ("blocked", 78),
+        ("no_rows", _) => ("curious", 55),
+        ("queued" | "fetching", _) if matches!(priority, "high" | "blocking") => ("research", 62),
+        _ => ("curious", 45),
+    }
+}
+
+fn journal_thesis_state_importance(to_state: &str) -> i32 {
+    match to_state {
+        "actionable" | "armed" | "position_open" | "exiting" => 90,
+        "building_conviction" => 78,
+        "closed" | "disqualified" => 72,
+        _ => 65,
+    }
+}
+
+fn journal_label(value: &str) -> String {
+    value.replace('_', " ")
+}
+
+fn journal_event_key(
+    source_kind: &str,
+    source_id: impl std::fmt::Display,
+    at: DateTime<Utc>,
+) -> String {
+    format!("{source_kind}:{source_id}:{}", at.timestamp_millis())
 }
 
 impl Store {
@@ -1443,6 +1506,655 @@ impl Store {
                 }))
             })
             .collect()
+    }
+
+    pub async fn refresh_brain_journal_entries(&self, day: NaiveDate) -> Result<u64> {
+        let start_naive = day
+            .and_hms_opt(0, 0, 0)
+            .ok_or_else(|| anyhow::anyhow!("invalid journal day"))?;
+        let start = DateTime::<Utc>::from_naive_utc_and_offset(start_naive, Utc);
+        let end = start + ChronoDuration::days(1);
+
+        let mut drafts = Vec::new();
+        drafts.extend(self.brain_journal_attention_drafts(day, start, end).await?);
+        drafts.extend(
+            self.brain_journal_source_task_drafts(day, start, end)
+                .await?,
+        );
+        drafts.extend(
+            self.brain_journal_thesis_state_drafts(day, start, end)
+                .await?,
+        );
+        drafts.extend(
+            self.brain_journal_thesis_version_drafts(day, start, end)
+                .await?,
+        );
+        drafts.extend(self.brain_journal_evidence_drafts(day, start, end).await?);
+        drafts.extend(
+            self.brain_journal_parent_thesis_drafts(day, start, end)
+                .await?,
+        );
+        drafts.extend(
+            self.brain_journal_dislocation_drafts(day, start, end)
+                .await?,
+        );
+
+        let mut inserted = 0;
+        for draft in drafts {
+            inserted += self.insert_brain_journal_entry(&draft).await?;
+        }
+        Ok(inserted)
+    }
+
+    pub async fn brain_journal_for_date(&self, day: NaiveDate) -> Result<serde_json::Value> {
+        let rows = sqlx::query(
+            r#"WITH ranked AS (
+                 SELECT id, journal_date, category, source_kind, source_id, event_key,
+                        symbol, brain_thesis_id, thesis_id, title, summary, importance,
+                        occurred_at, source_ref, created_at,
+                        row_number() OVER (
+                          PARTITION BY category
+                          ORDER BY importance DESC, occurred_at DESC, id DESC
+                        ) AS rn
+                   FROM brain_journal_entry
+                  WHERE journal_date = $1
+             )
+             SELECT id, journal_date, category, source_kind, source_id, event_key,
+                    symbol, brain_thesis_id, thesis_id, title, summary, importance,
+                    occurred_at, source_ref, created_at
+               FROM ranked
+              WHERE rn <= 8
+           ORDER BY CASE category
+                      WHEN 'changed' THEN 0
+                      WHEN 'ignored_or_hated' THEN 1
+                      WHEN 'crowded_or_extended' THEN 2
+                      WHEN 'research' THEN 3
+                      WHEN 'curious' THEN 4
+                      WHEN 'blocked' THEN 5
+                      ELSE 6
+                    END,
+                    importance DESC, occurred_at DESC, id DESC"#,
+        )
+        .bind(day)
+        .fetch_all(&self.pool)
+        .await
+        .context("brain_journal_for_date")?;
+
+        let count_rows = sqlx::query(
+            r#"SELECT category, count(*) AS n
+                 FROM brain_journal_entry
+                WHERE journal_date = $1
+             GROUP BY category"#,
+        )
+        .bind(day)
+        .fetch_all(&self.pool)
+        .await
+        .context("brain_journal_counts")?;
+        let mut all_by_category = std::collections::BTreeMap::<String, i64>::new();
+        for r in count_rows {
+            all_by_category.insert(r.try_get("category")?, r.try_get("n")?);
+        }
+        let all_total: i64 = all_by_category.values().sum();
+
+        let mut by_category = std::collections::BTreeMap::<String, i64>::new();
+        let mut entries = Vec::with_capacity(rows.len());
+        for r in rows {
+            let category: String = r.try_get("category")?;
+            *by_category.entry(category.clone()).or_default() += 1;
+            let journal_date: NaiveDate = r.try_get("journal_date")?;
+            let occurred_at: DateTime<Utc> = r.try_get("occurred_at")?;
+            let created_at: DateTime<Utc> = r.try_get("created_at")?;
+            entries.push(serde_json::json!({
+                "id": r.try_get::<i64, _>("id")?,
+                "date": journal_date.format("%Y-%m-%d").to_string(),
+                "category": category,
+                "source_kind": r.try_get::<String, _>("source_kind")?,
+                "source_id": r.try_get::<String, _>("source_id")?,
+                "event_key": r.try_get::<String, _>("event_key")?,
+                "symbol": r.try_get::<Option<String>, _>("symbol")?,
+                "brain_thesis_id": r.try_get::<Option<uuid::Uuid>, _>("brain_thesis_id")?,
+                "thesis_id": r.try_get::<Option<uuid::Uuid>, _>("thesis_id")?,
+                "title": r.try_get::<String, _>("title")?,
+                "summary": r.try_get::<String, _>("summary")?,
+                "importance": r.try_get::<i32, _>("importance")?,
+                "occurred_at": occurred_at,
+                "source_ref": r.try_get::<serde_json::Value, _>("source_ref")?,
+                "created_at": created_at,
+            }));
+        }
+
+        let visible_total = entries.len();
+        Ok(serde_json::json!({
+            "as_of": Utc::now(),
+            "date": day.format("%Y-%m-%d").to_string(),
+            "synthesis": serde_json::Value::Null,
+            "summary": {
+                "total": all_total,
+                "visible": visible_total,
+                "by_category": by_category,
+                "all_by_category": all_by_category,
+            },
+            "entries": entries,
+        }))
+    }
+
+    async fn insert_brain_journal_entry(&self, draft: &BrainJournalDraft) -> Result<u64> {
+        let res = sqlx::query(
+            r#"INSERT INTO brain_journal_entry
+                    (journal_date, category, source_kind, source_id, event_key, symbol,
+                     brain_thesis_id, thesis_id, title, summary, importance, occurred_at,
+                     source_ref)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            ON CONFLICT (event_key) DO NOTHING"#,
+        )
+        .bind(draft.journal_date)
+        .bind(&draft.category)
+        .bind(&draft.source_kind)
+        .bind(&draft.source_id)
+        .bind(&draft.event_key)
+        .bind(&draft.symbol)
+        .bind(draft.brain_thesis_id)
+        .bind(draft.thesis_id)
+        .bind(&draft.title)
+        .bind(&draft.summary)
+        .bind(draft.importance)
+        .bind(draft.occurred_at)
+        .bind(&draft.source_ref)
+        .execute(&self.pool)
+        .await
+        .context("insert_brain_journal_entry")?;
+        Ok(res.rows_affected())
+    }
+
+    async fn brain_journal_attention_drafts(
+        &self,
+        day: NaiveDate,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<BrainJournalDraft>> {
+        let rows = sqlx::query(
+            r#"SELECT id, kind, symbol, thesis_id, candidate_id, severity, status,
+                      title, reason, source, source_ref, created_at, resolved_at,
+                      resolution_kind, fsm_state, owner
+                 FROM attention_item
+                WHERE created_at >= $1 AND created_at < $2
+             ORDER BY created_at DESC
+                LIMIT 80"#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(&self.pool)
+        .await
+        .context("brain_journal_attention_drafts")?;
+
+        rows.into_iter()
+            .map(|r| {
+                let id: i64 = r.try_get("id")?;
+                let kind: String = r.try_get("kind")?;
+                let severity: String = r.try_get("severity")?;
+                let created_at: DateTime<Utc> = r.try_get("created_at")?;
+                let title: String = r.try_get("title")?;
+                let reason: Option<String> = r.try_get("reason")?;
+                let (category, importance) = journal_attention_category(&kind, &severity);
+                Ok(BrainJournalDraft {
+                    journal_date: day,
+                    category: category.to_string(),
+                    source_kind: "attention".to_string(),
+                    source_id: id.to_string(),
+                    event_key: journal_event_key("attention", id, created_at),
+                    symbol: r.try_get("symbol")?,
+                    brain_thesis_id: None,
+                    thesis_id: r.try_get("thesis_id")?,
+                    title,
+                    summary: reason.unwrap_or_else(|| {
+                        format!("{} attention item from {}", journal_label(&kind), severity)
+                    }),
+                    importance,
+                    occurred_at: created_at,
+                    source_ref: serde_json::json!({
+                        "attention_id": id,
+                        "kind": kind,
+                        "severity": severity,
+                        "status": r.try_get::<String, _>("status")?,
+                        "source": r.try_get::<String, _>("source")?,
+                        "candidate_id": r.try_get::<Option<i64>, _>("candidate_id")?,
+                        "fsm_state": r.try_get::<Option<String>, _>("fsm_state").ok().flatten(),
+                        "owner": r.try_get::<Option<String>, _>("owner").ok().flatten(),
+                        "resolved_at": r.try_get::<Option<DateTime<Utc>>, _>("resolved_at")?,
+                        "resolution_kind": r.try_get::<Option<String>, _>("resolution_kind")?,
+                        "source_ref": r.try_get::<serde_json::Value, _>("source_ref")?,
+                    }),
+                })
+            })
+            .collect()
+    }
+
+    async fn brain_journal_source_task_drafts(
+        &self,
+        day: NaiveDate,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<BrainJournalDraft>> {
+        let rows = sqlx::query(
+            r#"SELECT id, source_type, requirement_key, action, scope, target_id,
+                      provider, state, priority, attempts, next_retry_at, last_error,
+                      source_ref, source_ref->>'result' AS result, updated_at
+                 FROM source_task
+                WHERE updated_at >= $1 AND updated_at < $2
+                  AND (
+                    state IN ('failed', 'blocked', 'rate_limited', 'no_rows')
+                    OR (state = 'satisfied' AND source_ref->>'result' = 'rows_seen')
+                    OR (state IN ('queued', 'fetching') AND priority IN ('high', 'blocking'))
+                  )
+             ORDER BY updated_at DESC
+                LIMIT 120"#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(&self.pool)
+        .await
+        .context("brain_journal_source_task_drafts")?;
+
+        rows.into_iter()
+            .map(|r| {
+                let id: i64 = r.try_get("id")?;
+                let state: String = r.try_get("state")?;
+                let priority: String = r.try_get("priority")?;
+                let result: Option<String> = r.try_get("result")?;
+                let updated_at: DateTime<Utc> = r.try_get("updated_at")?;
+                let scope: String = r.try_get("scope")?;
+                let target: String = r.try_get("target_id")?;
+                let provider: String = r.try_get("provider")?;
+                let action: String = r.try_get("action")?;
+                let (category, importance) =
+                    journal_source_task_category(&state, result.as_deref(), &priority);
+                let symbol = if scope == "symbol" {
+                    Some(target.clone())
+                } else {
+                    None
+                };
+                let title = match category {
+                    "changed" => format!("Fresh {provider} data for {target}"),
+                    "blocked" => format!("Data blocked: {target} {}", journal_label(&action)),
+                    "research" => format!("Research queued: {target} {}", journal_label(&action)),
+                    _ => format!("No new rows: {target} {}", journal_label(&action)),
+                };
+                let mut summary = format!(
+                    "{} task {} with {} priority after {} attempt(s)",
+                    provider,
+                    state,
+                    priority,
+                    r.try_get::<i32, _>("attempts")?
+                );
+                if let Some(error) = r.try_get::<Option<String>, _>("last_error")? {
+                    summary = format!("{summary}: {error}");
+                } else if let Some(result) = result.as_deref() {
+                    summary = format!("{summary}; result {result}");
+                }
+                Ok(BrainJournalDraft {
+                    journal_date: day,
+                    category: category.to_string(),
+                    source_kind: "source_task".to_string(),
+                    source_id: id.to_string(),
+                    event_key: journal_event_key("source_task", id, updated_at),
+                    symbol,
+                    brain_thesis_id: None,
+                    thesis_id: None,
+                    title,
+                    summary,
+                    importance,
+                    occurred_at: updated_at,
+                    source_ref: serde_json::json!({
+                        "source_task_id": id,
+                        "source_type": r.try_get::<String, _>("source_type")?,
+                        "requirement_key": r.try_get::<Option<String>, _>("requirement_key")?,
+                        "action": action,
+                        "scope": scope,
+                        "target_id": target,
+                        "provider": provider,
+                        "state": state,
+                        "priority": priority,
+                        "result": result,
+                        "next_retry_at": r.try_get::<Option<DateTime<Utc>>, _>("next_retry_at")?,
+                        "source_ref": r.try_get::<serde_json::Value, _>("source_ref")?,
+                    }),
+                })
+            })
+            .collect()
+    }
+
+    async fn brain_journal_thesis_state_drafts(
+        &self,
+        day: NaiveDate,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<BrainJournalDraft>> {
+        let rows = sqlx::query(
+            r#"SELECT tsh.id, t.symbol, tsh.thesis_id, tsh.from_state, tsh.to_state,
+                      tsh.rationale, tsh.at
+                 FROM thesis_state_history tsh
+                 JOIN thesis t ON t.thesis_id = tsh.thesis_id
+                WHERE tsh.at >= $1 AND tsh.at < $2
+             ORDER BY tsh.at DESC
+                LIMIT 80"#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(&self.pool)
+        .await
+        .context("brain_journal_thesis_state_drafts")?;
+
+        rows.into_iter()
+            .map(|r| {
+                let id: i64 = r.try_get("id")?;
+                let symbol: String = r.try_get("symbol")?;
+                let to_state: String = r.try_get("to_state")?;
+                let at: DateTime<Utc> = r.try_get("at")?;
+                let rationale: Option<String> = r.try_get("rationale")?;
+                Ok(BrainJournalDraft {
+                    journal_date: day,
+                    category: "changed".to_string(),
+                    source_kind: "thesis_state".to_string(),
+                    source_id: id.to_string(),
+                    event_key: journal_event_key("thesis_state", id, at),
+                    symbol: Some(symbol.clone()),
+                    brain_thesis_id: None,
+                    thesis_id: r.try_get("thesis_id")?,
+                    title: format!("{symbol} thesis moved to {}", journal_label(&to_state)),
+                    summary: rationale.unwrap_or_else(|| {
+                        "State transition recorded by thesis lifecycle.".to_string()
+                    }),
+                    importance: journal_thesis_state_importance(&to_state),
+                    occurred_at: at,
+                    source_ref: serde_json::json!({
+                        "thesis_state_history_id": id,
+                        "from_state": r.try_get::<Option<String>, _>("from_state")?,
+                        "to_state": to_state,
+                    }),
+                })
+            })
+            .collect()
+    }
+
+    async fn brain_journal_thesis_version_drafts(
+        &self,
+        day: NaiveDate,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<BrainJournalDraft>> {
+        let rows = sqlx::query(
+            r#"SELECT tvh.id, t.symbol, tvh.thesis_id, tvh.version, tvh.diff,
+                      tvh.rationale, tvh.weakens_invalidation, tvh.at
+                 FROM thesis_version_history tvh
+                 JOIN thesis t ON t.thesis_id = tvh.thesis_id
+                WHERE tvh.at >= $1 AND tvh.at < $2
+             ORDER BY tvh.at DESC
+                LIMIT 80"#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(&self.pool)
+        .await
+        .context("brain_journal_thesis_version_drafts")?;
+
+        rows.into_iter()
+            .map(|r| {
+                let id: i64 = r.try_get("id")?;
+                let symbol: String = r.try_get("symbol")?;
+                let version: i32 = r.try_get("version")?;
+                let at: DateTime<Utc> = r.try_get("at")?;
+                let weakens: bool = r.try_get("weakens_invalidation")?;
+                Ok(BrainJournalDraft {
+                    journal_date: day,
+                    category: "changed".to_string(),
+                    source_kind: "thesis_version".to_string(),
+                    source_id: id.to_string(),
+                    event_key: journal_event_key("thesis_version", id, at),
+                    symbol: Some(symbol.clone()),
+                    brain_thesis_id: None,
+                    thesis_id: r.try_get("thesis_id")?,
+                    title: format!("{symbol} thesis updated to v{version}"),
+                    summary: r
+                        .try_get::<Option<String>, _>("rationale")?
+                        .unwrap_or_else(|| {
+                            "Thesis content changed; review the version diff.".to_string()
+                        }),
+                    importance: if weakens { 88 } else { 72 },
+                    occurred_at: at,
+                    source_ref: serde_json::json!({
+                        "thesis_version_history_id": id,
+                        "version": version,
+                        "weakens_invalidation": weakens,
+                        "diff": r.try_get::<serde_json::Value, _>("diff")?,
+                    }),
+                })
+            })
+            .collect()
+    }
+
+    async fn brain_journal_evidence_drafts(
+        &self,
+        day: NaiveDate,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<BrainJournalDraft>> {
+        let rows = sqlx::query(
+            r#"SELECT id, symbol, kind, observed_at, source, source_id, source_ref,
+                      summary, strength, polarity, url, created_at
+                 FROM evidence_item
+                WHERE created_at >= $1 AND created_at < $2
+             ORDER BY created_at DESC
+                LIMIT 120"#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(&self.pool)
+        .await
+        .context("brain_journal_evidence_drafts")?;
+
+        rows.into_iter()
+            .map(|r| {
+                let id: i64 = r.try_get("id")?;
+                let symbol: String = r.try_get("symbol")?;
+                let kind: String = r.try_get("kind")?;
+                let created_at: DateTime<Utc> = r.try_get("created_at")?;
+                let strength: Option<f64> = r.try_get("strength")?;
+                let polarity: Option<f64> = r.try_get("polarity")?;
+                let category = if kind == "product_research" {
+                    "curious"
+                } else {
+                    "changed"
+                };
+                let mut importance = (strength.unwrap_or(0.5) * 70.0).round() as i32;
+                if polarity.unwrap_or(0.0).abs() >= 0.5 {
+                    importance += 10;
+                }
+                Ok(BrainJournalDraft {
+                    journal_date: day,
+                    category: category.to_string(),
+                    source_kind: "evidence".to_string(),
+                    source_id: id.to_string(),
+                    event_key: journal_event_key("evidence", id, created_at),
+                    symbol: Some(symbol.clone()),
+                    brain_thesis_id: None,
+                    thesis_id: None,
+                    title: format!("{symbol} evidence: {}", journal_label(&kind)),
+                    summary: r.try_get("summary")?,
+                    importance: importance.clamp(35, 85),
+                    occurred_at: created_at,
+                    source_ref: serde_json::json!({
+                        "evidence_item_id": id,
+                        "kind": kind,
+                        "observed_at": r.try_get::<DateTime<Utc>, _>("observed_at")?,
+                        "source": r.try_get::<String, _>("source")?,
+                        "source_id": r.try_get::<String, _>("source_id")?,
+                        "strength": strength,
+                        "polarity": polarity,
+                        "url": r.try_get::<Option<String>, _>("url")?,
+                        "source_ref": r.try_get::<serde_json::Value, _>("source_ref")?,
+                    }),
+                })
+            })
+            .collect()
+    }
+
+    async fn brain_journal_parent_thesis_drafts(
+        &self,
+        day: NaiveDate,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<BrainJournalDraft>> {
+        let rows = sqlx::query(
+            r#"SELECT btvh.id, btvh.brain_thesis_id, bt.scope, bt.key, bt.name,
+                      btvh.version, btvh.diff, btvh.rationale, btvh.at
+                 FROM brain_thesis_version_history btvh
+                 JOIN brain_thesis bt ON bt.id = btvh.brain_thesis_id
+                WHERE btvh.at >= $1 AND btvh.at < $2
+             ORDER BY btvh.at DESC
+                LIMIT 80"#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(&self.pool)
+        .await
+        .context("brain_journal_parent_thesis_drafts")?;
+
+        rows.into_iter()
+            .map(|r| {
+                let id: i64 = r.try_get("id")?;
+                let name: String = r.try_get("name")?;
+                let scope: String = r.try_get("scope")?;
+                let version: i32 = r.try_get("version")?;
+                let at: DateTime<Utc> = r.try_get("at")?;
+                Ok(BrainJournalDraft {
+                    journal_date: day,
+                    category: "changed".to_string(),
+                    source_kind: "brain_thesis".to_string(),
+                    source_id: id.to_string(),
+                    event_key: journal_event_key("brain_thesis", id, at),
+                    symbol: None,
+                    brain_thesis_id: r.try_get("brain_thesis_id")?,
+                    thesis_id: None,
+                    title: format!("{} parent thesis updated: {name}", journal_label(&scope)),
+                    summary: r
+                        .try_get::<Option<String>, _>("rationale")?
+                        .unwrap_or_else(|| format!("{name} moved to parent thesis v{version}.")),
+                    importance: if scope == "macro" { 85 } else { 74 },
+                    occurred_at: at,
+                    source_ref: serde_json::json!({
+                        "brain_thesis_version_history_id": id,
+                        "scope": scope,
+                        "key": r.try_get::<String, _>("key")?,
+                        "version": version,
+                        "diff": r.try_get::<serde_json::Value, _>("diff")?,
+                    }),
+                })
+            })
+            .collect()
+    }
+
+    async fn brain_journal_dislocation_drafts(
+        &self,
+        day: NaiveDate,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<BrainJournalDraft>> {
+        let rows = sqlx::query(
+            r#"SELECT id, name, source_ref, updated_at
+                 FROM brain_thesis
+                WHERE active = true
+                  AND scope = 'macro'
+                  AND updated_at >= $1 AND updated_at < $2
+                  AND source_ref #> '{maintainer,dislocation_map,buckets}' IS NOT NULL
+             ORDER BY updated_at DESC
+                LIMIT 5"#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(&self.pool)
+        .await
+        .context("brain_journal_dislocation_drafts")?;
+
+        let mut drafts = Vec::new();
+        for r in rows {
+            let brain_thesis_id: uuid::Uuid = r.try_get("id")?;
+            let name: String = r.try_get("name")?;
+            let source_ref: serde_json::Value = r.try_get("source_ref")?;
+            let updated_at: DateTime<Utc> = r.try_get("updated_at")?;
+            let buckets = source_ref
+                .pointer("/maintainer/dislocation_map/buckets")
+                .and_then(serde_json::Value::as_object);
+            let Some(buckets) = buckets else {
+                continue;
+            };
+            for (bucket, label, category) in [
+                ("loved_mania", "Loved / mania", "crowded_or_extended"),
+                ("ignored_indifference", "Ignored", "ignored_or_hated"),
+                ("hated_avoided", "Hated / avoided", "ignored_or_hated"),
+            ] {
+                let items = buckets
+                    .get(bucket)
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                if items.is_empty() {
+                    continue;
+                }
+                let names: Vec<String> = items
+                    .iter()
+                    .filter_map(|item| {
+                        item.get("name")
+                            .or_else(|| item.get("sector"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned)
+                    })
+                    .take(4)
+                    .collect();
+                let first_note = items
+                    .iter()
+                    .filter_map(|item| {
+                        item.get("interpretation")
+                            .and_then(serde_json::Value::as_str)
+                            .or_else(|| {
+                                item.get("reasons")
+                                    .and_then(serde_json::Value::as_array)
+                                    .and_then(|reasons| reasons.first())
+                                    .and_then(serde_json::Value::as_str)
+                            })
+                    })
+                    .next()
+                    .unwrap_or("Macro dislocation map flagged this bucket.")
+                    .to_string();
+                drafts.push(BrainJournalDraft {
+                    journal_date: day,
+                    category: category.to_string(),
+                    source_kind: "brain_thesis".to_string(),
+                    source_id: format!("{brain_thesis_id}:{bucket}"),
+                    event_key: journal_event_key(
+                        "brain_dislocation",
+                        format!("{brain_thesis_id}:{bucket}"),
+                        updated_at,
+                    ),
+                    symbol: None,
+                    brain_thesis_id: Some(brain_thesis_id),
+                    thesis_id: None,
+                    title: format!("{label}: {}", names.join(", ")),
+                    summary: format!("{name} flags this pocket: {first_note}"),
+                    importance: if category == "crowded_or_extended" {
+                        78
+                    } else {
+                        82
+                    },
+                    occurred_at: updated_at,
+                    source_ref: serde_json::json!({
+                        "brain_thesis_id": brain_thesis_id,
+                        "bucket": bucket,
+                        "items": items,
+                    }),
+                });
+            }
+        }
+        Ok(drafts)
     }
 
     /// Daily-or-higher candles for `symbol` over the last `lookback_days`, oldest first.
@@ -3478,5 +4190,37 @@ mod tests {
             penalty,
             Some("news: cannot rely on sentiment-shift evidence".to_string())
         );
+    }
+
+    #[test]
+    fn journal_categories_cover_attention_source_tasks_and_thesis_states() {
+        assert_eq!(
+            journal_attention_category("candidate_review", "review"),
+            ("research", 70)
+        );
+        assert_eq!(
+            journal_attention_category("thesis_actionable", "decision"),
+            ("changed", 85)
+        );
+        assert_eq!(
+            journal_attention_category("context_stale", "blocked"),
+            ("blocked", 70)
+        );
+
+        assert_eq!(
+            journal_source_task_category("satisfied", Some("rows_seen"), "high"),
+            ("changed", 78)
+        );
+        assert_eq!(
+            journal_source_task_category("rate_limited", None, "high"),
+            ("blocked", 78)
+        );
+        assert_eq!(
+            journal_source_task_category("queued", None, "blocking"),
+            ("research", 62)
+        );
+
+        assert_eq!(journal_thesis_state_importance("actionable"), 90);
+        assert_eq!(journal_thesis_state_importance("forming"), 65);
     }
 }

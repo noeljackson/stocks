@@ -118,6 +118,12 @@ which parent conditions would invalidate the theme. Ticker thesis drafting
 receives linked parent theses and must either use them as context, reject them
 for the specific symbol, or call out contradictions.
 
+`brain_journal_entry` is the daily narrative read layer. It is append-only and
+is generated from source rows such as attention, evidence, source tasks, thesis
+history, parent thesis history, and the macro dislocation map. It should link
+back to those rows; it should not mutate ticker, thesis, decision, or position
+state.
+
 ## Attention Contract
 
 Attention is not an event log. Attention means "the operator needs to judge
@@ -452,6 +458,7 @@ attention storage   -> attention_item
 normalized facts    -> evidence_item + thesis_evidence
 context memory      -> ticker_context
 parent brain        -> brain_thesis + brain_thesis_ticker/watchlist
+daily journal       -> brain_journal_entry
 thesis lifecycle    -> thesis + thesis_state_history
 decision log        -> decision
 position state      -> position

@@ -89,6 +89,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/discovery-pool", get(list_discovery_pool))
         .route("/api/system-status", get(get_system_status))
         .route("/api/brain", get(get_brain_overview))
+        .route("/api/brain-journal", get(get_brain_journal))
         .route("/api/brain-status", get(get_brain_status))
         .route("/api/attention", get(list_attention_items))
         .route("/api/attention/{id}/dismiss", post(dismiss_attention_item))
@@ -3307,6 +3308,29 @@ fn cognition_run_json(r: sqlx::postgres::PgRow) -> serde_json::Value {
         "error": r.try_get::<Option<String>, _>("error").ok().flatten(),
         "source_ref": r.try_get::<serde_json::Value, _>("source_ref").unwrap_or_else(|_| json!({})),
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct BrainJournalQuery {
+    date: Option<NaiveDate>,
+}
+
+async fn get_brain_journal(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<BrainJournalQuery>,
+) -> impl IntoResponse {
+    let day = q.date.unwrap_or_else(|| chrono::Utc::now().date_naive());
+    if let Err(e) = gw.store.refresh_brain_journal_entries(day).await {
+        warn!(date = %day, error = %e, "refresh_brain_journal_entries failed");
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    match gw.store.brain_journal_for_date(day).await {
+        Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+        Err(e) => {
+            warn!(date = %day, error = %e, "get_brain_journal failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
 }
 
 fn source_health_effective_status(

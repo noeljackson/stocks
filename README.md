@@ -126,7 +126,7 @@ Cargo.toml      Single crate, multiple binaries (gateway, ingest, regime,
 src/
   platform/     bus (async-nats+JetStream), store (sqlx), config (env),
                 subjects, domain (enums w/ serde), logging (tracing JSON)
-  ingest/       adapter trait + EDGAR + FRED
+  ingest/       market/company/news/macro/crowd ingest adapters and services
   llm/          provider trait (mock | anthropic | openai_compat)
   regime/       deterministic macro classifier (SPEC §4)
   router/       fan-out: ingest.* → route.ticker.>

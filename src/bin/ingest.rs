@@ -1,10 +1,10 @@
-//! Ingestion runner: EDGAR + FRED + XBRL adapters.
+//! Ingestion runner for external market, company, news, macro, and crowd feeds.
 //!
-//! EDGAR + FRED follow the per-event Adapter trait (one Event = one
-//! ingest_event row, published to NATS). XBRL (#32) is bulk: ~thousands of
-//! company_fact rows per company per poll. It runs as a parallel task with
-//! its own interval and persists directly to `company_fact`, bypassing the
-//! per-event store-and-publish path.
+//! Some sources follow the per-event `Adapter` trait: one `Event` becomes one
+//! `ingest_event` row and one NATS publication. Bulk/vendor-specific loops
+//! such as price bars, XBRL company facts, FMP estimates/opinion/news, and CBOE
+//! crowd sentiment persist normalized tables and source-task/source-health audit
+//! rows directly.
 
 use anyhow::Result;
 use std::sync::Arc;

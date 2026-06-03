@@ -33,6 +33,7 @@
     fetchWatchlistMembers,
     fetchWatchlists,
     postDecision,
+    promoteTicker,
     rejectCandidate,
     removeFromWatchlist,
     subscribe,
@@ -76,6 +77,7 @@
 
   // ---------- workspace state ----------
   type RightTab = "overview" | "analyst" | "technical" | "context" | "evidence" | "theses" | "alerts" | "decisions";
+  const RIGHT_TABS: RightTab[] = ["overview", "analyst", "technical", "context", "evidence", "theses", "alerts", "decisions"];
   type BottomMode = "brain" | "attention" | "events" | "discovery" | "decisions" | "calibration" | "diagnostics";
   type AppPage = "workspace" | "journal";
   type WorkflowAction = "attention" | "promotion" | "evidence" | "thesis" | "decision" | "tracking" | "overview";
@@ -920,6 +922,9 @@
   let watchlistFreshnessFilter = $state("all");
   let watchlistAttentionFilter = $state("all");
   let watchlistThemeFilter = $state("all");
+  let poolPromotionBusy = $state(false);
+  let poolPromotionStatus = $state<string | null>(null);
+  let poolPromotionLists = $state<Record<string, boolean>>({});
 
   // ---------- decision form (in bottom drawer) ----------
   let decThesisId = $state("");
@@ -1332,7 +1337,7 @@
         tone: "candidate",
         reason: "Not promoted into the active universe yet.",
         primary: "Review candidate",
-        action: "attention",
+        action: "promotion",
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
@@ -1603,6 +1608,11 @@
     return match ? normalizeSymbol(decodeURIComponent(match[1])) : null;
   }
 
+  function panelFromRoute(): RightTab {
+    const panel = new URLSearchParams(window.location.search).get("p");
+    return RIGHT_TABS.includes(panel as RightTab) ? panel as RightTab : "overview";
+  }
+
   function journalFromRoute(): { date: string; page: number } | null {
     const match = window.location.pathname.match(/^\/journal(?:\/(\d{4}-\d{2}-\d{2}))?\/?$/);
     if (!match) return null;
@@ -1615,8 +1625,8 @@
   }
 
   function syncSymbolRoute(symbol: string, replace = false) {
-    const path = `/symbol/${encodeURIComponent(symbol)}`;
-    if (window.location.pathname === path) return;
+    const path = `/symbol/${encodeURIComponent(symbol)}?p=${encodeURIComponent(rightTab)}`;
+    if (`${window.location.pathname}${window.location.search}` === path) return;
     const method = replace ? "replaceState" : "pushState";
     window.history[method](null, "", path);
   }
@@ -1665,7 +1675,7 @@
 
   function openWorkspace(replace = false) {
     routePage = "workspace";
-    const path = selectedSymbol ? `/symbol/${encodeURIComponent(selectedSymbol)}` : "/";
+    const path = selectedSymbol ? `/symbol/${encodeURIComponent(selectedSymbol)}?p=${encodeURIComponent(rightTab)}` : "/";
     const current = `${window.location.pathname}${window.location.search}`;
     if (current === path) return;
     const method = replace ? "replaceState" : "pushState";
@@ -1751,6 +1761,8 @@
     if (selectedSymbol === symbol) return;
     selectedSymbol = symbol;
     promotionStatus = null;
+    poolPromotionStatus = null;
+    poolPromotionLists = {};
     clearSelectedSymbolDetails();
     await loadSelectedSymbolDetails(symbol);
   }
@@ -1813,6 +1825,33 @@
       next[cid] = { ...(next[cid] ?? {}), [wlId]: checked };
     }
     chosenLists = next;
+  }
+  function selectedPoolPromotionWatchlists(): string[] {
+    return Object.entries(poolPromotionLists).filter(([, checked]) => checked).map(([id]) => id);
+  }
+  async function promoteSelectedPoolCandidate() {
+    if (!selectedSymbol) return;
+    const watchlistIds = selectedPoolPromotionWatchlists();
+    poolPromotionBusy = true;
+    poolPromotionStatus = null;
+    try {
+      await promoteTicker(selectedSymbol, watchlistIds);
+      await Promise.all([
+        fetchTickers().then((t) => (tickers = t)),
+        refreshSelectedWatchlistMembers(watchlistIds),
+        refreshAttention(),
+        refreshPending(),
+        fetchDiscoveryPool().then((p) => (pool = p)).catch(() => {}),
+      ]);
+      await reloadSelectedSymbolDetails();
+      poolPromotionStatus = watchlistIds.length > 0
+        ? `Promoted to Universe + ${watchlistIds.length} watchlist${watchlistIds.length === 1 ? "" : "s"}.`
+        : "Promoted to Universe.";
+    } catch (e) {
+      error = String(e);
+    } finally {
+      poolPromotionBusy = false;
+    }
   }
   async function confirmOne(candId: number) {
     const inner = chosenLists[candId] ?? {};
@@ -2062,6 +2101,7 @@
       openJournalPage(routedJournal.date, routedJournal.page, true);
     } else {
       const routedSymbol = symbolFromRoute();
+      rightTab = panelFromRoute();
       if (routedSymbol) void selectSymbol(routedSymbol, { replaceRoute: true });
     }
     refreshAll();
@@ -2075,6 +2115,7 @@
         return;
       }
       routePage = "workspace";
+      rightTab = panelFromRoute();
       const routed = symbolFromRoute();
       if (routed) void selectSymbol(routed, { updateRoute: false });
     };
@@ -2110,7 +2151,14 @@
     };
   });
 
+  $effect(() => {
+    if (routePage === "workspace" && selectedSymbol) {
+      syncSymbolRoute(selectedSymbol, true);
+    }
+  });
+
   let selectedTicker = $derived(tickerFor(selectedSymbol));
+  let selectedPoolMember = $derived(pool.find((item) => item.symbol === selectedSymbol) ?? null);
   let selectedWorkflow = $derived.by<SymbolWorkflow>(() => buildWorkflow());
   let selectedParentTheses = $derived<BrainThesis[]>(
     brainOverview?.sectors.filter((thesis) =>
@@ -3374,12 +3422,112 @@
       <section class="detail-section">
         {#if selectedSymbol}
           <nav class="tabs">
-            {#each ["overview", "analyst", "technical", "context", "evidence", "theses", "alerts", "decisions"] as RightTab[] as t}
+            {#each RIGHT_TABS as t}
               <button class:active={rightTab === t} onclick={() => (rightTab = t)}>{t}</button>
             {/each}
           </nav>
           <div class="tab-body">
             {#if rightTab === "overview"}
+              {#if selectedCandidateReview}
+                {@const availableData = candidateAvailableData(selectedCandidateReview)}
+                <section class="side-review-card" data-testid="side-candidate-review">
+                  <div class="brain-hdr">
+                    <span class="brain-title">Candidate Review</span>
+                    <span class="badge tiny state-{selectedCandidateReview.fsm_state ?? 'ready_for_review'}">
+                      {attentionStateLabel(selectedCandidateReview.fsm_state ?? "ready_for_review")}
+                    </span>
+                  </div>
+                  <h4>Promote {selectedSymbol} into active Universe</h4>
+                  <p>{candidateNominationReason(selectedCandidateReview)}</p>
+                  {#if availableData.length > 0}
+                    <div class="promotion-tokens">
+                      {#each availableData as item}
+                        <span class="brain-token">{item}</span>
+                      {/each}
+                    </div>
+                  {/if}
+                  <p class="muted">Promotion records the candidate, resolves attention, publishes discovery.confirmed, and starts context plus thesis work.</p>
+                  {#if selectedPromotionLists.length > 0}
+                    <div class="promotion-destinations">
+                      <span class="badge tiny">Universe always included</span>
+                      {#each selectedPromotionLists as proposed (proposed.watchlist_id)}
+                        <label class="att-pick promotion-pick">
+                          <input
+                            type="checkbox"
+                            checked={selectedPromotionListChecked(proposed.watchlist_id)}
+                            onchange={(event) => setSelectedPromotionList(proposed.watchlist_id, (event.currentTarget as HTMLInputElement).checked)}
+                          />
+                          {proposed.watchlist_name}
+                          <span class="badge tiny conf-{proposed.confidence}">{proposed.confidence}</span>
+                        </label>
+                      {/each}
+                    </div>
+                  {/if}
+                  <div class="promotion-actions">
+                    <button
+                      class="confirm"
+                      disabled={promotionBusy || selectedCandidateIds.length === 0}
+                      onclick={() => confirmGroup(selectedCandidateIds)}
+                    >Promote to Universe</button>
+                    <button
+                      class="reject"
+                      disabled={promotionBusy || selectedCandidateIds.length === 0}
+                      onclick={() => rejectGroup(selectedCandidateIds, "not_my_edge")}
+                    >Reject nomination</button>
+                  </div>
+                </section>
+              {:else if !selectedTicker && selectedPoolMember}
+                <section class="side-review-card" data-testid="pool-candidate-review">
+                  <div class="brain-hdr">
+                    <span class="brain-title">Pool Candidate</span>
+                    <span class="badge tiny brain-not_monitored">not monitored</span>
+                  </div>
+                  <h4>Review {selectedPoolMember.symbol}</h4>
+                  <dl class="meta-list inline">
+                    {#if selectedPoolMember.company_name}<dt>company</dt><dd>{selectedPoolMember.company_name}</dd>{/if}
+                    {#if selectedPoolMember.sector || selectedPoolMember.industry}<dt>group</dt><dd>{[selectedPoolMember.sector, selectedPoolMember.industry].filter(Boolean).join(" / ")}</dd>{/if}
+                    {#if selectedPoolMember.market_cap}<dt>market cap</dt><dd>{formatCompact(selectedPoolMember.market_cap)}</dd>{/if}
+                    {#if selectedPoolMember.technical_state}<dt>technical</dt><dd>{selectedPoolMember.technical_state.replace(/_/g, " ")}</dd>{/if}
+                  </dl>
+                  <p>
+                    This symbol is in the Discovery pool, not the active Universe.
+                    The brain will not synthesize context or draft a thesis until you promote it.
+                  </p>
+                  <div class="promotion-destinations">
+                    <span class="badge tiny">Universe always included</span>
+                    {#if watchlists.length > 0}
+                      {#each watchlists as w (w.id)}
+                        <label class="att-pick promotion-pick">
+                          <input
+                            type="checkbox"
+                            checked={poolPromotionLists[w.id] ?? false}
+                            onchange={(event) => {
+                              poolPromotionLists = {
+                                ...poolPromotionLists,
+                                [w.id]: (event.currentTarget as HTMLInputElement).checked,
+                              };
+                            }}
+                          />
+                          {w.name}
+                        </label>
+                      {/each}
+                    {:else}
+                      <span class="muted">No watchlists yet; promote as Universe-only.</span>
+                    {/if}
+                  </div>
+                  <div class="promotion-actions">
+                    <button
+                      class="confirm"
+                      disabled={poolPromotionBusy}
+                      onclick={promoteSelectedPoolCandidate}
+                    >Promote to Universe</button>
+                    <button type="button" class="text-action" onclick={() => (rightTab = "context")}>open context</button>
+                    {#if poolPromotionStatus}
+                      <span class="muted">{poolPromotionStatus}</span>
+                    {/if}
+                  </div>
+                </section>
+              {/if}
               {#if selectedTicker}
                 <dl class="meta-list">
                   <dt>Symbol</dt><dd><strong>{selectedTicker.symbol}</strong></dd>
@@ -4188,6 +4336,28 @@
   }
   .promotion-actions button {
     font-size: .76rem;
+  }
+  .side-review-card {
+    border: 1px solid #2a3548;
+    border-left: 3px solid rgb(180, 190, 254);
+    border-radius: 4px;
+    background: #0c1019;
+    padding: .65rem .7rem;
+    margin-bottom: .7rem;
+    display: flex;
+    flex-direction: column;
+    gap: .45rem;
+    font-size: .8rem;
+  }
+  .side-review-card h4 {
+    margin: 0;
+    color: #cdd6f4;
+    font-size: .92rem;
+  }
+  .side-review-card p {
+    margin: 0;
+    color: #bac2de;
+    line-height: 1.35;
   }
   @media (max-width: 1180px) {
     .workflow-strip {

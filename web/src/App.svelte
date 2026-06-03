@@ -78,7 +78,7 @@
   type RightTab = "overview" | "analyst" | "technical" | "context" | "evidence" | "theses" | "alerts" | "decisions";
   type BottomMode = "brain" | "attention" | "events" | "discovery" | "decisions" | "calibration" | "diagnostics";
   type AppPage = "workspace" | "journal";
-  type WorkflowAction = "attention" | "evidence" | "thesis" | "decision" | "tracking" | "overview";
+  type WorkflowAction = "attention" | "promotion" | "evidence" | "thesis" | "decision" | "tracking" | "overview";
   type SymbolWorkflow = {
     state: string;
     tone: string;
@@ -134,6 +134,8 @@
   let pool = $state<PoolMember[]>([]);
   let attention = $state<AttentionItem[]>([]);
   let attentionFilter = $state<string>("all");
+  let promotionBusy = $state(false);
+  let promotionStatus = $state<string | null>(null);
 
   async function refreshAttention() {
     try {
@@ -162,28 +164,49 @@
     }
   }
   async function rejectGroup(candidateIds: number[], _reason: string) {
+    if (candidateIds.length === 0) return;
+    promotionBusy = true;
+    promotionStatus = null;
     try {
       // Iterate; backend resolves the matching attention item per candidate.
       for (const id of candidateIds) await rejectCandidate(id);
       await Promise.all([refreshAttention(), refreshPending()]);
+      await reloadSelectedSymbolDetails();
+      promotionStatus = "Rejected nomination and removed it from the review queue.";
     } catch (e) {
       error = String(e);
+    } finally {
+      promotionBusy = false;
     }
   }
   async function confirmGroup(candidateIds: number[]) {
+    if (candidateIds.length === 0) return;
     const lists = new Set<string>();
     for (const cid of candidateIds) {
       const inner = chosenLists[cid] ?? {};
       for (const [wlId, on] of Object.entries(inner)) if (on) lists.add(wlId);
     }
     const ids = [...lists];
+    promotionBusy = true;
+    promotionStatus = null;
     try {
       // Confirm always promotes the ticker. Optional checked lists add
       // watchlist memberships; empty list selection means Universe only.
       for (const cid of candidateIds) await confirmCandidate(cid, ids);
-      await Promise.all([refreshAttention(), refreshPending(), refreshWatchlists(), fetchTickers().then((t) => (tickers = t))]);
+      await Promise.all([
+        refreshAttention(),
+        refreshPending(),
+        refreshWatchlists(),
+        refreshSelectedWatchlistMembers(ids),
+        fetchTickers().then((t) => (tickers = t)),
+      ]);
+      await reloadSelectedSymbolDetails();
+      const destination = ids.length > 0 ? `Universe + ${ids.length} watchlist${ids.length === 1 ? "" : "s"}` : "Universe";
+      promotionStatus = `Promoted to ${destination}; cognition will refresh context and thesis.`;
     } catch (e) {
       error = String(e);
+    } finally {
+      promotionBusy = false;
     }
   }
 
@@ -845,6 +868,29 @@
     ),
   ]);
   let selectedCandidateReview = $derived<AttentionItem | null>(selectedCandidateReviews[0] ?? null);
+  let selectedPendingCandidates = $derived<PendingCandidate[]>(
+    selectedCandidateIds
+      .map((id) => pending.find((candidate) => candidate.id === id))
+      .filter((candidate): candidate is PendingCandidate => !!candidate),
+  );
+  let selectedPromotionLists = $derived.by(() => {
+    const byId = new Map<string, { watchlist_id: string; watchlist_name: string; confidence: string; rationale: string }>();
+    for (const candidate of selectedPendingCandidates) {
+      for (const proposed of candidate.proposed_lists) {
+        if (!proposed.watchlist_id) continue;
+        byId.set(proposed.watchlist_id, {
+          watchlist_id: proposed.watchlist_id,
+          watchlist_name: proposed.watchlist_name,
+          confidence: proposed.confidence,
+          rationale: proposed.rationale,
+        });
+      }
+    }
+    return [...byId.values()];
+  });
+  let selectedPromotionRawSignals = $derived.by<string[]>(() => [
+    ...new Set(selectedCandidateReviews.flatMap(rawSignals).map((signal) => signal.replace(/_/g, " "))),
+  ]);
   let retiredSymbolTheses = $derived.by<ThesisDetail[]>(() =>
     [...(symbolTheses ?? [])]
       .filter((t) => ["closed", "disqualified"].includes(t.state))
@@ -1256,11 +1302,11 @@
 
     if (selectedCandidateReview && !currentSymbolThesis) {
       return {
-        state: "Awaiting promotion",
+        state: "Nominated, not active",
         tone: "candidate",
         reason: candidateNominationReason(selectedCandidateReview),
-        primary: "Review nomination",
-        action: "thesis",
+        primary: "Promote / reject",
+        action: "promotion",
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
@@ -1374,6 +1420,10 @@
   }
 
   function runWorkflowAction(action: WorkflowAction) {
+    if (action === "promotion") {
+      rightTab = "overview";
+      return;
+    }
     if (action === "attention") {
       bottomMode = selectedSymbolAttention.length > 0 ? "attention" : "discovery";
       if (!bottomOpen) bottomPane?.expand();
@@ -1622,6 +1672,71 @@
     window.history[method](null, "", path);
   }
 
+  function clearSelectedSymbolDetails() {
+    symbolContext = undefined;
+    symbolEvidence = undefined;
+    symbolEvidenceItems = undefined;
+    symbolResearch = undefined;
+    symbolTechnical = undefined;
+    symbolBrain = undefined;
+    symbolTheses = undefined;
+    symbolDeclines = undefined;
+    symbolDecisions = undefined;
+    symbolPositions = undefined;
+    replay = null;
+    replayStatus = null;
+  }
+
+  async function loadSelectedSymbolDetails(symbol: string) {
+    const [ctx, evidence, evidenceItems, research, technical, brain, theses, declines, decisions, positions] = await Promise.all([
+      fetchTickerContext(symbol).catch(() => null),
+      fetchEvidenceRequirements(symbol).catch(() => []),
+      fetchEvidenceItems(symbol).catch(() => []),
+      fetchResearchEvidence(symbol).catch(() => []),
+      fetchTechnicalState(symbol).catch(() => null),
+      fetchBrainStatus(symbol).catch(() => null),
+      fetchTheses(symbol).catch(() => []),
+      fetchThesisDeclines(symbol).catch(() => []),
+      fetchDecisions(symbol).catch(() => []),
+      fetchPositions(symbol).catch(() => []),
+    ]);
+    if (selectedSymbol !== symbol) return;
+    symbolContext = ctx;
+    symbolEvidence = evidence;
+    symbolEvidenceItems = evidenceItems;
+    symbolResearch = research;
+    symbolTechnical = technical;
+    symbolBrain = brain;
+    symbolTheses = theses;
+    symbolDeclines = declines;
+    symbolDecisions = decisions;
+    symbolPositions = positions;
+  }
+
+  async function reloadSelectedSymbolDetails() {
+    if (!selectedSymbol) return;
+    const symbol = selectedSymbol;
+    clearSelectedSymbolDetails();
+    await loadSelectedSymbolDetails(symbol);
+  }
+
+  async function refreshSelectedWatchlistMembers(ids: string[]) {
+    const uniqueIds = [...new Set(ids)];
+    if (uniqueIds.length === 0) return;
+    const updates = await Promise.all(
+      uniqueIds.map((id) =>
+        fetchWatchlistMembers(id)
+          .then((members) => [id, members] as const)
+          .catch(() => null),
+      ),
+    );
+    const next = { ...watchlistMembers };
+    for (const update of updates) {
+      if (update) next[update[0]] = update[1];
+    }
+    watchlistMembers = next;
+  }
+
   // ---------- selection logic ----------
   async function selectSymbol(
     value: string,
@@ -1635,41 +1750,9 @@
     }
     if (selectedSymbol === symbol) return;
     selectedSymbol = symbol;
-    symbolContext = undefined;
-    symbolEvidence = undefined;
-    symbolEvidenceItems = undefined;
-    symbolResearch = undefined;
-    symbolTechnical = undefined;
-    symbolBrain = undefined;
-    symbolTheses = undefined;
-    symbolDeclines = undefined;
-    symbolDecisions = undefined;
-    symbolPositions = undefined;
-    replay = null;
-    replayStatus = null;
-    // Fetch detail in parallel.
-    const [ctx, evidence, evidenceItems, research, technical, brain, theses, declines, decisions, positions] = await Promise.all([
-      fetchTickerContext(symbol).catch(() => null),
-      fetchEvidenceRequirements(symbol).catch(() => []),
-      fetchEvidenceItems(symbol).catch(() => []),
-      fetchResearchEvidence(symbol).catch(() => []),
-      fetchTechnicalState(symbol).catch(() => null),
-      fetchBrainStatus(symbol).catch(() => null),
-      fetchTheses(symbol).catch(() => []),
-      fetchThesisDeclines(symbol).catch(() => []),
-      fetchDecisions(symbol).catch(() => []),
-      fetchPositions(symbol).catch(() => []),
-    ]);
-    symbolContext = ctx;
-    symbolEvidence = evidence;
-    symbolEvidenceItems = evidenceItems;
-    symbolResearch = research;
-    symbolTechnical = technical;
-    symbolBrain = brain;
-    symbolTheses = theses;
-    symbolDeclines = declines;
-    symbolDecisions = decisions;
-    symbolPositions = positions;
+    promotionStatus = null;
+    clearSelectedSymbolDetails();
+    await loadSelectedSymbolDetails(symbol);
   }
 
   function pickFirstSymbol() {
@@ -1721,12 +1804,28 @@
     inner[wlId] = !inner[wlId];
     chosenLists = { ...chosenLists, [candId]: inner };
   }
+  function selectedPromotionListChecked(wlId: string): boolean {
+    return selectedCandidateIds.some((cid) => chosenLists[cid]?.[wlId]);
+  }
+  function setSelectedPromotionList(wlId: string, checked: boolean) {
+    const next = { ...chosenLists };
+    for (const cid of selectedCandidateIds) {
+      next[cid] = { ...(next[cid] ?? {}), [wlId]: checked };
+    }
+    chosenLists = next;
+  }
   async function confirmOne(candId: number) {
     const inner = chosenLists[candId] ?? {};
     const ids = Object.entries(inner).filter(([, v]) => v).map(([k]) => k);
     try {
       await confirmCandidate(candId, ids);
-      await Promise.all([refreshPending(), refreshWatchlists(), fetchTickers().then((t) => (tickers = t))]);
+      await Promise.all([
+        refreshPending(),
+        refreshWatchlists(),
+        refreshSelectedWatchlistMembers(ids),
+        fetchTickers().then((t) => (tickers = t)),
+      ]);
+      await reloadSelectedSymbolDetails();
     } catch (e) {
       error = String(e);
     }
@@ -1735,6 +1834,7 @@
     try {
       await rejectCandidate(candId);
       await refreshPending();
+      await reloadSelectedSymbolDetails();
     } catch (e) {
       error = String(e);
     }
@@ -2139,6 +2239,93 @@
         <strong>{selectedWorkflow.decision}</strong>
       </button>
     </div>
+
+    {#if selectedCandidateReview}
+      {@const availableData = candidateAvailableData(selectedCandidateReview)}
+      {@const firstPendingCandidate = selectedPendingCandidates[0]}
+      <section class="promotion-review" data-testid="promotion-review">
+        <div class="promotion-head">
+          <div>
+            <span class="workflow-kicker">promotion review</span>
+            <strong>Promote {selectedSymbol} into active Universe</strong>
+          </div>
+          <span class="badge tiny state-{selectedCandidateReview.fsm_state ?? 'ready_for_review'}">
+            {attentionStateLabel(selectedCandidateReview.fsm_state ?? "ready_for_review")}
+          </span>
+          <span class="muted">{shortTs(selectedCandidateReview.created_at)}</span>
+        </div>
+        <div class="promotion-grid">
+          <div>
+            <span class="promotion-label">What happened</span>
+            <p>Discovery nominated {selectedSymbol} for operator review.</p>
+          </div>
+          <div>
+            <span class="promotion-label">Why queued</span>
+            <p>{candidateNominationReason(selectedCandidateReview)}</p>
+            {#if firstPendingCandidate?.rank_reasons?.length}
+              <p class="muted">{firstPendingCandidate.rank_bucket ?? "ranked"} {Math.round(firstPendingCandidate.rank_score ?? 0)} · {firstPendingCandidate.rank_reasons.slice(0, 3).join(" · ")}</p>
+            {/if}
+          </div>
+          <div>
+            <span class="promotion-label">Evidence attached</span>
+            {#if availableData.length > 0}
+              <div class="promotion-tokens">
+                {#each availableData as item}
+                  <span class="brain-token">{item}</span>
+                {/each}
+              </div>
+            {:else if selectedPromotionRawSignals.length > 0}
+              <p>{selectedPromotionRawSignals.join(", ")}</p>
+            {:else}
+              <p class="muted">No source checklist was attached to this nomination yet.</p>
+            {/if}
+          </div>
+          <div>
+            <span class="promotion-label">What confirming does</span>
+            <p>Records the candidate as confirmed, resolves the attention item, publishes discovery.confirmed, and starts the context/thesis loop.</p>
+          </div>
+        </div>
+        <div class="promotion-destinations">
+          <span class="promotion-label">Destination</span>
+          <span class="badge tiny">Universe always included</span>
+          {#if selectedPromotionLists.length > 0}
+            {#each selectedPromotionLists as proposed (proposed.watchlist_id)}
+              <label class="att-pick promotion-pick">
+                <input
+                  type="checkbox"
+                  checked={selectedPromotionListChecked(proposed.watchlist_id)}
+                  onchange={(event) => setSelectedPromotionList(proposed.watchlist_id, (event.currentTarget as HTMLInputElement).checked)}
+                />
+                {proposed.watchlist_name}
+                <span class="badge tiny conf-{proposed.confidence}">{proposed.confidence}</span>
+                <span class="muted">{proposed.rationale}</span>
+              </label>
+            {/each}
+          {:else}
+            <span class="muted">No watchlist match attached; promote as Universe-only.</span>
+          {/if}
+        </div>
+        <div class="promotion-actions">
+          <button
+            class="confirm"
+            disabled={promotionBusy || selectedCandidateIds.length === 0}
+            onclick={() => confirmGroup(selectedCandidateIds)}
+          >Promote to Universe</button>
+          <button
+            class="reject"
+            disabled={promotionBusy || selectedCandidateIds.length === 0}
+            onclick={() => rejectGroup(selectedCandidateIds, "not_my_edge")}
+          >Reject nomination</button>
+          <button type="button" class="text-action" onclick={() => {
+            bottomMode = "attention";
+            if (!bottomOpen) bottomPane?.expand();
+          }}>open queue</button>
+          {#if promotionStatus}
+            <span class="muted">{promotionStatus}</span>
+          {/if}
+        </div>
+      </section>
+    {/if}
   </section>
 
   <!-- Body: left column (chart + bottom drawer stacked) + vertical splitter + right panel (full height) -->
@@ -2496,7 +2683,7 @@
 
                   <div class="att-actions">
                     {#if g.kind === "candidate_review"}
-                      <button class="confirm" onclick={() => confirmGroup(g.candidateIds)}>Confirm</button>
+                      <button class="confirm" disabled={promotionBusy} onclick={() => confirmGroup(g.candidateIds)}>Promote</button>
                       <button class="reject" onclick={() => (rejectOpenFor = rejectOpenFor === g.key ? null : g.key)}>
                         Reject ▾
                       </button>
@@ -2627,7 +2814,7 @@
                     </div>
                   {/if}
                   <div class="disc-actions">
-                    <button onclick={() => confirmOne(c.id)}>Confirm</button>
+                    <button onclick={() => confirmOne(c.id)}>Promote</button>
                     <button class="reject" onclick={() => rejectOne(c.id)}>Reject</button>
                   </div>
                 </li>
@@ -3444,7 +3631,7 @@
                   <section class="nomination-state">
                     <div class="nomination-hdr">
                       <span class="badge tiny state-{selectedCandidateReview.fsm_state ?? 'ready_for_review'}">nominated</span>
-                      <strong>Awaiting promotion</strong>
+                    <strong>Nominated, not active</strong>
                       <span class="muted">{shortTs(selectedCandidateReview.created_at)}</span>
                     </div>
                     <p>{candidateNominationReason(selectedCandidateReview)}</p>
@@ -3456,16 +3643,16 @@
                         {/each}
                       </div>
                     {/if}
-                    <p class="muted">Confirming will {candidateAcceptanceText(selectedCandidateReview)}.</p>
+                    <p class="muted">Promotion will {candidateAcceptanceText(selectedCandidateReview)}.</p>
                     <div class="att-actions">
                       <button
                         class="confirm"
-                        disabled={selectedCandidateIds.length === 0}
+                        disabled={promotionBusy || selectedCandidateIds.length === 0}
                         onclick={() => confirmGroup(selectedCandidateIds)}
-                      >Confirm nomination</button>
+                      >Promote to Universe</button>
                       <button
                         class="reject"
-                        disabled={selectedCandidateIds.length === 0}
+                        disabled={promotionBusy || selectedCandidateIds.length === 0}
                         onclick={() => rejectGroup(selectedCandidateIds, "not_now")}
                       >Reject</button>
                     </div>
@@ -3916,6 +4103,101 @@
   .workflow-strip.tone-ready .workflow-main { border-left-color: rgb(249,226,175); }
   .workflow-strip.tone-declined .workflow-main,
   .workflow-strip.tone-missing .workflow-main { border-left-color: #6c7693; }
+  .promotion-review {
+    grid-column: 1 / -1;
+    display: grid;
+    gap: .5rem;
+    min-width: 0;
+    border: 1px solid #2a3548;
+    border-left: 3px solid rgb(180, 190, 254);
+    border-radius: 4px;
+    background: #0a0d14;
+    padding: .55rem .65rem;
+    font-size: .78rem;
+  }
+  .promotion-head {
+    display: flex;
+    align-items: baseline;
+    gap: .45rem;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  .promotion-head > div {
+    display: flex;
+    flex-direction: column;
+    gap: .08rem;
+    min-width: 220px;
+  }
+  .promotion-head strong {
+    color: #cdd6f4;
+  }
+  .promotion-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: .45rem;
+  }
+  .promotion-grid > div {
+    min-width: 0;
+    border: 1px solid #1f2733;
+    border-radius: 4px;
+    background: #0d121b;
+    padding: .42rem .5rem;
+  }
+  .promotion-label {
+    display: block;
+    margin-bottom: .2rem;
+    color: #7f8aa3;
+    font-size: .66rem;
+    text-transform: uppercase;
+    letter-spacing: 0;
+  }
+  .promotion-review p {
+    margin: 0;
+    color: #bac2de;
+    line-height: 1.35;
+  }
+  .promotion-review p + p {
+    margin-top: .28rem;
+  }
+  .promotion-tokens,
+  .promotion-destinations,
+  .promotion-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: .35rem;
+    min-width: 0;
+  }
+  .promotion-pick {
+    max-width: 100%;
+  }
+  .promotion-pick .muted {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 260px;
+  }
+  .promotion-actions {
+    border-top: 1px solid #1f2733;
+    padding-top: .45rem;
+  }
+  .promotion-actions button {
+    font-size: .76rem;
+  }
+  @media (max-width: 1180px) {
+    .workflow-strip {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .promotion-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 760px) {
+    .promotion-grid,
+    .workflow-rail {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
 
   .chart-panel {
     overflow: auto;

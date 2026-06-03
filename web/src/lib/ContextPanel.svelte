@@ -1,7 +1,17 @@
 <script lang="ts">
   import type { TickerContext } from "./api";
 
-  let { ctx, symbol }: { ctx: TickerContext | null; symbol: string } = $props();
+  let {
+    ctx,
+    symbol,
+    autoSynthesize = true,
+    blockedReason = "",
+  }: {
+    ctx: TickerContext | null;
+    symbol: string;
+    autoSynthesize?: boolean;
+    blockedReason?: string;
+  } = $props();
 
   let openBand = $state<"structural" | "narrative" | "market" | null>("structural");
   let synthError = $state<string | null>(null);
@@ -12,6 +22,7 @@
   // Auto-trigger synthesis the moment we render with no context. No button —
   // the parent's polling picks up v1 within ~30s of the LLM call returning.
   $effect(() => {
+    if (!autoSynthesize) return;
     if (ctx !== null || !symbol) return;
     if (fired.has(symbol)) return;
     fired.add(symbol);
@@ -68,7 +79,22 @@
   }
 </script>
 
-{#if ctx === null}
+{#if ctx === null && !autoSynthesize}
+  <div class="empty">
+    <h4>Context <span class="muted-chip">not running</span></h4>
+    <p class="muted">
+      <strong>{symbol}</strong> is not in the active Universe, so the scheduled
+      brain loop will not synthesize context yet.
+    </p>
+    {#if blockedReason}
+      <p class="muted">{blockedReason}</p>
+    {/if}
+    <p class="muted">
+      Promote the ticker first; promotion publishes <code>discovery.confirmed</code>
+      and starts context plus thesis work.
+    </p>
+  </div>
+{:else if ctx === null}
   <div class="empty">
     <h4>Context <span class="muted-chip">synthesizing…</span></h4>
     <p class="muted">

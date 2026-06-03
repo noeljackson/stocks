@@ -5,6 +5,7 @@ type Calls = {
   confirmBody: unknown | null;
   decisionBody: unknown | null;
   addedSymbols: string[];
+  refreshContextSymbols: string[];
 };
 
 type MockWatchlistMember = {
@@ -77,7 +78,7 @@ async function mockApi(
   page: Page,
   options: { attentionItems?: Record<string, unknown>[] } = {},
 ): Promise<Calls> {
-  const calls: Calls = { candleUrls: [], confirmBody: null, decisionBody: null, addedSymbols: [] };
+  const calls: Calls = { candleUrls: [], confirmBody: null, decisionBody: null, addedSymbols: [], refreshContextSymbols: [] };
   let attentionOpen = true;
   const attentionItems = options.attentionItems ?? [{
     id: 7001,
@@ -578,6 +579,28 @@ async function mockApi(
           role: "candidate",
           conviction: 50,
         }],
+      }, {
+        symbol: "SNDK",
+        company_name: "Sandisk Corporation",
+        sector: "Technology",
+        industry: "Hardware, Equipment & Parts",
+        market_cap: 260_493_572_494,
+        first_seen_at: "2026-06-01T00:00:00Z",
+        latest_thesis_id: null,
+        thesis_state: null,
+        thesis_direction: null,
+        technical_state: "unknown",
+        entry_stance: "wait_data",
+        technical_pct_vs_200d: null,
+        open_theses: 0,
+        freshness_status: "missing",
+        open_attention: 0,
+        attention_states: [],
+        attention_owners: [],
+        open_evidence: 0,
+        blocking_evidence: 0,
+        due_source_tasks: 0,
+        parent_themes: [],
       }]);
       return;
     }
@@ -593,6 +616,10 @@ async function mockApi(
     }
     if (path === "/api/ticker-context") {
       const symbol = url.searchParams.get("symbol");
+      if (symbol === "SNDK") {
+        await route.fulfill({ status: 204 });
+        return;
+      }
       await json(route, {
         symbol,
         version: 2,
@@ -608,6 +635,40 @@ async function mockApi(
     }
     if (path === "/api/brain-status") {
       const symbol = url.searchParams.get("symbol") ?? "MSFT";
+      if (symbol === "SNDK") {
+        await json(route, {
+          symbol,
+          as_of: "2026-06-01T00:00:00Z",
+          active_ticker: false,
+          status: "not_monitored",
+          next_action: "add_to_universe",
+          reason: "symbol is not in the active universe, so the scheduled brain loop will not run until it is confirmed or added",
+          freshness_target_minutes: 30,
+          sources: [
+            {
+              source: "context",
+              status: "missing",
+              last_changed_at: null,
+              last_checked_at: null,
+              max_age_minutes: 720,
+              version: null,
+            },
+            {
+              source: "thesis",
+              status: "missing",
+              last_changed_at: null,
+              last_checked_at: null,
+              max_age_minutes: 30,
+              state: null,
+              direction: null,
+            },
+          ],
+          evidence: { rows: 0, open: 0, blocking: 0, due: 0, items: 11, latest_item_at: "2026-06-01T00:00:00Z", delta: true },
+          attention: { open: 0, by_kind: [] },
+          cognition: { last_run: null, recent_runs: [] },
+        });
+        return;
+      }
       const evidenceDriven = symbol === "CRDO";
       await json(route, {
         symbol,
@@ -1107,6 +1168,11 @@ async function mockApi(
       await json(route, []);
       return;
     }
+    if (/^\/api\/symbols\/[^/]+\/refresh-context$/.test(path) && request.method() === "POST") {
+      calls.refreshContextSymbols.push(decodeURIComponent(path.split("/")[3]));
+      await route.fulfill({ status: 204 });
+      return;
+    }
     if (path === "/api/system-status") {
       await json(route, {
         ingest: {},
@@ -1199,6 +1265,21 @@ test("theses tab lists declined thesis attempts with reasons", async ({ page }) 
   await expect(page.getByText("Declined thesis attempts")).toBeVisible();
   await expect(detail.getByText("Context contains no non-consensus edge yet")).toBeVisible();
   await expect(page.getByText("No thesis attempts")).toHaveCount(0);
+});
+
+test("pool-only symbol context does not imply active synthesis", async ({ page }) => {
+  const calls = await mockApi(page);
+  await page.goto("/symbol/SNDK");
+
+  await page.getByRole("button", { name: "context" }).click();
+
+  const context = page.locator(".empty").filter({ hasText: "SNDK" });
+  await expect(context).toContainText("Context");
+  await expect(context).toContainText("not running");
+  await expect(context).toContainText("not in the active Universe");
+  await expect(context).toContainText("Promote the ticker first");
+  await expect(page.getByText("synthesizing…")).toHaveCount(0);
+  await expect.poll(() => calls.refreshContextSymbols).toEqual([]);
 });
 
 test("overview explains selected symbol brain status and stale source", async ({ page }) => {

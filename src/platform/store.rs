@@ -1546,24 +1546,21 @@ impl Store {
         Ok(inserted)
     }
 
-    pub async fn brain_journal_for_date(&self, day: NaiveDate) -> Result<serde_json::Value> {
+    pub async fn brain_journal_for_date(
+        &self,
+        day: NaiveDate,
+        page: i64,
+        per_page: i64,
+    ) -> Result<serde_json::Value> {
+        let page = page.max(1);
+        let per_page = per_page.clamp(10, 200);
+        let offset = (page - 1) * per_page;
         let rows = sqlx::query(
-            r#"WITH ranked AS (
-                 SELECT id, journal_date, category, source_kind, source_id, event_key,
-                        symbol, brain_thesis_id, thesis_id, title, summary, importance,
-                        occurred_at, source_ref, created_at,
-                        row_number() OVER (
-                          PARTITION BY category
-                          ORDER BY importance DESC, occurred_at DESC, id DESC
-                        ) AS rn
-                   FROM brain_journal_entry
-                  WHERE journal_date = $1
-             )
-             SELECT id, journal_date, category, source_kind, source_id, event_key,
+            r#"SELECT id, journal_date, category, source_kind, source_id, event_key,
                     symbol, brain_thesis_id, thesis_id, title, summary, importance,
                     occurred_at, source_ref, created_at
-               FROM ranked
-              WHERE rn <= 8
+               FROM brain_journal_entry
+              WHERE journal_date = $1
            ORDER BY CASE category
                       WHEN 'changed' THEN 0
                       WHEN 'ignored_or_hated' THEN 1
@@ -1573,9 +1570,12 @@ impl Store {
                       WHEN 'blocked' THEN 5
                       ELSE 6
                     END,
-                    importance DESC, occurred_at DESC, id DESC"#,
+                    importance DESC, occurred_at DESC, id DESC
+              LIMIT $2 OFFSET $3"#,
         )
         .bind(day)
+        .bind(per_page)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await
         .context("brain_journal_for_date")?;
@@ -1624,6 +1624,11 @@ impl Store {
         }
 
         let visible_total = entries.len();
+        let total_pages = if all_total == 0 {
+            0
+        } else {
+            (all_total + per_page - 1) / per_page
+        };
         Ok(serde_json::json!({
             "as_of": Utc::now(),
             "date": day.format("%Y-%m-%d").to_string(),
@@ -1633,6 +1638,14 @@ impl Store {
                 "visible": visible_total,
                 "by_category": by_category,
                 "all_by_category": all_by_category,
+            },
+            "pagination": {
+                "page": page,
+                "per_page": per_page,
+                "total": all_total,
+                "total_pages": total_pages,
+                "has_previous": page > 1,
+                "has_next": total_pages > 0 && page < total_pages,
             },
             "entries": entries,
         }))

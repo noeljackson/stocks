@@ -122,7 +122,8 @@ for the specific symbol, or call out contradictions.
 is generated from source rows such as attention, evidence, source tasks, thesis
 history, parent thesis history, and the macro dislocation map. It should link
 back to those rows; it should not mutate ticker, thesis, decision, or position
-state.
+state. The UI exposes it as `/journal/YYYY-MM-DD` with entry pagination; the
+Brain drawer links to it but does not embed it.
 
 ## Attention Contract
 

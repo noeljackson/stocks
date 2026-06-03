@@ -3313,6 +3313,8 @@ fn cognition_run_json(r: sqlx::postgres::PgRow) -> serde_json::Value {
 #[derive(Debug, Deserialize)]
 struct BrainJournalQuery {
     date: Option<NaiveDate>,
+    page: Option<i64>,
+    per_page: Option<i64>,
 }
 
 async fn get_brain_journal(
@@ -3324,7 +3326,9 @@ async fn get_brain_journal(
         warn!(date = %day, error = %e, "refresh_brain_journal_entries failed");
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
-    match gw.store.brain_journal_for_date(day).await {
+    let page = q.page.unwrap_or(1);
+    let per_page = q.per_page.unwrap_or(50);
+    match gw.store.brain_journal_for_date(day, page, per_page).await {
         Ok(body) => (StatusCode::OK, Json(body)).into_response(),
         Err(e) => {
             warn!(date = %day, error = %e, "get_brain_journal failed");

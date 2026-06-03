@@ -373,6 +373,95 @@ async function mockApi(
         as_of: "2026-06-01T12:00:00Z",
         date: "2026-06-01",
         synthesis: null,
+        overview: {
+          as_of: "2026-06-01T12:00:00Z",
+          headline: "1 clean candidate(s), 1 setup wait(s), 1 changed item(s), 1 blocker(s).",
+          market: {
+            label: "market neutral · macro neutral",
+            regime: "neutral",
+            macro_direction: "neutral",
+            state: "forming",
+            freshness: "missing",
+            summary: "Macro posture is neutral until the regime loop promotes a stronger rates/liquidity/growth view.",
+            missing_evidence: ["fred_macro", "market_breadth"],
+            market_state: { regime: "neutral", capitulation: false },
+          },
+          top_candidates: [{
+            symbol: "CRDO",
+            score: 76,
+            thesis_id: "22ceaea3-9df3-416a-bfe5-107d3233dd59",
+            thesis_state: "actionable",
+            thesis_direction: "up",
+            technical_state: "constructive",
+            entry_stance: "constructive",
+            technical_pct_vs_200d: 3.2,
+            freshness_status: "fresh",
+            open_attention: 1,
+            open_evidence: 3,
+            blocking_evidence: 0,
+            due_source_tasks: 0,
+            parent_themes: [],
+            reason: "actionable thesis, up direction, constructive technicals, constructive entry stance, fresh freshness",
+          }],
+          wait_for_setup: [{
+            symbol: "OKTA",
+            score: 54,
+            thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+            thesis_state: "forming",
+            thesis_direction: "up",
+            technical_state: "extended",
+            entry_stance: "avoid_chase",
+            technical_pct_vs_200d: 26.5,
+            freshness_status: "stale",
+            open_attention: 1,
+            open_evidence: 1,
+            blocking_evidence: 0,
+            due_source_tasks: 1,
+            parent_themes: [],
+            reason: "forming thesis, up direction, extended technicals, avoid_chase entry stance, stale freshness",
+          }],
+          risk_flags: [],
+          themes: [{
+            name: "AI Compute Infrastructure",
+            scope: "theme",
+            state: "forming",
+            direction: "mixed",
+            summary: "AI capex remains the parent theme, but ticker quality differs.",
+            missing_evidence: ["customer_adoption_research"],
+            freshness: "missing",
+            linked_tickers: 2,
+          }],
+          news_recap: [{
+            symbol: "CRDO",
+            kind: "news",
+            summary: "Credo highlighted new AI-cluster design win momentum.",
+            source: "fmp_news",
+            url: null,
+            strength: 0.8,
+            polarity: 0.5,
+            observed_at: "2026-06-01T09:00:00Z",
+          }],
+          research_focus: [{
+            category: "blocked",
+            source_kind: "source_task",
+            source_id: "9101",
+            symbol: "MSFT",
+            title: "Data blocked: MSFT analyst estimates",
+            summary: "fmp task rate_limited with high priority after 2 attempt(s).",
+            importance: 78,
+            occurred_at: "2026-06-01T08:00:00Z",
+          }],
+          counts: {
+            active_universe: 67,
+            top_candidates: 1,
+            wait_for_setup: 1,
+            risk_flags: 0,
+            news_recap: 1,
+            research_focus: 1,
+            changed: 1,
+            blocked: 1,
+          },
+        },
         summary: {
           total: 5,
           visible: 5,
@@ -1548,6 +1637,16 @@ test("journal page shows daily history and routes ticker entries", async ({ page
 
   const journal = page.locator("[data-testid='brain-journal-page']");
   await expect(journal).toContainText("Brain Journal");
+  await expect(journal.locator("[data-testid='brain-journal-memo']")).toContainText("Daily Brain Memo");
+  await expect(journal.locator("[data-testid='brain-journal-memo']")).toContainText("market neutral · macro neutral");
+  await expect(journal.locator("[data-testid='brain-journal-memo']")).toContainText("Top Candidates");
+  await expect(journal.locator("[data-testid='brain-journal-memo']")).toContainText("CRDO");
+  await expect(journal.locator("[data-testid='brain-journal-memo']")).toContainText("Wait For Setup");
+  await expect(journal.locator("[data-testid='brain-journal-memo']")).toContainText("OKTA");
+  await expect(journal.locator("[data-testid='brain-journal-memo']")).toContainText("bullish thesis, but avoid chase");
+  await expect(journal.locator("[data-testid='brain-journal-memo']")).toContainText("News And Evidence");
+  await expect(journal.locator("[data-testid='brain-journal-memo']")).toContainText("Credo highlighted new AI-cluster design win momentum.");
+  await expect(journal).toContainText("Receipts");
   await expect(journal).toContainText("5 total entries");
   await expect(journal).toContainText("we think this changed");
   await expect(journal).toContainText("OKTA thesis updated to v2");

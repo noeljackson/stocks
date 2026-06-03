@@ -473,10 +473,79 @@ export interface BrainJournalEntry {
   created_at: string;
 }
 
+export interface BrainJournalMemoSymbol {
+  symbol: string;
+  score: number;
+  thesis_id?: string | null;
+  thesis_state?: string | null;
+  thesis_direction?: string | null;
+  technical_state?: string | null;
+  entry_stance?: string | null;
+  technical_pct_vs_200d?: number | null;
+  freshness_status?: string | null;
+  open_attention?: number;
+  open_evidence?: number;
+  blocking_evidence?: number;
+  due_source_tasks?: number;
+  parent_themes?: Record<string, unknown>[];
+  reason: string;
+}
+
+export interface BrainJournalMemoTheme {
+  name: string;
+  scope: string;
+  state: string;
+  direction: string;
+  summary: string;
+  missing_evidence: string[];
+  freshness: string;
+  linked_tickers: number;
+}
+
+export interface BrainJournalMemoEvidence {
+  symbol?: string | null;
+  kind?: string | null;
+  category?: string | null;
+  source_kind?: string | null;
+  source_id?: string | null;
+  title?: string | null;
+  summary: string;
+  source?: string | null;
+  url?: string | null;
+  strength?: number | null;
+  polarity?: number | null;
+  importance?: number | null;
+  observed_at?: string | null;
+  occurred_at?: string | null;
+}
+
+export interface BrainJournalOverview {
+  as_of: string;
+  headline: string;
+  market: {
+    label: string;
+    regime: string;
+    macro_direction: string;
+    state: string;
+    freshness: string;
+    summary: string;
+    missing_evidence: string[];
+    market_state?: Record<string, unknown> | null;
+  };
+  top_candidates: BrainJournalMemoSymbol[];
+  wait_for_setup: BrainJournalMemoSymbol[];
+  risk_flags: BrainJournalMemoSymbol[];
+  themes: BrainJournalMemoTheme[];
+  news_recap: BrainJournalMemoEvidence[];
+  research_focus: BrainJournalMemoEvidence[];
+  counts: Record<string, number>;
+}
+
 export interface BrainJournal {
   as_of: string;
   date: string;
   synthesis?: string | null;
+  overview?: BrainJournalOverview | null;
   summary: {
     total: number;
     visible?: number;

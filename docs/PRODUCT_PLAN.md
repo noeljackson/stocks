@@ -1185,8 +1185,11 @@ Goal: know whether the product makes decisions better.
    Turn missing evidence into scheduled work with retry/backoff, not static text.
 
 3. Brain Journal synthesis
-   Summarize the deterministic journal entries with a cited prompt pass; do not
-   let chat memory invent unsupported claims.
+   The journal is a daily Brain memo first and a receipt list second. Keep the
+   deterministic overview sections (`market`, `top_candidates`,
+   `wait_for_setup`, `themes`, `news_recap`, `research_focus`) source-backed;
+   a later cited prompt pass may summarize those sections, but must not invent
+   unsupported claims from chat memory.
 
 4. Review packets and attention FSM adoption
    Every attention card should explain why it exists and how it resolves.

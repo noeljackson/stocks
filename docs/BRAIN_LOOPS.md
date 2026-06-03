@@ -159,7 +159,7 @@ brain_journal_entry  append-only, deduped by event_key
 GET /api/brain-journal?date=YYYY-MM-DD&page=N&per_page=N
         |
         v
-/journal/YYYY-MM-DD pageable history page
+/journal/YYYY-MM-DD daily brain memo + pageable receipts
 ```
 
 Journal categories match the operator question:
@@ -177,6 +177,25 @@ The journal does not invent evidence. Entries link back to the source row throug
 `source_kind`, `source_id`, `symbol`, `thesis_id`, `brain_thesis_id`, and
 `source_ref`. A later LLM synthesis pass can summarize the deterministic entry
 set, but the durable facts are already present before any model writes prose.
+
+The journal page is not meant to feel like a raw event stream. The response also
+includes a deterministic `overview` object that reads like a daily analyst memo:
+
+```text
+overview
+  market            macro/regime posture and missing parent evidence
+  top_candidates    thesis-backed names where setup is not saying chase
+  wait_for_setup    bullish/active theses where technicals say wait
+  risk_flags        bearish, deteriorating, blocked, or contradiction names
+  themes            active macro/sector/theme pressure
+  news_recap        high-signal news/evidence rows for the date
+  research_focus    blocked, queued, or curious work that needs follow-up
+entries             paged receipts behind the memo
+```
+
+This distinction matters operationally: a ticker can be bullish as a thesis but
+still not be a good entry. The journal should make that separation explicit
+instead of forcing the operator to infer it from scattered events.
 The Brain drawer should link to this page rather than embedding the journal;
 the drawer is for live macro/sector/attention state, while the journal is the
 pageable historical readout.

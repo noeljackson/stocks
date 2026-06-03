@@ -95,7 +95,7 @@ demo-up: up migrate seed-demo ## Start infra, apply migrations, seed demo data
 	@echo "    make run-risk        # risk overlay"
 	@echo "    make run-goalpost    # thesis integrity guard"
 	@echo "    make run-router      # ingest fan-out"
-	@echo "    make run-ingest      # EDGAR + FRED live data"
+	@echo "    make run-ingest      # market/company/news/macro ingest"
 
 # ---- Rust ----
 .PHONY: build test check fmt clippy
@@ -142,7 +142,7 @@ web-e2e: ## Playwright UI workflow tests (mocked API, no DB mutation)
 run-gateway: ## Run the gateway
 	$(RUN) cargo run --release --bin gateway
 
-run-ingest: ## Run the ingestion runner (EDGAR + FRED)
+run-ingest: ## Run the market/company/news/macro ingestion runner
 	$(RUN) cargo run --release --bin ingest
 
 run-regime: ## Run the macro regime classifier

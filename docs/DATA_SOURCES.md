@@ -9,15 +9,24 @@ file an issue and link it from the relevant row's "status" column.
 
 **Status legend:**
 - `wired` — running in production, has tests, has audit trail
+- `partial` — a useful first slice is wired, but the row still has named gaps
 - `key-only` — API key in Infisical but no adapter code yet
 - `not wired` — vendor identified, no key, no code
 - `gap` — known limitation, no fix planned
 
-**Current vendor stack (as of 2026-05-31):**
-- **FMP Starter** ($22/mo) — primary: price/OHLCV, analyst estimates, per-firm rating events, earnings calendar, company news (no sentiment), company profile
-- **Massive Stocks Starter** ($29/mo) — kept for: news with per-article sentiment (where FMP has no equivalent)
-- **SEC EDGAR** (free) — XBRL company facts, insider transactions, 13F holdings
-- **FRED** (free) — macro economic series, credit spreads, VIX history
+**Current vendor stack (as of 2026-06-03):**
+- **FMP Starter** ($22/mo) — primary: daily/intraday price bars, screener
+  discovery, analyst estimate snapshots/revisions, price-target consensus,
+  recommendation mix, price-target events, and company news without upstream
+  sentiment
+- **Massive Stocks Starter** ($29/mo) — kept for: stock news with per-article
+  sentiment where FMP has no equivalent
+- **SEC EDGAR** (free) — CIK lookup, filing metadata, and XBRL company facts;
+  insider transactions and 13F holdings are still gaps
+- **FRED** (free) — selected macro series (`DGS10`, `DGS3MO`,
+  `BAMLH0A0HYM2`, `VIXCLS`), not a full macro/breadth library yet
+- **CBOE** (free, no key) — equity put/call ratio and VIX close for
+  crowd-sentiment/regime inputs
 - **TWSE** (free, no key) — official daily OHLCV fallback for numeric Taiwan
   listings such as `2454.TW` when FMP search resolves the symbol but EOD
   history is entitlement-gated
@@ -79,23 +88,26 @@ proposed discovery candidates, capped per provider loop. Dev defaults are
 | Company facts (XBRL) | Evaluator metrics (`SYMBOL.gross_margin_pct`, etc.), context maintainer fundamentals block | **SEC EDGAR** | free, public | `/api/xbrl/companyfacts/CIK<N>.json` | wired — `src/ingest/xbrl.rs`; tiered deep universe so active tickers and top candidates acquire facts without starving the freshness loop |
 | CIK lookup | Resolving ticker → CIK before XBRL pull | SEC EDGAR | free | `/files/company_tickers.json` | wired — `src/ingest/sec.rs`; fetched dynamically with seeded fallback for known ADRs |
 | Filing metadata | 8-K/10-Q/10-K submission watch between slower XBRL fact refreshes | SEC EDGAR | free | `/submissions/CIK<N>.json` | wired — `src/ingest/edgar.rs`; owns `sec_edgar_submissions` source tasks on a 30-minute freshness loop |
-| Earnings calendar (upcoming + history) | Goalpost dates, horizon_at validation, beat/miss pattern | **FMP** | Starter | `/stable/earnings?symbol=` returns `epsActual/epsEstimated/revenueActual/revenueEstimated/lastUpdated`. `/stable/earnings-calendar?from=&to=` for global upcoming | not wired |
-| Company profile | Cluster classification context, market cap | FMP | Starter | `/stable/profile?symbol=` | not wired |
-| Insider transactions (Form 4/144) | Cross-check LLM context narrative claims | SEC EDGAR | free | `/cgi-bin/browse-edgar?action=getcompany&CIK=...&type=4` | not wired |
-| 13F holdings | Lagged institutional positioning | SEC EDGAR | free | `/cgi-bin/browse-edgar?...&type=13F-HR` | not wired |
+| Earnings calendar (upcoming + history) | Goalpost dates, horizon_at validation, beat/miss pattern | **FMP** | Starter | `/stable/earnings?symbol=` returns `epsActual/epsEstimated/revenueActual/revenueEstimated/lastUpdated`. `/stable/earnings-calendar?from=&to=` for global upcoming | not wired — tracked by #2 |
+| Company profile | Cluster classification context, market cap | FMP | Starter | `/stable/profile?symbol=` | not wired — tracked by #2 |
+| Insider transactions (Form 4/144) | Cross-check LLM context narrative claims | SEC EDGAR | free | `/cgi-bin/browse-edgar?action=getcompany&CIK=...&type=4` | not wired — tracked by #2 |
+| 13F holdings | Lagged institutional positioning | SEC EDGAR | free | `/cgi-bin/browse-edgar?...&type=13F-HR` | not wired — tracked by #2 |
 
 ## 3. Analyst estimates + ratings
 
-This is the SPEC §4 "#1 leading signal for the edge" gap (#18).
+This is the SPEC §4 leading signal surface. The estimate snapshot/revision loop
+is wired; the remaining high-value gap is FMP's global per-firm grade-change
+feed, which should create discrete rating-catalyst evidence without needing to
+poll every symbol.
 
 | Data | Why | Vendor | Tier / cost | Endpoint | Status |
 |---|---|---|---|---|---|
 | Current consensus EPS/revenue (per fiscal period, forward 5+ yrs) | Baseline for revision detection; `numAnalystsEps` tells us coverage depth | **FMP** | Starter | `/stable/analyst-estimates?symbol=&period=annual` returns revenueLow/High/Avg, ebitda/ebit, netIncome, epsAvg/High/Low, numAnalystsRevenue, numAnalystsEps | wired — `src/ingest/fmp_estimates.rs` |
 | **Estimate revision time-series** (the actual signal) | "Earlier than the crowd" detection — when consensus is being revised up/down before retail sees it | FMP via daily snapshot + diff against prior snapshot (we build this layer) | Starter | snapshot `/stable/analyst-estimates` daily → `estimate_snapshot` table → diff → `estimate_revision` events | wired — `src/ingest/fmp_estimates_service.rs` |
-| Per-firm rating events (upgrade/downgrade with `gradingCompany`, `newGrade`, `previousGrade`, `priceWhenPosted`) | Discrete catalyst events for discovery + thesis flags. The actual "revisions" data Bloomberg/Refinitiv charge 5-figures/yr for, here for free. | **FMP** | Starter | `/stable/grades-latest-news?limit=` returns global event feed; filter to our universe client-side | not wired (#18) |
-| Aggregate buy/hold/sell counts (monthly buckets per symbol) | Lower-resolution drift sanity check | FMP | Starter | `/stable/grades-historical?symbol=` returns monthly StrongBuy/Buy/Hold/Sell counts | not wired |
+| Per-firm rating events (upgrade/downgrade with `gradingCompany`, `newGrade`, `previousGrade`, `priceWhenPosted`) | Discrete catalyst events for discovery + thesis flags. The actual "revisions" data Bloomberg/Refinitiv charge 5-figures/yr for, here for free. | **FMP** | Starter | `/stable/grades-latest-news?limit=` returns global event feed; filter to our universe client-side | not wired — tracked by #2 |
+| Full recommendation history/backfill | Lower-resolution drift sanity check over time | FMP | Starter | `/stable/grades-historical?symbol=` returns monthly StrongBuy/Buy/Hold/Sell counts | partial — latest bucket wired via opinion mix below; full monthly backfill not wired |
 | Analyst price target consensus | Consensus artifact: target high/low/median/consensus helps separate "outside consensus" from "already accepted" | FMP | Starter | `/stable/price-target-consensus?symbol=` | wired — `src/ingest/fmp_opinion.rs`, active tickers + Tier 1/2 proposed candidates, persisted to `analyst_price_target_snapshot` |
-| Analyst recommendations / opinion mix | Buy/hold/sell mix for "what does sell-side already believe?" context | FMP | Starter | `/stable/grades-historical?symbol=&limit=1` | wired — `src/ingest/fmp_opinion.rs`, active tickers + Tier 1/2 proposed candidates, persisted to `analyst_recommendation_snapshot` |
+| Analyst recommendations / opinion mix | Latest buy/hold/sell mix for "what does sell-side already believe?" context | FMP | Starter | `/stable/grades-historical?symbol=&limit=1` | wired — `src/ingest/fmp_opinion.rs`, active tickers + Tier 1/2 proposed candidates, persisted to `analyst_recommendation_snapshot` |
 | Analyst price target events | Recent firm-level target changes for catalysts and consensus drift narrative | FMP | Starter | `/stable/price-target-news?symbol=&limit=10` | wired — `src/ingest/fmp_opinion.rs`, active tickers + Tier 1/2 proposed candidates, persisted to `analyst_price_target_event` |
 
 The normalized fact layer is `evidence_item`. News articles, estimate
@@ -156,10 +168,10 @@ only if it carries signal beyond the free set.
 | AAII bulls/bears/neutral | Retail individual-investor sentiment (the "late crowd" we're trying to lead per SPEC §0) | AAII | free | `https://www.aaii.com/files/surveys/sentiment.xls` | weekly Thu AM | not wired (#20) |
 | AAII asset allocation | What retail is actually holding (stocks vs bonds vs cash) | AAII | free | `https://www.aaii.com/files/surveys/allocation.xls` | monthly | not wired |
 | NAAIM Exposure Index | Active manager net long exposure | NAAIM via Nasdaq Data Link | free (free key required) | `https://data.nasdaq.com/data/NAAIM/NAAIM_EXPOSURE_INDEX` | weekly Thu | not wired |
-| CBOE equity put/call | Options-derived crowd hedging | CBOE | free | `https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv` | daily | not wired (#20) |
+| CBOE equity put/call | Options-derived crowd hedging | CBOE | free | `https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv` | daily | wired — `src/ingest/cboe.rs` + `src/ingest/crowd_sentiment_service.rs`; writes `crowd_sentiment`, `evidence_item`, and source-task health |
 | CBOE index put/call | Macro hedging vs single-name | CBOE | free | `https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/indexpcarchive.csv` | daily | not wired |
 | CNN Fear & Greed (all 7 components) | Composite + components (price strength, momentum, market volatility, junk bond demand, etc.) | CNN (undocumented JSON) | free (set browser UA to avoid blocks) | `https://production.dataviz.cnn.io/index/fearandgreed/graphdata/{YYYY-MM-DD}` | daily | not wired |
-| VIX + term structure | Volatility regime / contango-backwardation | CBOE | free | `https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv` (plus `VIX9D_`, `VIX3M_`, `VIX6M_History.csv`) | daily | not wired |
+| VIX + term structure | Volatility regime / contango-backwardation | CBOE | free | `https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv` (plus `VIX9D_`, `VIX3M_`, `VIX6M_History.csv`) | daily | partial — VIX close wired via CBOE and FRED `VIXCLS`; VIX9D/VIX3M/VIX6M term structure not wired |
 | StockTwits message volume per ticker | Retail social-chatter spike detection (best-effort — no new API keys being issued) | StockTwits public API | free, ~200 req/hr no auth | `https://api.stocktwits.com/api/2/streams/symbol/{TICKER}.json` | continuous | not wired |
 | Reddit / r/wallstreetbets ticker mentions | Retail meme/momentum signal | Reddit OAuth API (free PRAW) | free, 100 req/min | n/a (PRAW scrape of daily discussion threads) | continuous | not wired |
 | ICI mutual fund / ETF flows | Slow-moving retail+institutional capital flows | ICI | free | `https://www.ici.org/research/stats/flows` + `/etf_flows` | weekly XLS, ~3-day lag | not wired |
@@ -171,9 +183,9 @@ only if it carries signal beyond the free set.
 
 | Data | Why | Vendor | Tier / cost | Endpoint | Status |
 |---|---|---|---|---|---|
-| Selected FRED series | Regime classifier (yield curve, unemployment, etc.) | FRED | free (free key required) | `https://api.stlouisfed.org/fred/series/observations?series_id=` | wired — `src/ingest/` |
-| HY/IG credit spreads | Risk-on/risk-off signal | FRED (same key) | free | series ids `BAMLH0A0HYM2` (HY OAS), `BAMLH0A1HYBB` (BB), `BAMLH0A2HYB` (B), `BAMLC0A0CM` (IG OAS) | not wired |
-| VIX (historical) | Regime input | FRED `VIXCLS`, `VXVCLS` (3M) | free | (see above for FRED endpoint) | not wired |
+| Selected FRED series | Regime classifier (yield curve, risk spreads, volatility) | FRED | free (free key required) | `https://api.stlouisfed.org/fred/series/observations?series_id=` | wired — `src/ingest/fred.rs`; currently `DGS10`, `DGS3MO`, `BAMLH0A0HYM2`, `VIXCLS` |
+| HY/IG credit spreads | Risk-on/risk-off signal | FRED (same key) | free | series ids `BAMLH0A0HYM2` (HY OAS), `BAMLH0A1HYBB` (BB), `BAMLH0A2HYB` (B), `BAMLC0A0CM` (IG OAS) | partial — HY OAS is wired; BB/B/IG buckets are not wired |
+| VIX (historical) | Regime input | FRED `VIXCLS`, `VXVCLS` (3M) | free | (see above for FRED endpoint) | partial — `VIXCLS` wired via FRED and CBOE VIX close; `VXVCLS`/3M volatility is not wired |
 
 ## 7. Position / portfolio state
 
@@ -256,3 +268,15 @@ absent names = not yet configured.
   (a) intraday alerting goal ("alert within 1s of a 3x volume spike"),
   (b) LEAPS execution via #25 IBKR (live bid/ask vs paying the spread),
   (c) tape-reading signals (unusual options activity, dark pool prints).
+
+**2026-06-03 — data-source audit after Brain/workflow expansion**
+- GitHub issue #2 was stale: it still said only EDGAR and FRED were ingesting.
+  The actual stack now includes FMP daily/intraday price bars, screener
+  discovery, estimate snapshots/revisions, analyst opinion, FMP news, Massive
+  news+sentiment, SEC submissions, XBRL company facts, TWSE Taiwan fallback,
+  CBOE equity put/call + VIX close, selected FRED series, and GDELT/Bing product
+  research.
+- Remaining high-leverage gaps are narrower and should be tracked explicitly:
+  FMP `grades-latest-news`, earnings calendar/company profile, options chains,
+  insider/Form 4 and 13F positioning, broader macro/breadth inputs, direct
+  commodity/weather/inventory data, and transcript/video ingestion (#245).

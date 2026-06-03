@@ -313,6 +313,15 @@ async def _load_analyst_opinion(pool: asyncpg.Pool, symbol: str) -> dict:
             LIMIT 10""",
         symbol,
     )
+    rating_rows = await pool.fetch(
+        """SELECT published_at, news_title, news_url, grading_company,
+                  action, new_grade, previous_grade, price_when_posted, news_publisher
+             FROM analyst_rating_event
+            WHERE symbol = $1
+         ORDER BY published_at DESC
+            LIMIT 10""",
+        symbol,
+    )
     return {
         "price_target_consensus": None if target is None else {
             "target_high": _f(target["target_high"]),
@@ -344,6 +353,20 @@ async def _load_analyst_opinion(pool: asyncpg.Pool, symbol: str) -> dict:
                 "publisher": r["news_publisher"],
             }
             for r in event_rows
+        ],
+        "recent_rating_events": [
+            {
+                "published_at": r["published_at"].isoformat(),
+                "title": r["news_title"],
+                "url": r["news_url"],
+                "grading_company": r["grading_company"],
+                "action": r["action"],
+                "new_grade": r["new_grade"],
+                "previous_grade": r["previous_grade"],
+                "price_when_posted": _f(r["price_when_posted"]),
+                "publisher": r["news_publisher"],
+            }
+            for r in rating_rows
         ],
     }
 
@@ -714,7 +737,8 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
             len(facts),
             len(news),
             len(estimate_revisions),
-            len(analyst_opinion.get("recent_price_target_events", [])),
+            len(analyst_opinion.get("recent_price_target_events", []))
+            + len(analyst_opinion.get("recent_rating_events", [])),
             len(evidence_items),
             len(research_evidence),
             "yes" if price_snapshot else "no",

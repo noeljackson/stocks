@@ -1169,8 +1169,21 @@ async def _load_thesis_metrics(pool: asyncpg.Pool, brain_thesis_id: Any) -> dict
                   AND published_at > now() - interval '30 days') AS news_symbols,
               (SELECT count(DISTINCT symbol) FROM estimate_snapshot
                 WHERE symbol IN (SELECT symbol FROM linked)) AS estimate_symbols,
-              (SELECT count(DISTINCT symbol) FROM analyst_price_target_snapshot
-                WHERE symbol IN (SELECT symbol FROM linked)) AS opinion_symbols,
+              (SELECT count(DISTINCT symbol) FROM (
+                  SELECT symbol FROM analyst_price_target_snapshot
+                    WHERE symbol IN (SELECT symbol FROM linked)
+                  UNION
+                  SELECT symbol FROM analyst_recommendation_snapshot
+                    WHERE symbol IN (SELECT symbol FROM linked)
+                  UNION
+                  SELECT symbol FROM analyst_price_target_event
+                    WHERE symbol IN (SELECT symbol FROM linked)
+                      AND published_at > now() - interval '90 days'
+                  UNION
+                  SELECT symbol FROM analyst_rating_event
+                    WHERE symbol IN (SELECT symbol FROM linked)
+                      AND published_at > now() - interval '90 days'
+              ) opinion) AS opinion_symbols,
               (SELECT count(DISTINCT symbol) FROM research_evidence
                 WHERE symbol IN (SELECT symbol FROM linked)
                   AND retrieved_at > now() - interval '30 days') AS research_symbols,

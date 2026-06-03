@@ -17,8 +17,8 @@ file an issue and link it from the relevant row's "status" column.
 **Current vendor stack (as of 2026-06-03):**
 - **FMP Starter** ($22/mo) — primary: daily/intraday price bars, screener
   discovery, analyst estimate snapshots/revisions, price-target consensus,
-  recommendation mix, price-target events, and company news without upstream
-  sentiment
+  recommendation mix, price-target events, global grade-change events, and
+  company news without upstream sentiment
 - **Massive Stocks Starter** ($29/mo) — kept for: stock news with per-article
   sentiment where FMP has no equivalent
 - **SEC EDGAR** (free) — CIK lookup, filing metadata, and XBRL company facts;
@@ -104,7 +104,7 @@ poll every symbol.
 |---|---|---|---|---|---|
 | Current consensus EPS/revenue (per fiscal period, forward 5+ yrs) | Baseline for revision detection; `numAnalystsEps` tells us coverage depth | **FMP** | Starter | `/stable/analyst-estimates?symbol=&period=annual` returns revenueLow/High/Avg, ebitda/ebit, netIncome, epsAvg/High/Low, numAnalystsRevenue, numAnalystsEps | wired — `src/ingest/fmp_estimates.rs` |
 | **Estimate revision time-series** (the actual signal) | "Earlier than the crowd" detection — when consensus is being revised up/down before retail sees it | FMP via daily snapshot + diff against prior snapshot (we build this layer) | Starter | snapshot `/stable/analyst-estimates` daily → `estimate_snapshot` table → diff → `estimate_revision` events | wired — `src/ingest/fmp_estimates_service.rs` |
-| Per-firm rating events (upgrade/downgrade with `gradingCompany`, `newGrade`, `previousGrade`, `priceWhenPosted`) | Discrete catalyst events for discovery + thesis flags. The actual "revisions" data Bloomberg/Refinitiv charge 5-figures/yr for, here for free. | **FMP** | Starter | `/stable/grades-latest-news?limit=` returns global event feed; filter to our universe client-side | not wired — tracked by #2 |
+| Per-firm rating events (upgrade/downgrade with `gradingCompany`, `newGrade`, `previousGrade`, `priceWhenPosted`) | Discrete catalyst events for discovery + thesis flags. The actual "revisions" data Bloomberg/Refinitiv charge 5-figures/yr for, here for free. | **FMP** | Starter | `/stable/grades-latest-news?limit=` returns global event feed; filter to our universe client-side | wired — `src/ingest/fmp_opinion.rs` + `src/ingest/fmp_opinion_service.rs`, persisted to `analyst_rating_event` and normalized as `rating_change` evidence |
 | Full recommendation history/backfill | Lower-resolution drift sanity check over time | FMP | Starter | `/stable/grades-historical?symbol=` returns monthly StrongBuy/Buy/Hold/Sell counts | partial — latest bucket wired via opinion mix below; full monthly backfill not wired |
 | Analyst price target consensus | Consensus artifact: target high/low/median/consensus helps separate "outside consensus" from "already accepted" | FMP | Starter | `/stable/price-target-consensus?symbol=` | wired — `src/ingest/fmp_opinion.rs`, active tickers + Tier 1/2 proposed candidates, persisted to `analyst_price_target_snapshot` |
 | Analyst recommendations / opinion mix | Latest buy/hold/sell mix for "what does sell-side already believe?" context | FMP | Starter | `/stable/grades-historical?symbol=&limit=1` | wired — `src/ingest/fmp_opinion.rs`, active tickers + Tier 1/2 proposed candidates, persisted to `analyst_recommendation_snapshot` |
@@ -241,7 +241,8 @@ absent names = not yet configured.
   `newGrade` / `previousGrade` / `gradingCompany` / `priceWhenPosted` per event.
   This is per-firm rating *revisions* (the rich version Bloomberg/Refinitiv
   sells for 5-figures/yr), free on FMP Starter, just needs client-side filter
-  to our universe.
+  to our universe. FMP Starter caps this feed's `limit` parameter at 100; the
+  ingest code clamps operator overrides to stay inside that plan limit.
 - FMP news lacks per-article sentiment (Massive's has it via `insights[]`).
 
 **2026-05-31 — chosen architecture**
@@ -277,6 +278,6 @@ absent names = not yet configured.
   CBOE equity put/call + VIX close, selected FRED series, and GDELT/Bing product
   research.
 - Remaining high-leverage gaps are narrower and should be tracked explicitly:
-  FMP `grades-latest-news`, earnings calendar/company profile, options chains,
+  earnings calendar/company profile, options chains,
   insider/Form 4 and 13F positioning, broader macro/breadth inputs, direct
   commodity/weather/inventory data, and transcript/video ingestion (#245).

@@ -99,6 +99,7 @@ EVIDENCE_REQUIREMENTS = {
             "fmp_price_target_consensus",
             "fmp_grades_historical",
             "fmp_price_target_news",
+            "fmp_grades_latest_news",
         ],
     },
     "product_research": {
@@ -267,6 +268,7 @@ def satisfied_source_task_state(
             evidence_counts.get("analyst_price_target_snapshot_last_at"),
             evidence_counts.get("analyst_recommendation_snapshot_last_at"),
             evidence_counts.get("analyst_price_target_event_last_at"),
+            evidence_counts.get("analyst_rating_event_last_at"),
         ]),
         "product_research": _latest_dt([
             evidence_counts.get("research_run_last_at"),
@@ -518,6 +520,13 @@ async def load_evidence_counts(pool: asyncpg.Pool, symbol: str) -> dict[str, obj
               (SELECT max(ingested_at)
                  FROM analyst_price_target_event
                 WHERE symbol = $1) AS analyst_price_target_event_last_at,
+              (SELECT count(*)
+                 FROM analyst_rating_event
+                WHERE symbol = $1
+                  AND published_at > now() - interval '90 days') AS analyst_rating_events,
+              (SELECT max(ingested_at)
+                 FROM analyst_rating_event
+                WHERE symbol = $1) AS analyst_rating_event_last_at,
               (SELECT count(*) FROM research_evidence
                 WHERE symbol = $1
                   AND retrieved_at > now() - interval '30 days') AS research_evidence,
@@ -666,6 +675,7 @@ def assess_evidence_requirements(
         "analyst_opinion": (
             evidence_counts.get("analyst_price_target_snapshots", 0) > 0
             or evidence_counts.get("analyst_recommendation_snapshots", 0) > 0
+            or evidence_counts.get("analyst_rating_events", 0) > 0
         ),
         "product_research": evidence_counts.get("research_evidence", 0) > 0,
     }

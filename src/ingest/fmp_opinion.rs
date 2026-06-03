@@ -2,7 +2,7 @@
 //!
 //! Analyst estimates are financial forecasts. This adapter captures the
 //! separate sell-side opinion surface: price target consensus, buy/hold/sell
-//! mix, and recent price-target events.
+//! mix, recent price-target events, and global grade-change events.
 
 use std::time::Duration;
 
@@ -75,6 +75,31 @@ pub struct PriceTargetEventRow {
     pub analyst_company: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct RatingEventRow {
+    pub symbol: String,
+    #[serde(rename = "publishedDate")]
+    pub published_date: String,
+    #[serde(default, rename = "newsURL")]
+    pub news_url: Option<String>,
+    #[serde(rename = "newsTitle")]
+    pub news_title: String,
+    #[serde(default, rename = "newsBaseURL")]
+    pub news_base_url: Option<String>,
+    #[serde(default, rename = "newsPublisher")]
+    pub news_publisher: Option<String>,
+    #[serde(default, rename = "newGrade")]
+    pub new_grade: Option<String>,
+    #[serde(default, rename = "previousGrade")]
+    pub previous_grade: Option<String>,
+    #[serde(default, rename = "gradingCompany")]
+    pub grading_company: Option<String>,
+    #[serde(default)]
+    pub action: Option<String>,
+    #[serde(default, rename = "priceWhenPosted")]
+    pub price_when_posted: Option<f64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NormalizedRecommendation {
     pub symbol: String,
@@ -101,6 +126,21 @@ pub struct NormalizedPriceTargetEvent {
     pub news_base_url: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct NormalizedRatingEvent {
+    pub symbol: String,
+    pub published_at: DateTime<Utc>,
+    pub news_url: Option<String>,
+    pub news_title: String,
+    pub news_base_url: Option<String>,
+    pub news_publisher: Option<String>,
+    pub grading_company: Option<String>,
+    pub action: Option<String>,
+    pub new_grade: Option<String>,
+    pub previous_grade: Option<String>,
+    pub price_when_posted: Option<f64>,
+}
+
 pub fn decode_consensus(json: &serde_json::Value) -> Result<Vec<PriceTargetConsensusRow>> {
     serde_json::from_value::<Vec<PriceTargetConsensusRow>>(json.clone())
         .context("decode fmp price-target-consensus response")
@@ -114,6 +154,11 @@ pub fn decode_recommendations(json: &serde_json::Value) -> Result<Vec<Recommenda
 pub fn decode_price_target_events(json: &serde_json::Value) -> Result<Vec<PriceTargetEventRow>> {
     serde_json::from_value::<Vec<PriceTargetEventRow>>(json.clone())
         .context("decode fmp price-target-news response")
+}
+
+pub fn decode_rating_events(json: &serde_json::Value) -> Result<Vec<RatingEventRow>> {
+    serde_json::from_value::<Vec<RatingEventRow>>(json.clone())
+        .context("decode fmp grades-latest-news response")
 }
 
 #[must_use]
@@ -158,6 +203,26 @@ pub fn normalize_price_target_events(
             })
         })
         .collect()
+}
+
+#[must_use]
+pub fn normalize_rating_event(row: &RatingEventRow) -> Option<NormalizedRatingEvent> {
+    let published_at = DateTime::parse_from_rfc3339(&row.published_date)
+        .ok()?
+        .with_timezone(&Utc);
+    Some(NormalizedRatingEvent {
+        symbol: row.symbol.clone(),
+        published_at,
+        news_url: row.news_url.clone(),
+        news_title: row.news_title.clone(),
+        news_base_url: row.news_base_url.clone(),
+        news_publisher: row.news_publisher.clone(),
+        grading_company: row.grading_company.clone(),
+        action: row.action.clone(),
+        new_grade: row.new_grade.clone(),
+        previous_grade: row.previous_grade.clone(),
+        price_when_posted: row.price_when_posted,
+    })
 }
 
 pub struct FmpOpinionAdapter {
@@ -237,6 +302,14 @@ impl FmpOpinionAdapter {
             price_target_events,
         })
     }
+
+    pub async fn fetch_latest_grade_news(&self, limit: usize) -> Result<serde_json::Value> {
+        self.fetch_json(
+            "GLOBAL",
+            &format!("/stable/grades-latest-news?limit={}", limit.max(1)),
+        )
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -299,5 +372,34 @@ mod tests {
             "2026-05-27T14:19:54+00:00"
         );
         assert_eq!(normalized[0].price_target, Some(425.0));
+    }
+
+    #[test]
+    fn decodes_and_normalizes_rating_event_shape() {
+        let rows = decode_rating_events(&serde_json::json!([{
+            "symbol": "AVAH",
+            "publishedDate": "2026-06-03T06:35:00.000Z",
+            "newsURL": "https://example.com/avah",
+            "newsTitle": "RBC Capital Upgrades Aveanna Healthcare Holdings Inc (AVAH) to Outperform",
+            "newsBaseURL": "streetinsider.com",
+            "newsPublisher": "StreetInsider",
+            "newGrade": "Outperform",
+            "previousGrade": "Sector Perform",
+            "gradingCompany": "RBC Capital",
+            "action": "upgrade",
+            "priceWhenPosted": 6.47
+        }]))
+        .unwrap();
+
+        let normalized = normalize_rating_event(&rows[0]).unwrap();
+        assert_eq!(normalized.symbol, "AVAH");
+        assert_eq!(
+            normalized.published_at.to_rfc3339(),
+            "2026-06-03T06:35:00+00:00"
+        );
+        assert_eq!(normalized.new_grade.as_deref(), Some("Outperform"));
+        assert_eq!(normalized.previous_grade.as_deref(), Some("Sector Perform"));
+        assert_eq!(normalized.grading_company.as_deref(), Some("RBC Capital"));
+        assert_eq!(normalized.price_when_posted, Some(6.47));
     }
 }

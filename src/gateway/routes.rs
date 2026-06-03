@@ -1406,6 +1406,7 @@ fn actions_for_requirement(requirement_key: &str) -> &'static [&'static str] {
             "fmp_price_target_consensus",
             "fmp_grades_historical",
             "fmp_price_target_news",
+            "fmp_grades_latest_news",
         ],
         "product_research" => &["gdelt_doc_search", "bing_news_rss_search"],
         _ => &["gdelt_doc_search", "bing_news_rss_search"],
@@ -2862,6 +2863,9 @@ async fn get_brain_status(
                   UNION ALL
                   SELECT max(ingested_at) AS at
                     FROM analyst_price_target_event WHERE symbol = $1
+                  UNION ALL
+                  SELECT max(ingested_at) AS at
+                    FROM analyst_rating_event WHERE symbol = $1
               ) opinion_dates) AS analyst_opinion_at,
               (SELECT count(*) FROM analyst_price_target_snapshot
                 WHERE symbol = $1) AS price_target_snapshots,
@@ -2870,6 +2874,9 @@ async fn get_brain_status(
               (SELECT count(*) FROM analyst_price_target_event
                 WHERE symbol = $1
                   AND published_at > now() - interval '90 days') AS price_target_events,
+              (SELECT count(*) FROM analyst_rating_event
+                WHERE symbol = $1
+                  AND published_at > now() - interval '90 days') AS rating_events,
               (SELECT max(retrieved_at) FROM research_evidence WHERE symbol = $1) AS research_at,
               (SELECT max(ingested_at) FROM company_fact WHERE symbol = $1) AS fundamentals_at,
               (SELECT max(ingested_at) FROM ingest_event
@@ -3210,11 +3217,12 @@ async fn get_brain_status(
             source_json("analyst_opinion", &analyst_opinion_status, analyst_opinion_at, analyst_opinion_health, source_tasks_for(
                 &task_rows,
                 &["analyst_opinion"],
-                &["fmp_price_target_consensus", "fmp_grades_historical", "fmp_price_target_news"],
+                &["fmp_price_target_consensus", "fmp_grades_historical", "fmp_price_target_news", "fmp_grades_latest_news"],
             ), json!({
                 "price_target_snapshots": row.try_get::<i64, _>("price_target_snapshots").unwrap_or(0),
                 "recommendation_snapshots": row.try_get::<i64, _>("recommendation_snapshots").unwrap_or(0),
                 "price_target_events": row.try_get::<i64, _>("price_target_events").unwrap_or(0),
+                "rating_events": row.try_get::<i64, _>("rating_events").unwrap_or(0),
             })),
             source_json("research", &research_status, research_at, research_health, source_tasks_for(
                 &task_rows,
@@ -4941,6 +4949,7 @@ mod tests {
                 "fmp_price_target_consensus",
                 "fmp_grades_historical",
                 "fmp_price_target_news",
+                "fmp_grades_latest_news",
             ],
         );
         let price = source_tasks_for(&rows, &["price_history"], &["twse_price_backfill"]);

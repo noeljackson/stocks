@@ -118,12 +118,29 @@ which parent conditions would invalidate the theme. Ticker thesis drafting
 receives linked parent theses and must either use them as context, reject them
 for the specific symbol, or call out contradictions.
 
-`brain_journal_entry` is the daily narrative read layer. It is append-only and
-is generated from source rows such as attention, evidence, source tasks, thesis
-history, parent thesis history, and the macro dislocation map. It should link
-back to those rows; it should not mutate ticker, thesis, decision, or position
-state. The UI exposes it as `/journal/YYYY-MM-DD` with entry pagination; the
-Brain drawer links to it but does not embed it.
+`brain_journal_entry` is the daily receipt layer behind the Brain Journal. It is
+append-only and is generated from source rows such as attention, evidence,
+source tasks, thesis history, parent thesis history, and the macro dislocation
+map. It should link back to those rows; it should not mutate ticker, thesis,
+decision, or position state.
+
+The UI exposes `/journal/YYYY-MM-DD` as a daily Brain memo first, not as a raw
+event list. The memo is a deterministic overview computed from current universe
+state plus the date's source-backed rows:
+
+```text
+Market Read        what macro/regime posture says and what parent evidence is missing
+Top Candidates     thesis-backed names with acceptable setup/freshness
+Wait For Setup     bullish or active theses where the chart says do not chase
+Theme Pressure     macro/sector/theme views steering the universe
+News And Evidence  source-backed facts that landed for the date
+Research Focus     blockers, stale acquisition, queued research, and curious gaps
+Receipts           paged `brain_journal_entry` source rows
+```
+
+The Brain drawer links to the journal but does not embed it. The drawer is for
+live macro/sector/attention state; the journal is for the dated readout of what
+the Brain thinks about the universe and why.
 
 ## Attention Contract
 

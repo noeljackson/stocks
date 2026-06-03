@@ -226,6 +226,88 @@ fn journal_thesis_state_importance(to_state: &str) -> i32 {
     }
 }
 
+fn journal_thesis_state_score(state: Option<&str>) -> i32 {
+    match state.unwrap_or_default() {
+        "actionable" => 44,
+        "armed" => 40,
+        "building_conviction" => 34,
+        "position_open" => 28,
+        "forming" => 22,
+        _ => 0,
+    }
+}
+
+fn journal_technical_score(technical_state: Option<&str>, entry_stance: Option<&str>) -> i32 {
+    match (
+        technical_state.unwrap_or_default(),
+        entry_stance.unwrap_or_default(),
+    ) {
+        ("constructive", _) => 24,
+        ("base_building", _) | (_, "wait_breakout") => 22,
+        (_, "constructive") => 18,
+        ("extended", _) | (_, "avoid_chase") => -18,
+        ("deteriorating", _) | (_, "avoid") => -30,
+        ("unknown", _) | (_, "wait_data") => -6,
+        _ => 0,
+    }
+}
+
+fn journal_freshness_score(freshness: Option<&str>) -> i32 {
+    match freshness.unwrap_or_default() {
+        "fresh" => 15,
+        "stale" => -8,
+        "missing" => -14,
+        "blocked" => -24,
+        _ => 0,
+    }
+}
+
+fn journal_direction_is_bullish(direction: Option<&str>) -> bool {
+    matches!(
+        direction.unwrap_or_default(),
+        "up" | "bull" | "bullish" | "long" | "risk_on"
+    )
+}
+
+fn journal_direction_is_bearish(direction: Option<&str>) -> bool {
+    matches!(
+        direction.unwrap_or_default(),
+        "down" | "bear" | "bearish" | "short" | "risk_off"
+    )
+}
+
+fn journal_waits_for_setup(technical_state: Option<&str>, entry_stance: Option<&str>) -> bool {
+    matches!(technical_state.unwrap_or_default(), "extended")
+        || matches!(entry_stance.unwrap_or_default(), "avoid_chase")
+}
+
+fn journal_candidate_score(
+    state: Option<&str>,
+    direction: Option<&str>,
+    technical_state: Option<&str>,
+    entry_stance: Option<&str>,
+    freshness: Option<&str>,
+    tier: i32,
+    domain_fit: Option<f64>,
+) -> i32 {
+    let mut score = journal_thesis_state_score(state)
+        + journal_technical_score(technical_state, entry_stance)
+        + journal_freshness_score(freshness)
+        + match tier {
+            1 => 12,
+            2 => 7,
+            _ => 3,
+        }
+        + domain_fit.map_or(0, |v| (v / 10.0).round() as i32);
+
+    if journal_direction_is_bullish(direction) {
+        score += 8;
+    } else if journal_direction_is_bearish(direction) {
+        score -= 12;
+    }
+    score.clamp(0, 100)
+}
+
 fn journal_label(value: &str) -> String {
     value.replace('_', " ")
 }
@@ -1629,10 +1711,12 @@ impl Store {
         } else {
             (all_total + per_page - 1) / per_page
         };
+        let overview = self.brain_journal_overview(day, &all_by_category).await?;
         Ok(serde_json::json!({
             "as_of": Utc::now(),
             "date": day.format("%Y-%m-%d").to_string(),
             "synthesis": serde_json::Value::Null,
+            "overview": overview,
             "summary": {
                 "total": all_total,
                 "visible": visible_total,
@@ -1648,6 +1732,346 @@ impl Store {
                 "has_next": total_pages > 0 && page < total_pages,
             },
             "entries": entries,
+        }))
+    }
+
+    async fn brain_journal_overview(
+        &self,
+        day: NaiveDate,
+        counts: &std::collections::BTreeMap<String, i64>,
+    ) -> Result<serde_json::Value> {
+        let active = self
+            .active_tickers()
+            .await
+            .context("journal_active_tickers")?;
+        let mut top_candidates = Vec::new();
+        let mut wait_for_setup = Vec::new();
+        let mut risk_flags = Vec::new();
+
+        for ticker in active.iter().filter(|t| t.open_theses > 0) {
+            let state = ticker.thesis_state.as_deref();
+            let direction = ticker.thesis_direction.as_deref();
+            let technical = ticker.technical_state.as_deref();
+            let entry = ticker.entry_stance.as_deref();
+            let freshness = Some(ticker.freshness_status.as_str());
+            let score = journal_candidate_score(
+                state,
+                direction,
+                technical,
+                entry,
+                freshness,
+                ticker.tier,
+                ticker.domain_fit,
+            );
+            let item = serde_json::json!({
+                "symbol": ticker.symbol.clone(),
+                "score": score,
+                "thesis_id": ticker.latest_thesis_id,
+                "thesis_state": ticker.thesis_state.clone(),
+                "thesis_direction": ticker.thesis_direction.clone(),
+                "technical_state": ticker.technical_state.clone(),
+                "entry_stance": ticker.entry_stance.clone(),
+                "technical_pct_vs_200d": ticker.technical_pct_vs_200d,
+                "freshness_status": ticker.freshness_status.clone(),
+                "open_attention": ticker.open_attention,
+                "open_evidence": ticker.open_evidence,
+                "blocking_evidence": ticker.blocking_evidence,
+                "due_source_tasks": ticker.due_source_tasks,
+                "parent_themes": ticker.parent_themes.clone(),
+                "reason": format!(
+                    "{} thesis, {} direction, {} technicals, {} entry stance, {} freshness",
+                    state.unwrap_or("no-state"),
+                    direction.unwrap_or("no-direction"),
+                    technical.unwrap_or("unknown"),
+                    entry.unwrap_or("wait_data"),
+                    ticker.freshness_status
+                ),
+            });
+
+            let bullish = journal_direction_is_bullish(direction);
+            let bearish = journal_direction_is_bearish(direction);
+            let setup_wait = journal_waits_for_setup(technical, entry);
+            if setup_wait && (bullish || matches!(state, Some("actionable" | "armed"))) {
+                wait_for_setup.push((score, item.clone()));
+            } else if !bearish
+                && !setup_wait
+                && score >= 45
+                && !matches!(ticker.freshness_status.as_str(), "blocked" | "missing")
+            {
+                top_candidates.push((score, item.clone()));
+            }
+
+            if bearish
+                || matches!(technical, Some("deteriorating"))
+                || matches!(ticker.freshness_status.as_str(), "blocked")
+                || ticker.blocking_evidence > 0
+            {
+                risk_flags.push((100 - score, item));
+            }
+        }
+
+        top_candidates.sort_by(|a, b| b.0.cmp(&a.0));
+        wait_for_setup.sort_by(|a, b| b.0.cmp(&a.0));
+        risk_flags.sort_by(|a, b| b.0.cmp(&a.0));
+        let top_candidates = top_candidates
+            .into_iter()
+            .take(6)
+            .map(|(_, item)| item)
+            .collect::<Vec<_>>();
+        let wait_for_setup = wait_for_setup
+            .into_iter()
+            .take(6)
+            .map(|(_, item)| item)
+            .collect::<Vec<_>>();
+        let risk_flags = risk_flags
+            .into_iter()
+            .take(6)
+            .map(|(_, item)| item)
+            .collect::<Vec<_>>();
+
+        let market_state = sqlx::query(
+            r#"SELECT as_of, regime, capitulation, indicators
+                 FROM market_state
+             ORDER BY as_of DESC
+                LIMIT 1"#,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .context("journal_market_state")?
+        .map(|r| {
+            let as_of: DateTime<Utc> = r.try_get("as_of")?;
+            Ok::<_, anyhow::Error>(serde_json::json!({
+                "as_of": as_of,
+                "regime": r.try_get::<String, _>("regime")?,
+                "capitulation": r.try_get::<bool, _>("capitulation")?,
+                "indicators": r.try_get::<serde_json::Value, _>("indicators")?,
+            }))
+        })
+        .transpose()?;
+
+        let macro_thesis = sqlx::query(
+            r#"SELECT name, state, direction, summary, missing_evidence,
+                      last_evaluated_at,
+                      CASE
+                        WHEN last_evaluated_at IS NULL THEN 'missing'
+                        WHEN last_evaluated_at < now() - (freshness_target_minutes::text || ' minutes')::interval THEN 'stale'
+                        ELSE 'fresh'
+                      END AS freshness
+                 FROM brain_thesis
+                WHERE active = true AND scope = 'macro'
+             ORDER BY updated_at DESC
+                LIMIT 1"#,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .context("journal_macro_thesis")?
+        .map(|r| {
+            let last_evaluated_at: Option<DateTime<Utc>> = r.try_get("last_evaluated_at")?;
+            Ok::<_, anyhow::Error>(serde_json::json!({
+                "name": r.try_get::<String, _>("name")?,
+                "state": r.try_get::<String, _>("state")?,
+                "direction": r.try_get::<String, _>("direction")?,
+                "summary": r.try_get::<String, _>("summary")?,
+                "missing_evidence": r.try_get::<serde_json::Value, _>("missing_evidence")?,
+                "last_evaluated_at": last_evaluated_at,
+                "freshness": r.try_get::<String, _>("freshness")?,
+            }))
+        })
+        .transpose()?;
+
+        let theme_rows = sqlx::query(
+            r#"SELECT bt.name, bt.scope, bt.state, bt.direction, bt.summary,
+                      bt.missing_evidence,
+                      (SELECT count(*) FROM brain_thesis_ticker btt WHERE btt.brain_thesis_id = bt.id) AS linked_tickers,
+                      CASE
+                        WHEN bt.last_evaluated_at IS NULL THEN 'missing'
+                        WHEN bt.last_evaluated_at < now() - (bt.freshness_target_minutes::text || ' minutes')::interval THEN 'stale'
+                        ELSE 'fresh'
+                      END AS freshness
+                 FROM brain_thesis bt
+                WHERE bt.active = true
+                  AND bt.scope <> 'macro'
+             ORDER BY CASE
+                        WHEN bt.state IN ('active', 'forming') THEN 0
+                        WHEN bt.state = 'weakening' THEN 1
+                        ELSE 2
+                      END,
+                      CASE
+                        WHEN bt.last_evaluated_at IS NULL THEN 1
+                        WHEN bt.last_evaluated_at < now() - (bt.freshness_target_minutes::text || ' minutes')::interval THEN 1
+                        ELSE 0
+                      END,
+                      bt.updated_at DESC
+                LIMIT 6"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("journal_theme_rows")?;
+        let themes = theme_rows
+            .into_iter()
+            .map(|r| {
+                Ok(serde_json::json!({
+                    "name": r.try_get::<String, _>("name")?,
+                    "scope": r.try_get::<String, _>("scope")?,
+                    "state": r.try_get::<String, _>("state")?,
+                    "direction": r.try_get::<String, _>("direction")?,
+                    "summary": r.try_get::<String, _>("summary")?,
+                    "missing_evidence": r.try_get::<serde_json::Value, _>("missing_evidence")?,
+                    "freshness": r.try_get::<String, _>("freshness")?,
+                    "linked_tickers": r.try_get::<i64, _>("linked_tickers")?,
+                }))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let start_naive = day
+            .and_hms_opt(0, 0, 0)
+            .ok_or_else(|| anyhow::anyhow!("invalid journal day"))?;
+        let start = DateTime::<Utc>::from_naive_utc_and_offset(start_naive, Utc);
+        let end = start + ChronoDuration::days(1);
+        let evidence_rows = sqlx::query(
+            r#"SELECT symbol, kind, summary, source, url, strength, polarity, observed_at
+                 FROM evidence_item
+                WHERE (
+                        created_at >= $1 AND created_at < $2
+                      )
+                  AND kind IN ('news', 'product_research', 'estimate_revision', 'rating_change', 'filing')
+             ORDER BY COALESCE(strength, 0.5) DESC,
+                      abs(COALESCE(polarity, 0.0)) DESC,
+                      observed_at DESC
+                LIMIT 8"#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(&self.pool)
+        .await
+        .context("journal_news_recap")?;
+        let news_recap = evidence_rows
+            .into_iter()
+            .map(|r| {
+                let observed_at: DateTime<Utc> = r.try_get("observed_at")?;
+                Ok(serde_json::json!({
+                    "symbol": r.try_get::<String, _>("symbol")?,
+                    "kind": r.try_get::<String, _>("kind")?,
+                    "summary": r.try_get::<String, _>("summary")?,
+                    "source": r.try_get::<String, _>("source")?,
+                    "url": r.try_get::<Option<String>, _>("url")?,
+                    "strength": r.try_get::<Option<f64>, _>("strength")?,
+                    "polarity": r.try_get::<Option<f64>, _>("polarity")?,
+                    "observed_at": observed_at,
+                }))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let focus_rows = sqlx::query(
+            r#"SELECT category, source_kind, source_id, symbol, title, summary,
+                      importance, occurred_at
+                 FROM brain_journal_entry
+                WHERE journal_date = $1
+                  AND category IN ('research', 'curious', 'blocked')
+             ORDER BY CASE category
+                        WHEN 'blocked' THEN 0
+                        WHEN 'research' THEN 1
+                        ELSE 2
+                      END,
+                      importance DESC,
+                      occurred_at DESC
+                LIMIT 8"#,
+        )
+        .bind(day)
+        .fetch_all(&self.pool)
+        .await
+        .context("journal_research_focus")?;
+        let research_focus = focus_rows
+            .into_iter()
+            .map(|r| {
+                let occurred_at: DateTime<Utc> = r.try_get("occurred_at")?;
+                Ok(serde_json::json!({
+                    "category": r.try_get::<String, _>("category")?,
+                    "source_kind": r.try_get::<String, _>("source_kind")?,
+                    "source_id": r.try_get::<String, _>("source_id")?,
+                    "symbol": r.try_get::<Option<String>, _>("symbol")?,
+                    "title": r.try_get::<String, _>("title")?,
+                    "summary": r.try_get::<String, _>("summary")?,
+                    "importance": r.try_get::<i32, _>("importance")?,
+                    "occurred_at": occurred_at,
+                }))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let market_regime = market_state
+            .as_ref()
+            .and_then(|v| v.get("regime"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let macro_direction = macro_thesis
+            .as_ref()
+            .and_then(|v| v.get("direction"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let blocked = counts.get("blocked").copied().unwrap_or(0);
+        let changed = counts.get("changed").copied().unwrap_or(0);
+        let top_candidates_count = top_candidates.len();
+        let wait_for_setup_count = wait_for_setup.len();
+        let risk_flags_count = risk_flags.len();
+        let news_recap_count = news_recap.len();
+        let research_focus_count = research_focus.len();
+        let headline = if top_candidates.is_empty() {
+            format!(
+                "No clean entry candidates surfaced; {wait_count} bullish or active names need setup and {blocked} blocker(s) need attention.",
+                wait_count = wait_for_setup_count
+            )
+        } else {
+            format!(
+                "{} clean candidate(s), {} setup wait(s), {} changed item(s), {} blocker(s).",
+                top_candidates_count, wait_for_setup_count, changed, blocked
+            )
+        };
+
+        Ok(serde_json::json!({
+            "as_of": Utc::now(),
+            "headline": headline,
+            "market": {
+                "label": format!("market {market_regime} · macro {macro_direction}"),
+                "regime": market_regime,
+                "macro_direction": macro_direction,
+                "state": macro_thesis
+                    .as_ref()
+                    .and_then(|v| v.get("state"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("missing"),
+                "freshness": macro_thesis
+                    .as_ref()
+                    .and_then(|v| v.get("freshness"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("missing"),
+                "summary": macro_thesis
+                    .as_ref()
+                    .and_then(|v| v.get("summary"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("No macro thesis is active."),
+                "missing_evidence": macro_thesis
+                    .as_ref()
+                    .and_then(|v| v.get("missing_evidence"))
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([])),
+                "market_state": market_state,
+            },
+            "top_candidates": top_candidates,
+            "wait_for_setup": wait_for_setup,
+            "risk_flags": risk_flags,
+            "themes": themes,
+            "news_recap": news_recap,
+            "research_focus": research_focus,
+            "counts": {
+                "active_universe": active.len(),
+                "top_candidates": top_candidates_count,
+                "wait_for_setup": wait_for_setup_count,
+                "risk_flags": risk_flags_count,
+                "news_recap": news_recap_count,
+                "research_focus": research_focus_count,
+                "changed": changed,
+                "blocked": blocked,
+            },
         }))
     }
 
@@ -4272,5 +4696,45 @@ mod tests {
 
         assert_eq!(journal_thesis_state_importance("actionable"), 90);
         assert_eq!(journal_thesis_state_importance("forming"), 65);
+    }
+
+    #[test]
+    fn journal_candidate_score_separates_thesis_quality_from_entry_setup() {
+        let clean = journal_candidate_score(
+            Some("actionable"),
+            Some("up"),
+            Some("constructive"),
+            Some("constructive"),
+            Some("fresh"),
+            1,
+            Some(80.0),
+        );
+        let extended = journal_candidate_score(
+            Some("actionable"),
+            Some("up"),
+            Some("extended"),
+            Some("avoid_chase"),
+            Some("fresh"),
+            1,
+            Some(80.0),
+        );
+        let blocked = journal_candidate_score(
+            Some("actionable"),
+            Some("up"),
+            Some("constructive"),
+            Some("constructive"),
+            Some("blocked"),
+            1,
+            Some(80.0),
+        );
+
+        assert!(clean > extended);
+        assert!(clean > blocked);
+        assert!(journal_waits_for_setup(
+            Some("extended"),
+            Some("avoid_chase")
+        ));
+        assert!(journal_direction_is_bullish(Some("up")));
+        assert!(journal_direction_is_bearish(Some("down")));
     }
 }

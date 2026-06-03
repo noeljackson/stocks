@@ -471,6 +471,12 @@
     rightTab = entry.thesis_id ? "theses" : "overview";
   }
 
+  async function openJournalSymbol(symbol: string) {
+    routePage = "workspace";
+    await selectSymbol(symbol);
+    rightTab = "overview";
+  }
+
   function brainThingText(value: unknown): string {
     if (typeof value === "string") return value;
     if (!value || typeof value !== "object" || Array.isArray(value)) return String(value ?? "");
@@ -2362,6 +2368,7 @@
       onDateChange={changeJournalDate}
       onPageChange={changeJournalPage}
       onOpenEntry={openJournalEntry}
+      onOpenSymbol={openJournalSymbol}
       onBack={() => openWorkspace()}
     />
   {:else}

@@ -17,8 +17,9 @@ file an issue and link it from the relevant row's "status" column.
 **Current vendor stack (as of 2026-06-03):**
 - **FMP Starter** ($22/mo) — primary: daily/intraday price bars, screener
   discovery, analyst estimate snapshots/revisions, price-target consensus,
-  recommendation mix, price-target events, global grade-change events, and
-  company news without upstream sentiment
+  recommendation mix, price-target events, global grade-change events,
+  company profile, earnings calendar, and company news without upstream
+  sentiment
 - **Massive Stocks Starter** ($29/mo) — kept for: stock news with per-article
   sentiment where FMP has no equivalent
 - **SEC EDGAR** (free) — CIK lookup, filing metadata, and XBRL company facts;
@@ -88,8 +89,8 @@ proposed discovery candidates, capped per provider loop. Dev defaults are
 | Company facts (XBRL) | Evaluator metrics (`SYMBOL.gross_margin_pct`, etc.), context maintainer fundamentals block | **SEC EDGAR** | free, public | `/api/xbrl/companyfacts/CIK<N>.json` | wired — `src/ingest/xbrl.rs`; tiered deep universe so active tickers and top candidates acquire facts without starving the freshness loop |
 | CIK lookup | Resolving ticker → CIK before XBRL pull | SEC EDGAR | free | `/files/company_tickers.json` | wired — `src/ingest/sec.rs`; fetched dynamically with seeded fallback for known ADRs |
 | Filing metadata | 8-K/10-Q/10-K submission watch between slower XBRL fact refreshes | SEC EDGAR | free | `/submissions/CIK<N>.json` | wired — `src/ingest/edgar.rs`; owns `sec_edgar_submissions` source tasks on a 30-minute freshness loop |
-| Earnings calendar (upcoming + history) | Goalpost dates, horizon_at validation, beat/miss pattern | **FMP** | Starter | `/stable/earnings?symbol=` returns `epsActual/epsEstimated/revenueActual/revenueEstimated/lastUpdated`. `/stable/earnings-calendar?from=&to=` for global upcoming | not wired — tracked by #2 |
-| Company profile | Cluster classification context, market cap | FMP | Starter | `/stable/profile?symbol=` | not wired — tracked by #2 |
+| Earnings calendar (upcoming + recent history) | Goalpost dates, horizon_at validation, beat/miss pattern, pending catalyst timing | **FMP** | Starter | `/stable/earnings?symbol=&limit=` returns upcoming + recent rows with `epsActual/epsEstimated/revenueActual/revenueEstimated/lastUpdated`; global `/stable/earnings-calendar?from=&to=` exists but large windows cap at 4,000 rows | wired — `src/ingest/fmp_profile_calendar.rs` + `src/ingest/fmp_profile_calendar_service.rs`, persisted to `earnings_calendar_event` and normalized as `earnings_calendar` evidence |
+| Company profile | Cluster classification context, market cap, sector/industry, exchange/country, issuer flags | FMP | Starter | `/stable/profile?symbol=` returns profile rows for US and supported international tickers such as `2454.TW` | wired — `src/ingest/fmp_profile_calendar.rs` + `src/ingest/fmp_profile_calendar_service.rs`, persisted to `company_profile` |
 | Insider transactions (Form 4/144) | Cross-check LLM context narrative claims | SEC EDGAR | free | `/cgi-bin/browse-edgar?action=getcompany&CIK=...&type=4` | not wired — tracked by #2 |
 | 13F holdings | Lagged institutional positioning | SEC EDGAR | free | `/cgi-bin/browse-edgar?...&type=13F-HR` | not wired — tracked by #2 |
 
@@ -273,11 +274,11 @@ absent names = not yet configured.
 **2026-06-03 — data-source audit after Brain/workflow expansion**
 - GitHub issue #2 was stale: it still said only EDGAR and FRED were ingesting.
   The actual stack now includes FMP daily/intraday price bars, screener
-  discovery, estimate snapshots/revisions, analyst opinion, FMP news, Massive
-  news+sentiment, SEC submissions, XBRL company facts, TWSE Taiwan fallback,
-  CBOE equity put/call + VIX close, selected FRED series, and GDELT/Bing product
-  research.
+  discovery, estimate snapshots/revisions, analyst opinion, company profile,
+  earnings calendar, FMP news, Massive news+sentiment, SEC submissions, XBRL
+  company facts, TWSE Taiwan fallback, CBOE equity put/call + VIX close,
+  selected FRED series, and GDELT/Bing product research.
 - Remaining high-leverage gaps are narrower and should be tracked explicitly:
-  earnings calendar/company profile, options chains,
+  options chains,
   insider/Form 4 and 13F positioning, broader macro/breadth inputs, direct
   commodity/weather/inventory data, and transcript/video ingestion (#245).

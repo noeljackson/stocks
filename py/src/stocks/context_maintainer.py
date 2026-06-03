@@ -117,6 +117,43 @@ async def _load_company_facts(pool: asyncpg.Pool, symbol: str) -> list[dict]:
     return out
 
 
+async def _load_company_profile(pool: asyncpg.Pool, symbol: str) -> dict | None:
+    row = await pool.fetchrow(
+        """SELECT company_name, currency, market_cap, beta, exchange,
+                  exchange_full_name, industry, sector, country, website,
+                  description, ceo, full_time_employees, ipo_date,
+                  is_etf, is_adr, is_fund, is_actively_trading,
+                  profile_at, updated_at
+             FROM company_profile
+            WHERE symbol = $1""",
+        symbol,
+    )
+    if row is None:
+        return None
+    return {
+        "company_name": row["company_name"],
+        "currency": row["currency"],
+        "market_cap": _f(row["market_cap"]),
+        "beta": _f(row["beta"]),
+        "exchange": row["exchange"],
+        "exchange_full_name": row["exchange_full_name"],
+        "industry": row["industry"],
+        "sector": row["sector"],
+        "country": row["country"],
+        "website": row["website"],
+        "description": row["description"],
+        "ceo": row["ceo"],
+        "full_time_employees": row["full_time_employees"],
+        "ipo_date": row["ipo_date"].isoformat() if row["ipo_date"] else None,
+        "is_etf": row["is_etf"],
+        "is_adr": row["is_adr"],
+        "is_fund": row["is_fund"],
+        "is_actively_trading": row["is_actively_trading"],
+        "profile_at": row["profile_at"].isoformat(),
+        "updated_at": row["updated_at"].isoformat(),
+    }
+
+
 def _f(value) -> float | None:
     return None if value is None else float(value)
 
@@ -282,6 +319,33 @@ async def _load_estimate_revisions(
             "revenue_delta": _f(r["revenue_delta"]),
             "revenue_delta_pct": _f(r["revenue_delta_pct"]),
             "detected_at": r["detected_at"].isoformat(),
+        }
+        for r in rows
+    ]
+
+
+async def _load_earnings_calendar(pool: asyncpg.Pool, symbol: str) -> list[dict]:
+    rows = await pool.fetch(
+            """SELECT report_date, eps_actual, eps_estimated, revenue_actual,
+                  revenue_estimated, last_updated, ingested_at, updated_at
+             FROM earnings_calendar_event
+            WHERE symbol = $1
+              AND report_date >= current_date - 30
+              AND report_date <= current_date + 180
+         ORDER BY report_date ASC
+            LIMIT 12""",
+        symbol,
+    )
+    return [
+        {
+            "report_date": r["report_date"].isoformat(),
+            "eps_actual": _f(r["eps_actual"]),
+            "eps_estimated": _f(r["eps_estimated"]),
+            "revenue_actual": _f(r["revenue_actual"]),
+            "revenue_estimated": _f(r["revenue_estimated"]),
+            "last_updated": r["last_updated"].isoformat() if r["last_updated"] else None,
+            "ingested_at": r["ingested_at"].isoformat(),
+            "updated_at": r["updated_at"].isoformat(),
         }
         for r in rows
     ]
@@ -475,8 +539,10 @@ def _build_user_message(
     symbol: str,
     prior: dict | None,
     events: list[dict],
+    company_profile: dict | None,
     facts: list[dict],
     price_snapshot: dict | None,
+    earnings_calendar: list[dict],
     news: list[dict],
     estimate_revisions: list[dict],
     analyst_opinion: dict,
@@ -494,8 +560,10 @@ def _build_user_message(
             "today": today,
             "prior_context": prior,
             "new_events": events,
+            "company_profile": company_profile,
             "company_facts": facts,
             "price_snapshot": price_snapshot,
+            "earnings_calendar": earnings_calendar,
             "recent_news": news,
             "estimate_revisions": estimate_revisions,
             "analyst_opinion": analyst_opinion,
@@ -709,8 +777,10 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
         prior = await _load_prior_context(pool, symbol)
         since = dt.datetime.fromisoformat(prior["as_of"]) if prior else None
         events = await _load_events(pool, symbol, since, limit)
+        company_profile = await _load_company_profile(pool, symbol)
         facts = await _load_company_facts(pool, symbol)
         price_snapshot = await _load_price_snapshot(pool, symbol)
+        earnings_calendar = await _load_earnings_calendar(pool, symbol)
         news = await _load_recent_news(pool, symbol, since)
         estimate_revisions = await _load_estimate_revisions(pool, symbol, since)
         analyst_opinion = await _load_analyst_opinion(pool, symbol)
@@ -727,14 +797,17 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
             pool, symbol, evidence_counts, source_health,
         )
         log.info(
-            "symbol=%s prior=%s events_count=%d facts_count=%d "
+            "symbol=%s prior=%s events_count=%d profile=%s facts_count=%d "
+            "earnings_count=%d "
             "news_count=%d revisions_count=%d analyst_opinion_events=%d "
             "evidence_items=%d research_count=%d "
             "price=%s missing_evidence=%d",
             symbol,
             f"v{prior['version']}" if prior else "none",
             len(events),
+            "yes" if company_profile else "no",
             len(facts),
+            len(earnings_calendar),
             len(news),
             len(estimate_revisions),
             len(analyst_opinion.get("recent_price_target_events", []))
@@ -759,7 +832,9 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
         prior_has_market = bool(prior and prior.get("market"))
         if (
             not events
+            and company_profile is None
             and not facts
+            and not earnings_calendar
             and not news
             and not estimate_revisions
             and not evidence_items
@@ -781,8 +856,10 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
             symbol,
             prior,
             events,
+            company_profile,
             facts,
             price_snapshot,
+            earnings_calendar,
             news,
             estimate_revisions,
             analyst_opinion,

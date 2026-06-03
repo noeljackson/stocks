@@ -69,8 +69,10 @@ def test_context_user_message_includes_normalized_evidence_items() -> None:
         "MU",
         prior=None,
         events=[],
+        company_profile={"company_name": "Micron Technology"},
         facts=[],
         price_snapshot=None,
+        earnings_calendar=[{"report_date": "2026-06-25"}],
         news=[],
         estimate_revisions=[],
         analyst_opinion={},
@@ -90,6 +92,8 @@ def test_context_user_message_includes_normalized_evidence_items() -> None:
 
     parsed = json.loads(msg)
     assert parsed["evidence_items"][0]["summary"] == "MU HBM customer win"
+    assert parsed["company_profile"]["company_name"] == "Micron Technology"
+    assert parsed["earnings_calendar"][0]["report_date"] == "2026-06-25"
 
 
 def test_context_shift_evidence_skips_identical_context() -> None:
@@ -184,8 +188,10 @@ async def test_persist_context_upserts_context_shift_evidence_item() -> None:
 def test_assess_evidence_requirements_reports_missing_inputs() -> None:
     missing = assess_evidence_requirements({
         "price_bars": 12,
+        "company_profiles": 1,
         "filing_events": 1,
         "company_facts": 0,
+        "earnings_calendar_events": 1,
         "recent_news": 0,
         "estimate_snapshots": 4,
         "analyst_price_target_snapshots": 1,
@@ -220,12 +226,27 @@ def test_llm_missing_evidence_maps_recent_filing_checks_to_edgar_metadata() -> N
     }) == "filing_metadata"
 
 
+def test_llm_missing_evidence_maps_profile_and_earnings_items() -> None:
+    assert canonical_requirement_key({
+        "requirement_key": "market_cap_classification",
+        "source_type": "profile",
+        "reason": "Need sector and market cap metadata.",
+    }) == "company_profile"
+    assert canonical_requirement_key({
+        "requirement_key": "next_earnings_date",
+        "source_type": "catalysts",
+        "reason": "Need the upcoming earnings calendar date.",
+    }) == "earnings_calendar"
+
+
 def test_assess_evidence_requirements_attaches_source_health_state() -> None:
     missing = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "company_profiles": 1,
             "filing_events": 1,
             "company_facts": 0,
+            "earnings_calendar_events": 1,
             "recent_news": 1,
             "estimate_snapshots": 4,
             "analyst_price_target_snapshots": 1,
@@ -256,8 +277,10 @@ def test_assess_evidence_requirements_tracks_edgar_filing_metadata() -> None:
     missing = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "company_profiles": 1,
             "filing_events": 0,
             "company_facts": 2,
+            "earnings_calendar_events": 1,
             "recent_news": 1,
             "estimate_snapshots": 4,
             "analyst_price_target_snapshots": 1,
@@ -290,8 +313,10 @@ def test_assess_evidence_requirements_marks_running_sources_as_fetching() -> Non
     missing = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "company_profiles": 1,
             "filing_events": 1,
             "company_facts": 0,
+            "earnings_calendar_events": 1,
             "recent_news": 1,
             "estimate_snapshots": 4,
             "analyst_price_target_snapshots": 1,
@@ -319,8 +344,10 @@ def test_assess_evidence_requirements_reclaims_stale_running_sources() -> None:
     missing = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "company_profiles": 1,
             "filing_events": 1,
             "company_facts": 0,
+            "earnings_calendar_events": 1,
             "recent_news": 1,
             "estimate_snapshots": 4,
             "analyst_price_target_snapshots": 1,
@@ -351,8 +378,10 @@ def test_assess_evidence_requirements_marks_checked_sources_as_missing() -> None
     missing = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "company_profiles": 1,
             "filing_events": 1,
             "company_facts": 0,
+            "earnings_calendar_events": 1,
             "recent_news": 1,
             "estimate_snapshots": 4,
             "analyst_price_target_snapshots": 1,
@@ -381,8 +410,10 @@ def test_assess_evidence_requirements_tracks_product_research() -> None:
     missing = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "company_profiles": 1,
             "filing_events": 1,
             "company_facts": 2,
+            "earnings_calendar_events": 1,
             "recent_news": 1,
             "estimate_snapshots": 4,
             "analyst_price_target_snapshots": 1,
@@ -412,8 +443,10 @@ def test_product_research_ignores_global_health_until_symbol_checked() -> None:
     missing = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "company_profiles": 1,
             "filing_events": 1,
             "company_facts": 2,
+            "earnings_calendar_events": 1,
             "recent_news": 1,
             "estimate_snapshots": 4,
             "analyst_price_target_snapshots": 1,
@@ -444,8 +477,10 @@ def test_assess_evidence_requirements_tracks_analyst_opinion() -> None:
     missing = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "company_profiles": 1,
             "filing_events": 1,
             "company_facts": 2,
+            "earnings_calendar_events": 1,
             "recent_news": 1,
             "estimate_snapshots": 4,
             "analyst_price_target_snapshots": 0,
@@ -480,8 +515,10 @@ def test_build_source_tasks_maps_missing_requirement_to_fetch_work() -> None:
     [news] = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "company_profiles": 1,
             "filing_events": 1,
             "company_facts": 2,
+            "earnings_calendar_events": 1,
             "recent_news": 0,
             "estimate_snapshots": 4,
             "analyst_price_target_snapshots": 1,
@@ -515,8 +552,10 @@ def test_build_source_tasks_maps_rate_limit_to_provider_pause() -> None:
     [estimates] = assess_evidence_requirements(
         {
             "price_bars": 12,
+            "company_profiles": 1,
             "filing_events": 1,
             "company_facts": 2,
+            "earnings_calendar_events": 1,
             "recent_news": 1,
             "estimate_snapshots": 0,
             "analyst_price_target_snapshots": 1,
@@ -560,8 +599,10 @@ def test_build_source_tasks_applies_provider_wide_pause() -> None:
     [price] = assess_evidence_requirements(
         {
             "price_bars": 0,
+            "company_profiles": 1,
             "filing_events": 1,
             "company_facts": 2,
+            "earnings_calendar_events": 1,
             "recent_news": 1,
             "estimate_snapshots": 4,
             "analyst_price_target_snapshots": 1,
@@ -583,13 +624,50 @@ def test_build_source_tasks_applies_provider_wide_pause() -> None:
 def test_assess_evidence_requirements_empty_when_core_inputs_present() -> None:
     assert assess_evidence_requirements({
         "price_bars": 260,
+        "company_profiles": 1,
         "filing_events": 1,
         "company_facts": 20,
+        "earnings_calendar_events": 1,
         "recent_news": 5,
         "estimate_snapshots": 10,
         "analyst_price_target_snapshots": 1,
         "research_evidence": 3,
     }) == []
+
+
+def test_assess_evidence_requirements_tracks_profile_and_earnings_calendar() -> None:
+    missing = assess_evidence_requirements(
+        {
+            "price_bars": 260,
+            "company_profiles": 0,
+            "filing_events": 1,
+            "company_facts": 20,
+            "earnings_calendar_events": 0,
+            "recent_news": 5,
+            "estimate_snapshots": 10,
+            "analyst_price_target_snapshots": 1,
+            "research_evidence": 3,
+        },
+        {
+            "fmp_profile_calendar": {
+                "source": "fmp_profile_calendar",
+                "last_status": "no_new_rows",
+                "last_failure_kind": None,
+                "last_error": None,
+                "retry_after_at": None,
+                "rows_seen": 0,
+                "rows_inserted": 0,
+            },
+        },
+    )
+
+    by_key = {item["requirement_key"]: item for item in missing}
+    assert by_key["company_profile"]["fetch_actions"] == ["fmp_company_profile"]
+    assert by_key["earnings_calendar"]["fetch_actions"] == ["fmp_earnings_calendar"]
+    profile_tasks = build_source_tasks("NVDA", by_key["company_profile"])
+    earnings_tasks = build_source_tasks("NVDA", by_key["earnings_calendar"])
+    assert profile_tasks[0]["provider"] == "fmp"
+    assert earnings_tasks[0]["provider"] == "fmp"
 
 
 def test_satisfied_source_task_due_at_uses_requirement_freshness_window() -> None:

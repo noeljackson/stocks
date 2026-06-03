@@ -1364,8 +1364,10 @@ async fn relevant_brain_theses(
 
 fn canonical_requested_evidence(req: &RequestedEvidence) -> RequestedEvidence {
     let key = match req.requirement_key.trim() {
-        "price_history" | "company_facts" | "recent_news" | "analyst_estimates"
-        | "analyst_opinion" | "product_research" => req.requirement_key.trim(),
+        "price_history" | "company_profile" | "company_facts" | "earnings_calendar"
+        | "recent_news" | "analyst_estimates" | "analyst_opinion" | "product_research" => {
+            req.requirement_key.trim()
+        }
         _ => "product_research",
     };
     let priority = match req.priority.trim() {
@@ -1387,7 +1389,9 @@ fn canonical_requested_evidence(req: &RequestedEvidence) -> RequestedEvidence {
 fn source_type_for_requirement(requirement_key: &str) -> &'static str {
     match requirement_key {
         "price_history" => "price",
+        "company_profile" => "profile",
         "company_facts" => "fundamentals",
+        "earnings_calendar" => "catalysts",
         "recent_news" => "news",
         "analyst_estimates" => "estimates",
         "analyst_opinion" => "analyst_opinion",
@@ -1408,6 +1412,8 @@ fn actions_for_requirement(requirement_key: &str) -> &'static [&'static str] {
             "fmp_price_target_news",
             "fmp_grades_latest_news",
         ],
+        "company_profile" => &["fmp_company_profile"],
+        "earnings_calendar" => &["fmp_earnings_calendar"],
         "product_research" => &["gdelt_doc_search", "bing_news_rss_search"],
         _ => &["gdelt_doc_search", "bing_news_rss_search"],
     }
@@ -2851,9 +2857,23 @@ async fn get_brain_status(
               ) AS active_ticker,
               (SELECT max(ts) FROM price_bar WHERE symbol = $1) AS price_at,
               (SELECT max(ts)::date FROM price_bar WHERE symbol = $1) AS price_session,
+              (SELECT max(profile_at) FROM company_profile WHERE symbol = $1) AS profile_at,
+              (SELECT company_name FROM company_profile WHERE symbol = $1) AS profile_company_name,
+              (SELECT sector FROM company_profile WHERE symbol = $1) AS profile_sector,
+              (SELECT industry FROM company_profile WHERE symbol = $1) AS profile_industry,
+              (SELECT market_cap FROM company_profile WHERE symbol = $1) AS profile_market_cap,
+              (SELECT count(*) FROM company_profile WHERE symbol = $1) AS company_profiles,
               (SELECT max(ingested_at) FROM news_article WHERE symbol = $1) AS news_at,
               (SELECT max(published_at) FROM news_article WHERE symbol = $1) AS news_published_at,
               (SELECT max(snapshot_at) FROM estimate_snapshot WHERE symbol = $1) AS estimates_at,
+              (SELECT max(updated_at) FROM earnings_calendar_event WHERE symbol = $1) AS earnings_at,
+              (SELECT count(*) FROM earnings_calendar_event
+                WHERE symbol = $1
+                  AND report_date >= current_date - 30
+                  AND report_date <= current_date + 180) AS earnings_events,
+              (SELECT min(report_date) FROM earnings_calendar_event
+                WHERE symbol = $1
+                  AND report_date >= current_date) AS next_earnings_date,
               (SELECT max(at) FROM (
                   SELECT max(snapshot_at) AS at
                     FROM analyst_price_target_snapshot WHERE symbol = $1
@@ -2964,6 +2984,7 @@ async fn get_brain_status(
         "massive_news".to_string(),
         "fmp_estimates".to_string(),
         "fmp_analyst_opinion".to_string(),
+        "fmp_profile_calendar".to_string(),
         "xbrl".to_string(),
         "edgar".to_string(),
         "web_research".to_string(),
@@ -3027,22 +3048,28 @@ async fn get_brain_status(
     let news_health = health(&["fmp_news", "massive_news"], ChronoDuration::minutes(30));
     let estimates_health = health(&["fmp_estimates"], ChronoDuration::minutes(30));
     let analyst_opinion_health = health(&["fmp_analyst_opinion"], ChronoDuration::minutes(30));
+    let profile_health = health(&["fmp_profile_calendar"], ChronoDuration::minutes(30));
+    let earnings_health = health(&["fmp_profile_calendar"], ChronoDuration::minutes(30));
     let research_health = health(&["web_research"], ChronoDuration::hours(24));
     let fundamentals_health = health(&["xbrl"], ChronoDuration::minutes(360));
     let filings_health = health(&["edgar"], ChronoDuration::minutes(30));
     let news_status = source_status(&news_health).to_string();
     let estimates_status = source_status(&estimates_health).to_string();
     let analyst_opinion_status = source_status(&analyst_opinion_health).to_string();
+    let profile_status = source_status(&profile_health).to_string();
+    let earnings_status = source_status(&earnings_health).to_string();
     let research_status = source_status(&research_health).to_string();
     let fundamentals_status = source_status(&fundamentals_health).to_string();
     let filings_status = source_status(&filings_health).to_string();
 
     let price_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("price_at").ok();
     let price_session: Option<chrono::NaiveDate> = row.try_get("price_session").ok();
+    let profile_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("profile_at").ok();
     let news_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("news_at").ok();
     let news_published_at: Option<chrono::DateTime<chrono::Utc>> =
         row.try_get("news_published_at").ok();
     let estimates_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("estimates_at").ok();
+    let earnings_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("earnings_at").ok();
     let analyst_opinion_at: Option<chrono::DateTime<chrono::Utc>> =
         row.try_get("analyst_opinion_at").ok();
     let research_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("research_at").ok();
@@ -3077,6 +3104,8 @@ async fn get_brain_status(
         &news_health,
         &estimates_health,
         &analyst_opinion_health,
+        &profile_health,
+        &earnings_health,
         &research_health,
         &fundamentals_health,
         &filings_health,
@@ -3088,6 +3117,8 @@ async fn get_brain_status(
         news_status.as_str(),
         estimates_status.as_str(),
         analyst_opinion_status.as_str(),
+        profile_status.as_str(),
+        earnings_status.as_str(),
         research_status.as_str(),
         filings_status.as_str(),
     ]
@@ -3202,6 +3233,17 @@ async fn get_brain_status(
                 "expected_latest_session": expected_price_session,
                 "actual_latest_session": price_session,
             })),
+            source_json("profile", &profile_status, profile_at, profile_health, source_tasks_for(
+                &task_rows,
+                &["company_profile"],
+                &["fmp_company_profile"],
+            ), json!({
+                "company_profiles": row.try_get::<i64, _>("company_profiles").unwrap_or(0),
+                "company_name": row.try_get::<Option<String>, _>("profile_company_name").ok().flatten(),
+                "sector": row.try_get::<Option<String>, _>("profile_sector").ok().flatten(),
+                "industry": row.try_get::<Option<String>, _>("profile_industry").ok().flatten(),
+                "market_cap": row.try_get::<Option<f64>, _>("profile_market_cap").ok().flatten(),
+            })),
             source_json("news", &news_status, news_at, news_health, source_tasks_for(
                 &task_rows,
                 &["recent_news"],
@@ -3214,6 +3256,14 @@ async fn get_brain_status(
                 &["analyst_estimates"],
                 &["fmp_analyst_estimates"],
             ), json!({})),
+            source_json("earnings", &earnings_status, earnings_at, earnings_health, source_tasks_for(
+                &task_rows,
+                &["earnings_calendar"],
+                &["fmp_earnings_calendar"],
+            ), json!({
+                "earnings_events": row.try_get::<i64, _>("earnings_events").unwrap_or(0),
+                "next_earnings_date": row.try_get::<Option<chrono::NaiveDate>, _>("next_earnings_date").ok().flatten(),
+            })),
             source_json("analyst_opinion", &analyst_opinion_status, analyst_opinion_at, analyst_opinion_health, source_tasks_for(
                 &task_rows,
                 &["analyst_opinion"],
@@ -4869,6 +4919,19 @@ mod tests {
         assert_eq!(
             actions_for_requirement(&out.requirement_key),
             ["gdelt_doc_search", "bing_news_rss_search"]
+        );
+
+        let catalyst = canonical_requested_evidence(&RequestedEvidence {
+            requirement_key: "earnings_calendar".to_string(),
+            source_type: "whatever".to_string(),
+            priority: "high".to_string(),
+            reason: "Need next earnings date".to_string(),
+        });
+        assert_eq!(catalyst.requirement_key, "earnings_calendar");
+        assert_eq!(catalyst.source_type, "catalysts");
+        assert_eq!(
+            actions_for_requirement(&catalyst.requirement_key),
+            ["fmp_earnings_calendar"]
         );
     }
 

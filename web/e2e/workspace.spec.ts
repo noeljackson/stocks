@@ -1368,6 +1368,27 @@ test("overview shows selected symbol placement and watchlists", async ({ page })
   await expect(placement).toContainText("The scheduled brain loop may refresh context");
 });
 
+test("placement card directly promotes pool-only symbols", async ({ page }) => {
+  const calls = await mockApi(page);
+  await page.goto("/symbol/SNDK?p=overview");
+
+  const placement = page.getByTestId("symbol-status-card");
+  await expect(placement).toContainText("Discovery Pool");
+  await expect(placement).toContainText("known to discovery");
+  await expect(placement).toContainText("until it is promoted");
+
+  const promote = page.getByTestId("placement-promote");
+  await expect(promote).toContainText("Universe always included");
+  await promote.getByLabel("Core").check();
+  await promote.getByRole("button", { name: "Promote to Universe" }).click();
+
+  await expect.poll(() => calls.promoteBody).toEqual({
+    symbol: "SNDK",
+    tier: 2,
+    watchlist_ids: ["wl-core"],
+  });
+});
+
 test("workflow rail shows selected ticker state and routes to thesis review", async ({ page }) => {
   await mockApi(page);
   await page.goto("/");
@@ -1448,7 +1469,10 @@ test("theses tab shows nominated state for unpromoted tickers", async ({ page })
   await expect(nomination).toContainText("Promotion will add to monitored universe/watchlists and run context/thesis.");
   await expect(page.getByText("No thesis attempts")).toHaveCount(0);
 
-  await promotion.getByRole("button", { name: "Promote to Universe" }).click();
+  const placement = page.getByTestId("thesis-placement-strip");
+  await expect(placement).toContainText("Nominated");
+  await expect(placement).toContainText("nomination");
+  await placement.getByRole("button", { name: "Promote" }).click();
 
   await expect.poll(() => calls.confirmBody).toEqual({ watchlist_ids: [] });
 });

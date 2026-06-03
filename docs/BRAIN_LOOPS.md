@@ -138,6 +138,46 @@ and penalizes loved/extended chase setups; ticker thesis drafting receives the
 symbol's sector dislocation context so it can say "bullish but loved/extended"
 or "ignored with fresh evidence" without confusing direction with entry timing.
 
+## Brain Journal
+
+The Brain Journal is the daily operator-facing narrative layer. It is generated
+from deterministic system events first, not from free-form chat memory:
+
+```text
+attention_item
+thesis_state_history
+thesis_version_history
+source_task
+evidence_item
+brain_thesis_version_history
+macro dislocation map
+        |
+        v
+brain_journal_entry  append-only, deduped by event_key
+        |
+        v
+GET /api/brain-journal?date=YYYY-MM-DD
+        |
+        v
+Brain tab daily journal
+```
+
+Journal categories match the operator question:
+
+```text
+changed              we think this changed
+research             needs research
+curious              we are curious
+crowded_or_extended  loved/manic or technically crowded pockets
+ignored_or_hated     indifferent/hated pockets that may deserve work
+blocked              missing/rate-limited/failed data that blocked conclusions
+```
+
+The journal does not invent evidence. Entries link back to the source row through
+`source_kind`, `source_id`, `symbol`, `thesis_id`, `brain_thesis_id`, and
+`source_ref`. A later LLM synthesis pass can summarize the deterministic entry
+set, but the durable facts are already present before any model writes prose.
+
 ## Data Acquisition Loops
 
 These loops feed the brain. They should be broad enough to cover:
@@ -1060,13 +1100,14 @@ implemented first slice
   active ticker evidence sync bootstraps newly added requirement keys
   Python source_task worker claims and runs due web research tasks
   cognition sweep refreshes open evidence rows before choosing targets
+  Brain Journal materializes daily entries from deterministic event tables
 
 missing
   full producer adoption for attention retry/blocked transitions
   broader macro/factor/commodity data coverage for parent thesis generation
   persisted technical_state history and prompt-loop ingestion
   chat analyst routed prompt loop
-  daily Brain Journal overview (#254)
+  LLM synthesis pass over deterministic Brain Journal entries
   paid semantic research provider if GDELT recall is insufficient
   real broker/position execution state
   review packets
@@ -1077,6 +1118,6 @@ missing
 
 1. #128: make freshness orchestration real.
 2. #147: finish producer adoption for waiting/retry/blocked attention states.
-3. #254: add the daily Brain Journal so the Brain explains what changed today.
-4. Remaining #130 uplift: improve product/theme evidence recall for real forward views.
-5. #131/#25/#5: link decisions to real positions/fills.
+3. Remaining #130 uplift: improve product/theme evidence recall for real forward views.
+4. #131/#25/#5: link decisions to real positions/fills.
+5. Add the optional Brain Journal synthesis prompt over deterministic entries.

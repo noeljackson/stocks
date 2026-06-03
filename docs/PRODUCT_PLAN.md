@@ -45,6 +45,10 @@ brain_thesis
   current parent view for a factor/sector/theme
   examples: macro regime, copper, wheat, AI compute, regional banks
 
+brain_journal_entry
+  append-only daily overview of what changed, what needs research, what is
+  crowded, what is ignored, and what blocked conclusions
+
 symbol
   tradable equity/ETF/proxy or monitored company
 
@@ -1180,9 +1184,9 @@ Goal: know whether the product makes decisions better.
 2. Evidence acquisition FSM
    Turn missing evidence into scheduled work with retry/backoff, not static text.
 
-3. Brain Journal
-   Persist the daily operator overview: what changed, what the Brain is curious
-   about, what was queued, and what blocked conclusions.
+3. Brain Journal synthesis
+   Summarize the deterministic journal entries with a cited prompt pass; do not
+   let chat memory invent unsupported claims.
 
 4. Review packets and attention FSM adoption
    Every attention card should explain why it exists and how it resolves.

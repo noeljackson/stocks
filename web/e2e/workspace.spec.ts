@@ -361,6 +361,111 @@ async function mockApi(
       });
       return;
     }
+    if (path === "/api/brain-journal") {
+      await json(route, {
+        as_of: "2026-06-01T12:00:00Z",
+        date: "2026-06-01",
+        synthesis: null,
+        summary: {
+          total: 5,
+          by_category: {
+            changed: 1,
+            research: 1,
+            blocked: 1,
+            crowded_or_extended: 1,
+            ignored_or_hated: 1,
+          },
+        },
+        entries: [
+          {
+            id: 1,
+            date: "2026-06-01",
+            category: "changed",
+            source_kind: "thesis_version",
+            source_id: "201",
+            event_key: "thesis_version:201",
+            symbol: "OKTA",
+            brain_thesis_id: null,
+            thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+            title: "OKTA thesis updated to v2",
+            summary: "Estimate revisions and customer evidence changed the identity thesis.",
+            importance: 88,
+            occurred_at: "2026-06-01T10:00:00Z",
+            source_ref: { table: "thesis_version_history", id: 201 },
+            created_at: "2026-06-01T10:01:00Z",
+          },
+          {
+            id: 2,
+            date: "2026-06-01",
+            category: "research",
+            source_kind: "attention",
+            source_id: "7001",
+            event_key: "attention:7001",
+            symbol: "NVDA",
+            brain_thesis_id: null,
+            thesis_id: null,
+            title: "Research queued: NVDA via volume anomaly",
+            summary: "2.4x volume vs 20-day average while price is above the 200-day SMA.",
+            importance: 70,
+            occurred_at: "2026-06-01T09:30:00Z",
+            source_ref: { attention_id: 7001 },
+            created_at: "2026-06-01T09:31:00Z",
+          },
+          {
+            id: 3,
+            date: "2026-06-01",
+            category: "blocked",
+            source_kind: "source_task",
+            source_id: "9101",
+            event_key: "source_task:9101",
+            symbol: "MSFT",
+            brain_thesis_id: null,
+            thesis_id: null,
+            title: "Data blocked: MSFT analyst estimates",
+            summary: "fmp task rate_limited with high priority after 2 attempt(s).",
+            importance: 78,
+            occurred_at: "2026-06-01T08:00:00Z",
+            source_ref: { source_task_id: 9101 },
+            created_at: "2026-06-01T08:01:00Z",
+          },
+          {
+            id: 4,
+            date: "2026-06-01",
+            category: "crowded_or_extended",
+            source_kind: "brain_thesis",
+            source_id: "macro:loved_mania",
+            event_key: "brain_dislocation:loved_mania",
+            symbol: null,
+            brain_thesis_id: "d29d2f1d-7467-45ca-9f1e-1243923c94aa",
+            thesis_id: null,
+            title: "Loved / mania: Technology",
+            summary: "Macro Regime flags this pocket: high relative strength and crowded attention.",
+            importance: 78,
+            occurred_at: "2026-06-01T07:00:00Z",
+            source_ref: { bucket: "loved_mania" },
+            created_at: "2026-06-01T07:01:00Z",
+          },
+          {
+            id: 5,
+            date: "2026-06-01",
+            category: "ignored_or_hated",
+            source_kind: "brain_thesis",
+            source_id: "macro:hated_avoided",
+            event_key: "brain_dislocation:hated_avoided",
+            symbol: null,
+            brain_thesis_id: "d29d2f1d-7467-45ca-9f1e-1243923c94aa",
+            thesis_id: null,
+            title: "Hated / avoided: Financial Services",
+            summary: "Macro Regime flags this pocket: low attention despite improving internals.",
+            importance: 82,
+            occurred_at: "2026-06-01T07:05:00Z",
+            source_ref: { bucket: "hated_avoided" },
+            created_at: "2026-06-01T07:06:00Z",
+          },
+        ],
+      });
+      return;
+    }
     if (path === "/api/watchlists" && request.method() === "GET") {
       await json(route, [{ id: "wl-core", name: "Core", description: null, color: "#89b4fa", is_system: false, created_at: "2026-01-01T00:00:00Z", member_count: watchlistMembers.length }]);
       return;
@@ -1221,6 +1326,30 @@ test("brain tab shows macro and theme theses with linked tickers", async ({ page
   await expect(theme).toContainText("Core");
   await expect(theme.getByRole("button", { name: /NVDA leader/ })).toBeVisible();
   await expect(theme.getByRole("button", { name: /OKTA/ })).toContainText("forming");
+});
+
+test("brain tab shows daily journal and routes ticker entries", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "brain" }).click();
+
+  const journal = page.locator(".brain-journal");
+  await expect(journal).toContainText("Brain Journal");
+  await expect(journal).toContainText("we think this changed");
+  await expect(journal).toContainText("OKTA thesis updated to v2");
+  await expect(journal).toContainText("needs research");
+  await expect(journal).toContainText("Research queued: NVDA via volume anomaly");
+  await expect(journal).toContainText("crowded or extended");
+  await expect(journal).toContainText("Loved / mania: Technology");
+  await expect(journal).toContainText("ignored or hated");
+  await expect(journal).toContainText("Hated / avoided: Financial Services");
+  await expect(journal).toContainText("blocked");
+  await expect(journal).toContainText("Data blocked: MSFT analyst estimates");
+
+  await journal.getByRole("button", { name: /OKTA thesis updated to v2/ }).click();
+  await expect(page.locator(".symbol-box input")).toHaveValue("OKTA");
+  await expect(page.locator(".right .tabs button.active")).toHaveText("theses");
 });
 
 test("calibration tab shows parent theme expression results", async ({ page }) => {

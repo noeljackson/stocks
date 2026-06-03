@@ -438,6 +438,52 @@ export async function fetchBrainOverview(): Promise<BrainOverview> {
   return (await r.json()) as BrainOverview;
 }
 
+export type BrainJournalCategory =
+  | "changed"
+  | "curious"
+  | "research"
+  | "crowded_or_extended"
+  | "ignored_or_hated"
+  | "blocked";
+
+export interface BrainJournalEntry {
+  id: number;
+  date: string;
+  category: BrainJournalCategory;
+  source_kind: "attention" | "thesis_state" | "thesis_version" | "source_task" | "evidence" | "brain_thesis";
+  source_id: string;
+  event_key: string;
+  symbol?: string | null;
+  brain_thesis_id?: string | null;
+  thesis_id?: string | null;
+  title: string;
+  summary: string;
+  importance: number;
+  occurred_at: string;
+  source_ref: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface BrainJournal {
+  as_of: string;
+  date: string;
+  synthesis?: string | null;
+  summary: {
+    total: number;
+    visible?: number;
+    by_category: Record<string, number>;
+    all_by_category?: Record<string, number>;
+  };
+  entries: BrainJournalEntry[];
+}
+
+export async function fetchBrainJournal(date?: string): Promise<BrainJournal> {
+  const q = date ? `?date=${encodeURIComponent(date)}` : "";
+  const r = await fetch(`/api/brain-journal${q}`);
+  if (!r.ok) throw new Error(`brain-journal ${r.status}`);
+  return (await r.json()) as BrainJournal;
+}
+
 export interface TickerContext {
   symbol: string;
   version: number;

@@ -228,7 +228,7 @@
             </div>
             {#if section.items.length}
               <div class="trade-items">
-                {#each section.items as item (item.symbol)}
+                {#each section.items as item, i (`${item.symbol}-${i}`)}
                   <button type="button" class="trade-item" onclick={() => onOpenSymbol(item.symbol)}>
                     <span class="memo-symbol-top">
                       <strong>{item.symbol}</strong>
@@ -281,7 +281,7 @@
           </div>
           {#if overview.top_candidates.length}
             <div class="memo-symbols">
-              {#each overview.top_candidates as item (item.symbol)}
+              {#each overview.top_candidates as item, i (`${item.symbol}-${i}`)}
                 <button type="button" class={`memo-symbol ${symbolTone(item)}`} onclick={() => onOpenSymbol(item.symbol)}>
                   <span class="memo-symbol-top">
                     <strong>{item.symbol}</strong>
@@ -304,7 +304,7 @@
           </div>
           {#if overview.wait_for_setup.length}
             <div class="memo-symbols">
-              {#each overview.wait_for_setup as item (item.symbol)}
+              {#each overview.wait_for_setup as item, i (`${item.symbol}-${i}`)}
                 <button type="button" class="memo-symbol wait" onclick={() => onOpenSymbol(item.symbol)}>
                   <span class="memo-symbol-top">
                     <strong>{item.symbol}</strong>
@@ -327,7 +327,7 @@
           </div>
           {#if overview.themes.length}
             <div class="memo-list">
-              {#each overview.themes.slice(0, 4) as theme (theme.name)}
+              {#each overview.themes.slice(0, 4) as theme, i (`${theme.name}-${i}`)}
                 <div class="memo-line">
                   <strong>{theme.name}</strong>
                   <span>{label(theme.direction)} · {label(theme.state)} · {theme.linked_tickers} tickers</span>
@@ -367,7 +367,7 @@
           </div>
           {#if overview.research_focus.length}
             <div class="memo-list">
-              {#each overview.research_focus.slice(0, 5) as item, i (`${item.source_kind ?? "focus"}-${item.source_id ?? i}`)}
+              {#each overview.research_focus.slice(0, 5) as item, i (`${item.source_kind ?? "focus"}-${item.source_id ?? "none"}-${i}`)}
                 <div class={`memo-line focus-${item.category ?? "curious"}`}>
                   <strong>{evidenceTitle(item)}</strong>
                   <span>{item.summary}</span>
@@ -400,7 +400,7 @@
             <span class="badge">{group.entries.length}/{group.total}</span>
           </div>
           <div class="journal-entries">
-            {#each group.entries as entry (entry.event_key)}
+            {#each group.entries as entry, i (`${entry.event_key}-${i}`)}
               {#if entry.symbol}
                 <button type="button" class="journal-entry" onclick={() => onOpenEntry(entry)}>
                   <span class="journal-entry-title">

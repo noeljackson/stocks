@@ -420,6 +420,92 @@ async function mockApi(
             parent_themes: [],
             reason: "forming thesis, up direction, extended technicals, avoid_chase entry stance, stale freshness",
           }],
+          decision_brief: {
+            consider: [{
+              symbol: "CRDO",
+              score: 76,
+              stance: "consider",
+              thesis_id: "22ceaea3-9df3-416a-bfe5-107d3233dd59",
+              thesis_state: "actionable",
+              thesis_direction: "up",
+              technical_state: "constructive",
+              entry_stance: "constructive",
+              technical_pct_vs_200d: 3.2,
+              freshness_status: "fresh",
+              open_attention: 1,
+              open_evidence: 3,
+              blocking_evidence: 0,
+              due_source_tasks: 0,
+              parent_themes: [],
+              why_now: "Actionable up thesis with constructive setup.",
+              why_not: "Still needs operator review before any order.",
+              risk_note: "Normal position sizing only.",
+              blockers: [],
+            }],
+            wait: [{
+              symbol: "OKTA",
+              score: 54,
+              stance: "wait",
+              thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+              thesis_state: "forming",
+              thesis_direction: "up",
+              technical_state: "extended",
+              entry_stance: "avoid_chase",
+              technical_pct_vs_200d: 26.5,
+              freshness_status: "stale",
+              open_attention: 1,
+              open_evidence: 1,
+              blocking_evidence: 0,
+              due_source_tasks: 1,
+              parent_themes: [],
+              why_now: "Bullish thesis exists, but setup is stretched.",
+              why_not: "Wait for pullback or refreshed context.",
+              risk_note: "Avoid chasing a stale setup.",
+              blockers: ["stale context", "due source tasks"],
+            }],
+            avoid: [{
+              symbol: "AMD",
+              score: 31,
+              stance: "avoid",
+              thesis_id: "32ceaea3-9df3-416a-bfe5-107d3233dd59",
+              thesis_state: "forming",
+              thesis_direction: "up",
+              technical_state: "extended",
+              entry_stance: "avoid_chase",
+              technical_pct_vs_200d: 41.2,
+              freshness_status: "blocked",
+              open_attention: 2,
+              open_evidence: 1,
+              blocking_evidence: 2,
+              due_source_tasks: 3,
+              parent_themes: [],
+              why_now: "Interesting AI infrastructure exposure.",
+              why_not: "Blocked data and extended technicals make it a no-trade today.",
+              risk_note: "Do not convert a stale thesis into action.",
+              blockers: ["blocked analyst estimates", "extended vs 200D"],
+            }],
+            research: [{
+              symbol: "NVDA",
+              score: 45,
+              stance: "research",
+              thesis_id: null,
+              thesis_state: null,
+              thesis_direction: null,
+              technical_state: "constructive",
+              entry_stance: "constructive",
+              technical_pct_vs_200d: 8.4,
+              freshness_status: "missing",
+              open_attention: 1,
+              open_evidence: 0,
+              blocking_evidence: 0,
+              due_source_tasks: 1,
+              parent_themes: [],
+              why_now: "Discovery nominated the symbol.",
+              why_not: "No open thesis yet.",
+              risk_note: "Research only until a falsifiable thesis exists.",
+              blockers: ["missing thesis"],
+            }],
+          },
           risk_flags: [],
           themes: [{
             name: "AI Compute Infrastructure",
@@ -1637,6 +1723,20 @@ test("journal page shows daily history and routes ticker entries", async ({ page
 
   const journal = page.locator("[data-testid='brain-journal-page']");
   await expect(journal).toContainText("Brain Journal");
+  const tradeDesk = journal.locator("[data-testid='daily-trade-desk']");
+  await expect(tradeDesk).toContainText(/daily trade desk/i);
+  await expect(tradeDesk).toContainText(/would consider/i);
+  await expect(tradeDesk).toContainText("CRDO");
+  await expect(tradeDesk).toContainText("Actionable up thesis with constructive setup.");
+  await expect(tradeDesk).toContainText(/would wait/i);
+  await expect(tradeDesk).toContainText("OKTA");
+  await expect(tradeDesk).toContainText("Wait for pullback or refreshed context.");
+  await expect(tradeDesk).toContainText(/would avoid/i);
+  await expect(tradeDesk).toContainText("AMD");
+  await expect(tradeDesk).toContainText("Blocked data and extended technicals make it a no-trade today.");
+  await expect(tradeDesk).toContainText(/research first/i);
+  await expect(tradeDesk).toContainText("NVDA");
+  await expect(tradeDesk).toContainText("Research only until a falsifiable thesis exists.");
   await expect(journal.locator("[data-testid='brain-journal-memo']")).toContainText("Daily Brain Memo");
   await expect(journal.locator("[data-testid='brain-journal-memo']")).toContainText("market neutral · macro neutral");
   await expect(journal.locator("[data-testid='brain-journal-memo']")).toContainText("Top Candidates");

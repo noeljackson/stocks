@@ -491,6 +491,35 @@ export interface BrainJournalMemoSymbol {
   reason: string;
 }
 
+export interface BrainJournalDecisionItem {
+  symbol: string;
+  score: number;
+  stance: "consider" | "wait" | "avoid" | "research" | string;
+  thesis_id?: string | null;
+  thesis_state?: string | null;
+  thesis_direction?: string | null;
+  technical_state?: string | null;
+  entry_stance?: string | null;
+  technical_pct_vs_200d?: number | null;
+  freshness_status?: string | null;
+  open_attention?: number;
+  open_evidence?: number;
+  blocking_evidence?: number;
+  due_source_tasks?: number;
+  parent_themes?: Record<string, unknown>[];
+  why_now: string;
+  why_not: string;
+  risk_note: string;
+  blockers: string[];
+}
+
+export interface BrainJournalDecisionBrief {
+  consider: BrainJournalDecisionItem[];
+  wait: BrainJournalDecisionItem[];
+  avoid: BrainJournalDecisionItem[];
+  research: BrainJournalDecisionItem[];
+}
+
 export interface BrainJournalMemoTheme {
   name: string;
   scope: string;
@@ -532,6 +561,7 @@ export interface BrainJournalOverview {
     missing_evidence: string[];
     market_state?: Record<string, unknown> | null;
   };
+  decision_brief?: BrainJournalDecisionBrief | null;
   top_candidates: BrainJournalMemoSymbol[];
   wait_for_setup: BrainJournalMemoSymbol[];
   risk_flags: BrainJournalMemoSymbol[];
@@ -966,10 +996,36 @@ export interface AttentionItem {
   state_reason?: string | null;
 }
 
+export interface ReviewPacketSection {
+  key: string;
+  title: string;
+  body?: string | null;
+  items?: string[];
+}
+
+export interface ReviewPacketAction {
+  id: string;
+  label: string;
+  kind: string;
+  detail: string;
+}
+
+export interface AttentionReviewPacket {
+  attention: AttentionItem;
+  sections: ReviewPacketSection[];
+  allowed_actions: ReviewPacketAction[];
+}
+
 export async function fetchAttention(status = "open"): Promise<AttentionItem[]> {
   const r = await fetch(`/api/attention?status=${status}`);
   if (!r.ok) throw new Error(`attention ${r.status}`);
   return ((await r.json()) as AttentionItem[] | null) ?? [];
+}
+
+export async function fetchAttentionReviewPacket(id: number): Promise<AttentionReviewPacket> {
+  const r = await fetch(`/api/attention/${id}/review-packet`);
+  if (!r.ok) throw new Error(`review packet ${r.status}`);
+  return (await r.json()) as AttentionReviewPacket;
 }
 
 export async function dismissAttention(id: number, reason?: string): Promise<void> {

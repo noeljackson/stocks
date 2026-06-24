@@ -405,6 +405,78 @@ def test_assess_evidence_requirements_marks_checked_sources_as_missing() -> None
     assert facts["state_reason"] == "source_checked_no_new_rows"
 
 
+def test_new_symbol_does_not_inherit_global_no_rows_without_symbol_attempt() -> None:
+    missing = assess_evidence_requirements(
+        {
+            "ticker_added_at": "2026-06-24T16:35:43Z",
+            "price_bars": 0,
+            "company_profiles": 1,
+            "filing_events": 1,
+            "company_facts": 2,
+            "earnings_calendar_events": 1,
+            "recent_news": 1,
+            "estimate_snapshots": 4,
+            "analyst_price_target_snapshots": 1,
+            "research_evidence": 1,
+        },
+        {
+            "fmp_price": {
+                "source": "fmp_price",
+                "last_status": "no_new_rows",
+                "last_success_at": "2026-06-24T16:29:57Z",
+                "last_failure_kind": None,
+                "last_error": None,
+                "retry_after_at": None,
+                "rows_seen": 0,
+                "rows_inserted": 0,
+            },
+        },
+    )
+
+    [price_req] = missing
+    assert price_req["requirement_key"] == "price_history"
+    assert price_req["blocking_state"] == "missing"
+    assert price_req["state_reason"] == "source_not_seen_for_symbol"
+    [task] = build_source_tasks("AMD", price_req)
+    assert task["state"] == "queued"
+
+
+def test_symbol_specific_completion_can_mark_no_rows() -> None:
+    completed_at = "2026-06-24T17:00:00Z"
+    missing = assess_evidence_requirements(
+        {
+            "ticker_added_at": "2026-06-24T16:35:43Z",
+            "source_task_price_history_completed_at": completed_at,
+            "price_bars": 0,
+            "company_profiles": 1,
+            "filing_events": 1,
+            "company_facts": 2,
+            "earnings_calendar_events": 1,
+            "recent_news": 1,
+            "estimate_snapshots": 4,
+            "analyst_price_target_snapshots": 1,
+            "research_evidence": 1,
+        },
+        {
+            "fmp_price": {
+                "source": "fmp_price",
+                "last_status": "no_new_rows",
+                "last_success_at": completed_at,
+                "last_failure_kind": None,
+                "last_error": None,
+                "retry_after_at": None,
+                "rows_seen": 0,
+                "rows_inserted": 0,
+            },
+        },
+    )
+
+    [price_req] = missing
+    assert price_req["state_reason"] == "source_checked_no_new_rows"
+    [task] = build_source_tasks("AMD", price_req)
+    assert task["state"] == "no_rows"
+
+
 def test_assess_evidence_requirements_tracks_product_research() -> None:
     checked_at = dt.datetime(2026, 6, 1, 14, 0, tzinfo=dt.UTC).isoformat()
     missing = assess_evidence_requirements(

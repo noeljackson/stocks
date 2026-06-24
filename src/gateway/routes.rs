@@ -92,6 +92,10 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/brain-journal", get(get_brain_journal))
         .route("/api/brain-status", get(get_brain_status))
         .route("/api/attention", get(list_attention_items))
+        .route(
+            "/api/attention/{id}/review-packet",
+            get(get_attention_review_packet),
+        )
         .route("/api/attention/{id}/dismiss", post(dismiss_attention_item))
         .route(
             "/api/attention/{id}/transition",
@@ -3605,6 +3609,223 @@ async fn list_attention_items(
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
+}
+
+fn review_packet_kind_summary(kind: &str, severity: &str) -> (&'static str, &'static str) {
+    match kind {
+        "candidate_review" => (
+            "Discovery nominated this symbol for operator review.",
+            "Confirming promotes the symbol into the monitored universe and starts context/thesis work.",
+        ),
+        "thesis_actionable" => (
+            "A thesis reached a trade-decision state.",
+            "The next step is a human decision with risk and sizing captured explicitly.",
+        ),
+        "thesis_review" => (
+            "A standing thesis changed materially.",
+            "Review whether the new evidence strengthens, weakens, or invalidates the current view.",
+        ),
+        "thesis_incomplete" => (
+            "Cognition declined to invent a thesis.",
+            "Resolve the missing evidence or record that this is not a tradeable edge.",
+        ),
+        "context_stale" => (
+            "Context or required evidence is stale.",
+            "Do not treat the current thesis read as decision-grade until freshness recovers.",
+        ),
+        "risk_review" => (
+            "Risk generated a warning or veto.",
+            "The idea generator cannot override this; review exposure before acting.",
+        ),
+        "outcome_ready" => (
+            "A decision or thesis is ready to score.",
+            "Recording the outcome closes the learning loop.",
+        ),
+        _ if severity == "blocked" => (
+            "The system found a blocked workflow item.",
+            "Resolve the blocker before treating the symbol as decision-ready.",
+        ),
+        _ => (
+            "The system queued an item for operator judgment.",
+            "Review the attached evidence and record a decision or deferral.",
+        ),
+    }
+}
+
+fn review_packet_actions(kind: &str) -> serde_json::Value {
+    let actions = match kind {
+        "candidate_review" => vec![
+            json!({"id": "promote", "label": "Promote", "kind": "candidate_confirm", "detail": "Add to Universe and start context/thesis work."}),
+            json!({"id": "reject", "label": "Reject", "kind": "candidate_reject", "detail": "Reject the nomination and keep the reason in history."}),
+            json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later without resolving."}),
+        ],
+        "thesis_actionable" => vec![
+            json!({"id": "record_decision", "label": "Record decision", "kind": "decision", "detail": "Open the thesis decision form."}),
+            json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later without resolving."}),
+            json!({"id": "skip", "label": "Skip", "kind": "decision_skip", "detail": "Record a structured skip/defer decision."}),
+        ],
+        "risk_review" => vec![
+            json!({"id": "open_decision", "label": "Review risk", "kind": "decision", "detail": "Open decision/risk context."}),
+            json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later."}),
+            json!({"id": "dismiss", "label": "Dismiss", "kind": "attention_dismiss", "detail": "Mark risk review as handled."}),
+        ],
+        "context_stale" | "thesis_incomplete" => vec![
+            json!({"id": "open_evidence", "label": "Open evidence", "kind": "open_evidence", "detail": "Inspect blockers and source tasks."}),
+            json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later."}),
+            json!({"id": "dismiss", "label": "Dismiss", "kind": "attention_dismiss", "detail": "Mark as not actionable."}),
+        ],
+        _ => vec![
+            json!({"id": "open_symbol", "label": "Open symbol", "kind": "open_symbol", "detail": "Inspect context and evidence."}),
+            json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later."}),
+            json!({"id": "dismiss", "label": "Dismiss", "kind": "attention_dismiss", "detail": "Mark as not actionable."}),
+        ],
+    };
+    serde_json::Value::Array(actions)
+}
+
+fn review_packet_evidence(source_ref: &serde_json::Value) -> Vec<String> {
+    let mut evidence = Vec::new();
+    if let Some(raw) = source_ref
+        .get("raw_signals")
+        .and_then(serde_json::Value::as_array)
+    {
+        for item in raw.iter().filter_map(serde_json::Value::as_str).take(4) {
+            evidence.push(format!("signal: {}", item.replace('_', " ")));
+        }
+    }
+    if let Some(available) = source_ref
+        .get("available_data")
+        .and_then(serde_json::Value::as_object)
+    {
+        let names = available
+            .iter()
+            .filter_map(|(k, v)| {
+                if v.as_bool() == Some(true) {
+                    Some(k.replace('_', " "))
+                } else {
+                    None
+                }
+            })
+            .take(5)
+            .collect::<Vec<_>>();
+        if !names.is_empty() {
+            evidence.push(format!("available data: {}", names.join(", ")));
+        }
+    }
+    if let Some(tasks) = source_ref
+        .get("source_tasks")
+        .and_then(serde_json::Value::as_array)
+    {
+        for task in tasks.iter().take(4) {
+            let action = task
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("source task")
+                .replace('_', " ");
+            let state = task
+                .get("state")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .replace('_', " ");
+            evidence.push(format!("source task: {action} {state}"));
+        }
+    }
+    if let Some(missing) = source_ref
+        .get("missing_evidence")
+        .and_then(serde_json::Value::as_array)
+    {
+        for item in missing.iter().take(4) {
+            if let Some(text) = item.as_str() {
+                evidence.push(format!("missing: {}", text.replace('_', " ")));
+            } else if let Some(key) = item
+                .get("requirement_key")
+                .and_then(serde_json::Value::as_str)
+            {
+                evidence.push(format!("missing: {}", key.replace('_', " ")));
+            }
+        }
+    }
+    evidence
+}
+
+async fn get_attention_review_packet(
+    State(gw): State<Arc<Gateway>>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    let row = match sqlx::query(
+        r#"SELECT id, kind, symbol, thesis_id, candidate_id, severity,
+                  status, fsm_state, owner, title, reason, source, source_ref,
+                  created_at, resolved_at, resolution_kind,
+                  next_retry_at, resurface_at, state_reason
+             FROM attention_item
+            WHERE id = $1"#,
+    )
+    .bind(id)
+    .fetch_optional(&gw.store.pool)
+    .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => return (StatusCode::NOT_FOUND, "attention not found").into_response(),
+        Err(e) => {
+            warn!(id, error = %e, "attention review packet load failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    };
+
+    let kind: String = row.try_get("kind").unwrap_or_default();
+    let severity: String = row
+        .try_get("severity")
+        .unwrap_or_else(|_| "review".to_string());
+    let source_ref: serde_json::Value = row.try_get("source_ref").unwrap_or_else(|_| json!({}));
+    let title: String = row.try_get("title").unwrap_or_default();
+    let reason: Option<String> = row.try_get("reason").ok().flatten();
+    let (what_happened, why_it_matters) = review_packet_kind_summary(&kind, &severity);
+    let evidence = review_packet_evidence(&source_ref);
+
+    let created_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("created_at").ok();
+    let resolved_at: Option<chrono::DateTime<chrono::Utc>> =
+        row.try_get("resolved_at").ok().flatten();
+    let next_retry_at: Option<chrono::DateTime<chrono::Utc>> =
+        row.try_get("next_retry_at").ok().flatten();
+    let resurface_at: Option<chrono::DateTime<chrono::Utc>> =
+        row.try_get("resurface_at").ok().flatten();
+
+    let packet = json!({
+        "attention": {
+            "id": row.try_get::<i64, _>("id").unwrap_or(id),
+            "kind": kind.clone(),
+            "symbol": row.try_get::<Option<String>, _>("symbol").ok().flatten(),
+            "thesis_id": row.try_get::<Option<uuid::Uuid>, _>("thesis_id").ok().flatten(),
+            "candidate_id": row.try_get::<Option<i64>, _>("candidate_id").ok().flatten(),
+            "severity": severity.clone(),
+            "status": row.try_get::<String, _>("status").unwrap_or_else(|_| "open".to_string()),
+            "fsm_state": row.try_get::<String, _>("fsm_state").ok(),
+            "owner": row.try_get::<String, _>("owner").ok(),
+            "title": title,
+            "reason": reason.clone(),
+            "source": row.try_get::<String, _>("source").unwrap_or_else(|_| "system".to_string()),
+            "source_ref": source_ref,
+            "created_at": created_at,
+            "resolved_at": resolved_at,
+            "resolution_kind": row.try_get::<Option<String>, _>("resolution_kind").ok().flatten(),
+            "next_retry_at": next_retry_at,
+            "resurface_at": resurface_at,
+            "state_reason": row.try_get::<Option<String>, _>("state_reason").ok().flatten(),
+        },
+        "sections": [
+            {"key": "what_happened", "title": "What happened", "body": what_happened},
+            {"key": "why_it_matters", "title": "Why it matters", "body": why_it_matters},
+            {"key": "evidence", "title": "Evidence", "items": evidence},
+            {"key": "recommendation", "title": "Recommendation", "body": reason.unwrap_or_else(|| "Review this item and record the next step.".to_string())},
+            {"key": "recorded_artifacts", "title": "What will be recorded", "items": [
+                "attention state history",
+                "operator decision or deferral when actioned",
+                "source/evidence references preserved for replay"
+            ]},
+        ],
+        "allowed_actions": review_packet_actions(&kind),
+    });
+    (StatusCode::OK, Json(packet)).into_response()
 }
 
 #[derive(Debug, Deserialize, Default)]

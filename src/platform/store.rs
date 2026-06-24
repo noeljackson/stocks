@@ -308,6 +308,94 @@ fn journal_candidate_score(
     score.clamp(0, 100)
 }
 
+fn journal_symbol_blockers(ticker: &TickerRow) -> Vec<String> {
+    let mut blockers = Vec::new();
+    if ticker.blocking_evidence > 0 {
+        blockers.push(format!(
+            "{} blocking evidence requirement(s)",
+            ticker.blocking_evidence
+        ));
+    }
+    if ticker.due_source_tasks > 0 {
+        blockers.push(format!("{} due source task(s)", ticker.due_source_tasks));
+    }
+    match ticker.freshness_status.as_str() {
+        "blocked" => blockers.push("brain inputs blocked".to_string()),
+        "missing" => blockers.push("brain inputs missing".to_string()),
+        "stale" => blockers.push("brain inputs stale".to_string()),
+        _ => {}
+    }
+    blockers
+}
+
+fn journal_trade_desk_item(ticker: &TickerRow, score: i32, stance: &str) -> serde_json::Value {
+    let state = ticker.thesis_state.as_deref().unwrap_or("no thesis");
+    let direction = ticker.thesis_direction.as_deref().unwrap_or("no direction");
+    let technical = ticker
+        .technical_state
+        .as_deref()
+        .unwrap_or("unknown technicals");
+    let entry = ticker.entry_stance.as_deref().unwrap_or("wait_data");
+    let blockers = journal_symbol_blockers(ticker);
+    let why_now = match stance {
+        "consider" => format!(
+            "{state} {direction} thesis with {technical} setup and {} inputs",
+            ticker.freshness_status
+        ),
+        "wait" => format!("{state} {direction} thesis exists, but timing is {entry}"),
+        "avoid" => format!(
+            "{} / {} is not a clean long-entry read",
+            direction, technical
+        ),
+        _ => {
+            if ticker.open_theses == 0 {
+                "no open thesis yet; research must come before a trade decision".to_string()
+            } else {
+                format!("{state} thesis needs more evidence before a decision")
+            }
+        }
+    };
+    let why_not = if blockers.is_empty() {
+        match stance {
+            "consider" => "risk overlay and human review still required before any position",
+            "wait" => "setup quality is not clean enough for an entry today",
+            "avoid" => "direction, setup, or freshness argues against adding risk",
+            _ => "not enough thesis substance for a trade action",
+        }
+        .to_string()
+    } else {
+        blockers.join("; ")
+    };
+    let risk_note = match stance {
+        "consider" if blockers.is_empty() => "eligible for review packet; size remains risk-gated",
+        "wait" => "do not chase; wait for setup or fresh evidence",
+        "avoid" => "avoid adding exposure until thesis/setup/freshness improves",
+        _ => "research-only; not a trade proposal",
+    };
+
+    serde_json::json!({
+        "symbol": ticker.symbol.clone(),
+        "score": score,
+        "stance": stance,
+        "thesis_id": ticker.latest_thesis_id,
+        "thesis_state": ticker.thesis_state.clone(),
+        "thesis_direction": ticker.thesis_direction.clone(),
+        "technical_state": ticker.technical_state.clone(),
+        "entry_stance": ticker.entry_stance.clone(),
+        "technical_pct_vs_200d": ticker.technical_pct_vs_200d,
+        "freshness_status": ticker.freshness_status.clone(),
+        "open_attention": ticker.open_attention,
+        "open_evidence": ticker.open_evidence,
+        "blocking_evidence": ticker.blocking_evidence,
+        "due_source_tasks": ticker.due_source_tasks,
+        "parent_themes": ticker.parent_themes.clone(),
+        "why_now": why_now,
+        "why_not": why_not,
+        "risk_note": risk_note,
+        "blockers": blockers,
+    })
+}
+
 fn journal_label(value: &str) -> String {
     value.replace('_', " ")
 }
@@ -1747,8 +1835,12 @@ impl Store {
         let mut top_candidates = Vec::new();
         let mut wait_for_setup = Vec::new();
         let mut risk_flags = Vec::new();
+        let mut brief_consider = Vec::new();
+        let mut brief_wait = Vec::new();
+        let mut brief_avoid = Vec::new();
+        let mut brief_research = Vec::new();
 
-        for ticker in active.iter().filter(|t| t.open_theses > 0) {
+        for ticker in &active {
             let state = ticker.thesis_state.as_deref();
             let direction = ticker.thesis_direction.as_deref();
             let technical = ticker.technical_state.as_deref();
@@ -1791,28 +1883,47 @@ impl Store {
             let bullish = journal_direction_is_bullish(direction);
             let bearish = journal_direction_is_bearish(direction);
             let setup_wait = journal_waits_for_setup(technical, entry);
+            let blocked_or_missing =
+                matches!(ticker.freshness_status.as_str(), "blocked" | "missing")
+                    || ticker.blocking_evidence > 0;
+            let has_open_thesis = ticker.open_theses > 0;
+            let trade_item = |stance| journal_trade_desk_item(ticker, score, stance);
+
+            if !has_open_thesis {
+                if ticker.open_attention > 0
+                    || ticker.open_evidence > 0
+                    || ticker.due_source_tasks > 0
+                {
+                    brief_research.push((score, trade_item("research")));
+                }
+                continue;
+            }
+
             if setup_wait && (bullish || matches!(state, Some("actionable" | "armed"))) {
                 wait_for_setup.push((score, item.clone()));
-            } else if !bearish
-                && !setup_wait
-                && score >= 45
-                && !matches!(ticker.freshness_status.as_str(), "blocked" | "missing")
-            {
+            } else if !bearish && !setup_wait && score >= 45 && !blocked_or_missing {
                 top_candidates.push((score, item.clone()));
             }
 
-            if bearish
-                || matches!(technical, Some("deteriorating"))
-                || matches!(ticker.freshness_status.as_str(), "blocked")
-                || ticker.blocking_evidence > 0
-            {
-                risk_flags.push((100 - score, item));
+            if bearish || matches!(technical, Some("deteriorating")) || blocked_or_missing {
+                risk_flags.push((100 - score, item.clone()));
+                brief_avoid.push((100 - score, trade_item("avoid")));
+            } else if setup_wait || matches!(ticker.freshness_status.as_str(), "stale") {
+                brief_wait.push((score, trade_item("wait")));
+            } else if !bearish && score >= 45 {
+                brief_consider.push((score, trade_item("consider")));
+            } else {
+                brief_research.push((score, trade_item("research")));
             }
         }
 
         top_candidates.sort_by(|a, b| b.0.cmp(&a.0));
         wait_for_setup.sort_by(|a, b| b.0.cmp(&a.0));
         risk_flags.sort_by(|a, b| b.0.cmp(&a.0));
+        brief_consider.sort_by(|a, b| b.0.cmp(&a.0));
+        brief_wait.sort_by(|a, b| b.0.cmp(&a.0));
+        brief_avoid.sort_by(|a, b| b.0.cmp(&a.0));
+        brief_research.sort_by(|a, b| b.0.cmp(&a.0));
         let top_candidates = top_candidates
             .into_iter()
             .take(6)
@@ -1828,6 +1939,12 @@ impl Store {
             .take(6)
             .map(|(_, item)| item)
             .collect::<Vec<_>>();
+        let decision_brief = serde_json::json!({
+            "consider": brief_consider.into_iter().take(6).map(|(_, item)| item).collect::<Vec<_>>(),
+            "wait": brief_wait.into_iter().take(6).map(|(_, item)| item).collect::<Vec<_>>(),
+            "avoid": brief_avoid.into_iter().take(6).map(|(_, item)| item).collect::<Vec<_>>(),
+            "research": brief_research.into_iter().take(6).map(|(_, item)| item).collect::<Vec<_>>(),
+        });
 
         let market_state = sqlx::query(
             r#"SELECT as_of, regime, capitulation, indicators
@@ -2056,6 +2173,7 @@ impl Store {
                     .unwrap_or_else(|| serde_json::json!([])),
                 "market_state": market_state,
             },
+            "decision_brief": decision_brief,
             "top_candidates": top_candidates,
             "wait_for_setup": wait_for_setup,
             "risk_flags": risk_flags,

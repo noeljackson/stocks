@@ -349,19 +349,31 @@ async function mockApi(
     const symbol = typeof item.symbol === "string" ? item.symbol : null;
     const candidateId = typeof item.candidate_id === "number" ? item.candidate_id : null;
     const isCandidate = item.kind === "candidate_review";
+    const isActionable = item.kind === "thesis_actionable";
+    const isThesisReview = item.kind === "thesis_review";
+    const recordDecision = { id: "record_decision", label: "Record decision", kind: "decision", detail: "Open the thesis decision form." };
+    const skipDecision = { id: "skip", label: "Skip / defer thesis", kind: "decision_skip", detail: "Record why this thesis is not being acted on now." };
+    const deferAction = { id: "defer", label: "Defer", kind: "attention_defer", detail: "Resurface later." };
+    const dismissAction = { id: "dismiss", label: "Dismiss", kind: "attention_dismiss", detail: "Mark as not actionable." };
     const primary = isCandidate
       ? { id: "promote", label: "Start research", kind: "candidate_confirm", detail: "Add to Universe and start context, evidence, and thesis work." }
+      : isActionable
+        ? recordDecision
       : { id: "open_symbol", label: "Open symbol", kind: "open_symbol", detail: "Inspect context and evidence." };
+    const secondaryActions = isCandidate
+      ? [deferAction, dismissAction]
+      : isThesisReview
+        ? [recordDecision, skipDecision, deferAction, dismissAction]
+        : isActionable
+          ? [deferAction, skipDecision, dismissAction]
+          : [deferAction, dismissAction];
     return {
       attention: item,
       decision: {
-        intent: isCandidate ? "promote_to_universe" : "inspect_symbol",
-        headline: isCandidate ? `Start research for ${symbol}?` : `${symbol ?? "Symbol"} review`,
+        intent: isCandidate ? "promote_to_universe" : (isActionable ? "record_trade_decision" : "inspect_symbol"),
+        headline: isCandidate ? `Start research for ${symbol}?` : (isActionable ? `Record a decision on ${symbol}` : `${symbol ?? "Symbol"} review`),
         primary_action: primary,
-        secondary_actions: [
-          { id: "defer", label: "Defer", kind: "attention_defer", detail: "Resurface later." },
-          { id: "dismiss", label: "Dismiss", kind: "attention_dismiss", detail: "Mark as not actionable." },
-        ],
+        secondary_actions: secondaryActions,
         blockers: [],
         consequences: isCandidate ? ["ticker promoted into Universe", "context and thesis work starts"] : [],
       },
@@ -388,7 +400,7 @@ async function mockApi(
       ],
       allowed_actions: [
         primary,
-        { id: "defer", label: "Defer", kind: "attention_defer", detail: "Resurface later." },
+        ...secondaryActions,
       ],
     };
   };
@@ -2098,6 +2110,32 @@ test("workflow rail surfaces open position tracking and routes to decisions", as
   await expect(page.locator(".tabs button.active")).toHaveText("decisions");
 });
 
+test("thesis card opens a prefilled decision form", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/symbol/OKTA?p=theses");
+
+  await page.getByTestId("thesis-record-decision").click();
+
+  await expect(page.locator(".bottom-tabs button.active")).toHaveText("decisions");
+  await expect(page.getByLabel("Thesis ID")).toHaveValue("12ceaea3-9df3-416a-bfe5-107d3233dd59");
+  await expect(page.getByLabel("Action")).toHaveValue("skip");
+});
+
+test("thesis review packet opens a prefilled decision form", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/symbol/OKTA");
+
+  await page.getByTestId("workflow-attention").getByRole("button", { name: /OKTA thesis changed/ }).click();
+  const packet = page.getByTestId("review-packet");
+  await expect(packet).toContainText("OKTA review");
+
+  await packet.getByRole("button", { name: /Record decision/ }).click();
+
+  await expect(page.locator(".bottom-tabs button.active")).toHaveText("decisions");
+  await expect(page.getByLabel("Thesis ID")).toHaveValue("12ceaea3-9df3-416a-bfe5-107d3233dd59");
+  await expect(page.getByLabel("Action")).toHaveValue("skip");
+});
+
 test("brain tab shows macro and theme theses with linked tickers", async ({ page }) => {
   await mockApi(page);
   await page.goto("/");
@@ -2188,7 +2226,7 @@ test("journal daily trade desk opens the matching review packet", async ({ page 
   await tradeDesk.locator(".trade-section.consider").getByRole("button", { name: "Open review packet" }).click();
 
   await expect(page).toHaveURL(/\/symbol\/CRDO/);
-  await expect(page.getByTestId("review-packet")).toContainText("CRDO review");
+  await expect(page.getByTestId("review-packet")).toContainText("Record a decision on CRDO");
   await expect(page.getByTestId("review-packet")).toContainText("Actionable up thesis with constructive setup.");
 });
 

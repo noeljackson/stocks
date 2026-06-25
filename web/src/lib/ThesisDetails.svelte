@@ -1,7 +1,15 @@
 <script lang="ts">
   import type { Condition, EvidenceItem, KnownUnknown, ThesisDetail } from "./api";
 
-  let { thesis }: { thesis: ThesisDetail } = $props();
+  type Props = {
+    thesis: ThesisDetail;
+    onRecordDecision?: (thesis: ThesisDetail) => void;
+  };
+
+  let {
+    thesis,
+    onRecordDecision = (_thesis: ThesisDetail) => {},
+  }: Props = $props();
 
   function stateColor(s: string): string {
     switch (s) {
@@ -172,6 +180,15 @@
     {#if thesis.last_evaluated_at}
       <span class="meta muted">evaluated {shortTs(thesis.last_evaluated_at)}</span>
     {/if}
+    <button
+      type="button"
+      class="decision-action"
+      data-testid="thesis-record-decision"
+      title="Open decision form for this thesis"
+      onclick={() => onRecordDecision(thesis)}
+    >
+      Record decision
+    </button>
   </div>
 
   {#if forecastDirection || forecastMagnitude || forecastHorizon}
@@ -391,6 +408,21 @@
     padding: 1rem; margin: 0.5rem 0;
   }
   .hdr { display: flex; gap: 0.6rem; align-items: baseline; flex-wrap: wrap; margin-bottom: 0.75rem; }
+  .decision-action {
+    margin-left: auto;
+    background: #1b2230;
+    color: #cdd6f4;
+    border: 1px solid #45567a;
+    border-radius: 4px;
+    padding: 0.22rem 0.65rem;
+    font: inherit;
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+  .decision-action:hover {
+    border-color: #89b4fa;
+    color: #89b4fa;
+  }
   .state-badge {
     color: #0a0d14; padding: 0.1rem 0.5rem; border-radius: 4px;
     font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;

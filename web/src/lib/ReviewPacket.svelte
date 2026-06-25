@@ -4,6 +4,7 @@
     ProposedList,
     ReviewPacketAction,
     ReviewPacketActionPayload,
+    ReviewPacketSection,
   } from "./api";
 
   type Props = {
@@ -96,6 +97,16 @@
     return "secondary";
   }
 
+  function sectionItems(packet: AttentionReviewPacket, section: ReviewPacketSection): string[] {
+    const items = [...(section.items ?? [])];
+    if (section.key === "recorded_artifacts") {
+      for (const consequence of packet.decision?.consequences ?? []) {
+        if (!items.includes(consequence)) items.push(consequence);
+      }
+    }
+    return items;
+  }
+
   function runPrimary(packet: AttentionReviewPacket) {
     const action = primaryAction(packet);
     if (action.kind === "candidate_confirm") {
@@ -139,7 +150,7 @@
 
     <div class="decision-panel">
       <div>
-        <span class="kicker">next action</span>
+        <span class="kicker">what can the human do</span>
         <h3>{action.label}</h3>
         <p>{action.detail}</p>
       </div>
@@ -209,29 +220,18 @@
       </section>
     {/if}
 
-    {#if packet.decision?.consequences?.length}
-      <div class="consequences">
-        <span class="kicker">what will be recorded</span>
-        <ul>
-          {#each packet.decision.consequences as item, i (`${item}-${i}`)}
-            <li>{item}</li>
-          {/each}
-        </ul>
-      </div>
-    {/if}
-
-    <details class="receipts">
-      <summary>Receipts</summary>
-      <div class="packet-grid">
+    {#if packet.sections.length}
+      <div class="packet-grid" data-testid="review-packet-sections">
         {#each packet.sections as section, i (`${section.key}-${i}`)}
+          {@const items = sectionItems(packet, section)}
           <article class="packet-section">
             <span>{section.title}</span>
             {#if section.body}
               <p>{section.body}</p>
             {/if}
-            {#if section.items?.length}
+            {#if items.length}
               <ul>
-                {#each section.items as item, j (`${item}-${j}`)}
+                {#each items as item, j (`${item}-${j}`)}
                   <li>{item}</li>
                 {/each}
               </ul>
@@ -241,7 +241,7 @@
           </article>
         {/each}
       </div>
-    </details>
+    {/if}
 
     <div class="packet-actions">
       {#each secondaryActions(packet) as action (`${action.id}-${action.kind}`)}
@@ -325,9 +325,7 @@
     margin: .12rem 0;
   }
   .decision-panel,
-  .confirm-panel,
-  .consequences,
-  .receipts {
+  .confirm-panel {
     border: 1px solid #1f2733;
     background: #080c13;
     border-radius: 4px;
@@ -372,7 +370,6 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
     gap: .45rem;
-    margin-top: .45rem;
   }
   .packet-section {
     display: grid;
@@ -408,11 +405,6 @@
     color: #a6e3a1;
     border-radius: 4px;
     padding: .45rem .55rem;
-  }
-  summary {
-    cursor: pointer;
-    color: #cdd6f4;
-    font-size: .82rem;
   }
   .primary-action,
   .secondary-action,

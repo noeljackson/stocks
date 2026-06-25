@@ -2818,7 +2818,7 @@
     <Pane defaultSize={72} minSize={40}>
       <PaneGroup direction="vertical" autoSaveId="ws.v3.left" class="main-col">
         <Pane defaultSize={70} minSize={30}>
-          <ChartPanel symbol={selectedSymbol} onStateChange={updateChartState} />
+          <ChartPanel symbol={selectedSymbol} liveEvents={live} streamConnected={connected} onStateChange={updateChartState} />
         </Pane>
 
         <PaneResizer class="split-h" />

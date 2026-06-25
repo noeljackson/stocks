@@ -104,7 +104,34 @@ pub fn failure_kind(error: &str) -> &'static str {
     let lower = error.to_ascii_lowercase();
     if lower.contains("429") || lower.contains("rate limit") {
         "rate_limited"
+    } else if lower.contains("401")
+        || lower.contains("402")
+        || lower.contains("403")
+        || lower.contains("entitlement")
+        || lower.contains("restricted endpoint")
+        || lower.contains("subscription")
+    {
+        "entitlement_blocked"
     } else {
         "error"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_kind_distinguishes_rate_limit_and_entitlement() {
+        assert_eq!(failure_kind("429 too many requests"), "rate_limited");
+        assert_eq!(
+            failure_kind("402 Restricted Endpoint"),
+            "entitlement_blocked"
+        );
+        assert_eq!(
+            failure_kind("403 subscription required"),
+            "entitlement_blocked"
+        );
+        assert_eq!(failure_kind("network timeout"), "error");
     }
 }

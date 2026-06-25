@@ -1,7 +1,7 @@
 //! Decision/alert + UI gateway (SPEC §3 + §11):
 //!
 //! - REST: `/healthz`, `GET /api/alerts`, `POST /api/decisions`
-//! - SSE:  `GET /api/stream` (NATS thesis.* + risk.* → SSE hub fan-out)
+//! - SSE:  `GET /api/stream` (NATS thesis.*, risk.*, market.bar.* → SSE hub fan-out)
 //! - SPA:  `/*` falls back to the embedded Svelte bundle with index.html
 //!   fallback for client-side routing.
 
@@ -70,6 +70,9 @@ impl Gateway {
         self.bus
             .ensure_stream(subjects::STREAM_DECISIONS, &["risk.*", "decision.*"])
             .await?;
+        self.bus
+            .ensure_stream(subjects::STREAM_MARKET, subjects::MARKET_STREAM_SUBJECTS)
+            .await?;
 
         let thesis = self
             .bind_consumer(
@@ -87,7 +90,8 @@ impl Gateway {
                 "risk",
             )
             .await?;
-        Ok(vec![thesis, risk])
+        let market = self.bind_market_bar_consumer().await?;
+        Ok(vec![thesis, risk, market])
     }
 
     pub fn start_derived_refresh_worker(&self) -> tokio::task::JoinHandle<()> {
@@ -152,6 +156,31 @@ impl Gateway {
                     Ok(())
                 }
             })
+            .await
+    }
+
+    async fn bind_market_bar_consumer(&self) -> Result<ConsumerHandle> {
+        let hub = self.hub.clone();
+        self.bus
+            .consume(
+                subjects::STREAM_MARKET,
+                "gateway-market-bars",
+                subjects::MARKET_BAR_FILTER,
+                move |msg| {
+                    let hub = hub.clone();
+                    async move {
+                        let payload_json: serde_json::Value =
+                            serde_json::from_slice(&msg.payload).unwrap_or(serde_json::Value::Null);
+                        let env = serde_json::json!({
+                            "subject": msg.subject.as_str(),
+                            "kind": "market_bar",
+                            "payload": payload_json,
+                        });
+                        hub.broadcast(env.to_string());
+                        Ok(())
+                    }
+                },
+            )
             .await
     }
 

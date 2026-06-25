@@ -78,7 +78,10 @@ async function json(route: Route, body: unknown, status = 200) {
 
 async function mockApi(
   page: Page,
-  options: { attentionItems?: Record<string, unknown>[] } = {},
+  options: {
+    attentionItems?: Record<string, unknown>[];
+    streamEvents?: Record<string, unknown>[];
+  } = {},
 ): Promise<Calls> {
   const calls: Calls = {
     candleUrls: [],
@@ -111,6 +114,51 @@ async function mockApi(
     resurface_at: null,
     state_reason: "candidate_review",
   }];
+  const streamEvents = options.streamEvents ?? [];
+  if (streamEvents.length > 0) {
+    await page.addInitScript((events: Record<string, unknown>[]) => {
+      class MockEventSource {
+        static readonly CONNECTING = 0;
+        static readonly OPEN = 1;
+        static readonly CLOSED = 2;
+        readonly CONNECTING = 0;
+        readonly OPEN = 1;
+        readonly CLOSED = 2;
+        readonly url: string;
+        readonly withCredentials = false;
+        readyState = MockEventSource.CONNECTING;
+        onopen: ((event: Event) => void) | null = null;
+        onmessage: ((event: MessageEvent) => void) | null = null;
+        onerror: ((event: Event) => void) | null = null;
+
+        constructor(url: string) {
+          this.url = url;
+          window.setTimeout(() => {
+            this.readyState = MockEventSource.OPEN;
+            this.onopen?.(new Event("open"));
+            [
+              { subject: "stream.connected", kind: "stream", payload: { status: "open" } },
+              ...events,
+            ].forEach((event) => {
+              this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(event) }));
+            });
+          }, 0);
+        }
+
+        close() {
+          this.readyState = MockEventSource.CLOSED;
+        }
+
+        addEventListener() {}
+        removeEventListener() {}
+        dispatchEvent() {
+          return true;
+        }
+      }
+
+      window.EventSource = MockEventSource as typeof EventSource;
+    }, streamEvents);
+  }
   const workflowAttentionFor = (symbol: string) =>
     attentionOpen
       ? attentionItems.filter((item) => typeof item.symbol === "string" && item.symbol === symbol)
@@ -380,10 +428,14 @@ async function mockApi(
     const path = url.pathname;
 
     if (path === "/api/stream") {
+      const events = [
+        { subject: "stream.connected", kind: "stream", payload: { status: "open" } },
+        ...streamEvents,
+      ];
       await route.fulfill({
         status: 200,
         contentType: "text/event-stream",
-        body: 'data: {"subject":"stream.connected","kind":"stream","payload":{"status":"open"}}\n\n',
+        body: events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
       });
       return;
     }
@@ -1727,6 +1779,31 @@ test("chart defaults to ALL range and interval controls change bar size only", a
     url.searchParams.get("range") === "ALL"
     && url.searchParams.get("interval") === "1D",
   ).length).toBeGreaterThanOrEqual(2);
+});
+
+test("chart patches latest candle from market bar stream events", async ({ page }) => {
+  await mockApi(page, {
+    streamEvents: [{
+      subject: "market.bar.1D.MSFT",
+      kind: "market_bar",
+      payload: {
+        symbol: "MSFT",
+        interval: "1D",
+        time: "2026-06-01",
+        open: 330,
+        high: 335,
+        low: 329,
+        close: 333.33,
+        volume: 1_234_567,
+        status: "live",
+      },
+    }],
+  });
+  await page.goto("/");
+
+  await expect(page.locator(".symbol-box input")).toHaveValue("MSFT");
+  await expect(page.getByTestId("chart-live-status")).toContainText("live");
+  await expect(page.getByTestId("chart-last-close")).toHaveText("333.33");
 });
 
 test("theses tab lists declined thesis attempts with reasons", async ({ page }) => {

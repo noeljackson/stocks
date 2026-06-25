@@ -297,7 +297,7 @@ async fn persist(pool: &PgPool, score: &super::Score, config_version: &str) -> R
 pub async fn run(pool: PgPool, bus: Bus, interval: Duration) -> Result<()> {
     bus.ensure_stream(subjects::STREAM_THESIS, &["thesis.*"])
         .await?;
-    bus.ensure_stream(subjects::STREAM_MARKET, &["regime.*", "discovery.*"])
+    bus.ensure_stream(subjects::STREAM_MARKET, subjects::MARKET_STREAM_SUBJECTS)
         .await?;
     info!(
         interval_secs = interval.as_secs(),

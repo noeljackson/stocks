@@ -2,6 +2,7 @@
   // ChartPanel — TradingView-style interval controls over lightweight-charts.
   // Renders OHLC + volume in the workspace chart pane.
   import { onMount } from "svelte";
+  import type { StreamEvent } from "./api";
   import {
     createChart,
     CandlestickSeries,
@@ -34,8 +35,11 @@
   type Interval = "1m" | "3m" | "5m" | "15m" | "30m" | "1h" | "2h" | "4h" | "1D" | "1W" | "3W" | "1M";
   type Range = "1D" | "5D" | "1M" | "3M" | "6M" | "200D" | "1Y" | "2Y" | "ALL";
   type ChartState = { interval: Interval; range: Range };
+  type LiveStatus = "disconnected" | "listening" | "live" | "delayed" | "market_closed" | "entitlement_blocked" | "rate_limited";
   let {
     symbol = null as string | null,
+    liveEvents = [] as StreamEvent[],
+    streamConnected = false,
     onStateChange = (_state: ChartState) => {},
   } = $props();
 
@@ -65,12 +69,136 @@
   let coverage = $state<ChartCoverage | null>(null);
   let error = $state<string | null>(null);
   let loading = $state(false);
+  let liveStatus = $state<LiveStatus>("disconnected");
   let loadSeq = 0;
+  let liveScope = "";
+  let seenLiveEventKeys = new Set<string>();
 
   function toUtc(time: string): UTCTimestamp {
     // lightweight-charts wants seconds since epoch for time-based charts.
     const stamp = time.includes("T") ? time : `${time}T00:00:00Z`;
     return Math.floor(new Date(stamp).getTime() / 1000) as UTCTimestamp;
+  }
+
+  function normalizeInterval(value: string | null | undefined): Interval | null {
+    if (!value) return null;
+    const raw = value.trim();
+    const normalized = raw.match(/^[0-9]+[dwm]$/i) ? `${raw.slice(0, -1)}${raw.slice(-1).toUpperCase()}` : raw;
+    return INTERVALS.includes(normalized as Interval) ? normalized as Interval : null;
+  }
+
+  function valueText(value: unknown): string | null {
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+
+  function valueNumber(value: unknown): number | null {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return null;
+  }
+
+  function liveStatusLabel(): string {
+    if (!streamConnected) return "disconnected";
+    switch (liveStatus) {
+      case "live": return "live";
+      case "delayed": return "delayed";
+      case "market_closed": return "market closed";
+      case "entitlement_blocked": return "entitlement blocked";
+      case "rate_limited": return "rate limited";
+      case "disconnected": return "disconnected";
+      default: return "listening";
+    }
+  }
+
+  function marketEventScope(event: StreamEvent): { symbol: string | null; interval: Interval | null } {
+    const subjectParts = event.subject.split(".");
+    const subjectInterval = subjectParts[0] === "market" && subjectParts[1] === "bar"
+      ? normalizeInterval(subjectParts[2])
+      : null;
+    const subjectSymbol = subjectParts[0] === "market" && subjectParts[1] === "bar" && subjectParts.length >= 4
+      ? subjectParts.slice(3).join(".").toUpperCase()
+      : null;
+    const payloadSymbol = valueText(event.payload.symbol)?.toUpperCase() ?? null;
+    const payloadInterval = normalizeInterval(valueText(event.payload.interval));
+    return {
+      symbol: payloadSymbol ?? subjectSymbol,
+      interval: payloadInterval ?? subjectInterval,
+    };
+  }
+
+  function candleFromMarketEvent(event: StreamEvent): Candle | null {
+    const time = valueText(event.payload.time)
+      ?? valueText(event.payload.ts)
+      ?? valueText(event.payload.start)
+      ?? valueText(event.payload.at);
+    const close = valueNumber(event.payload.close ?? event.payload.c);
+    if (!time || close === null) return null;
+    const open = valueNumber(event.payload.open ?? event.payload.o) ?? close;
+    const high = valueNumber(event.payload.high ?? event.payload.h) ?? Math.max(open, close);
+    const low = valueNumber(event.payload.low ?? event.payload.l) ?? Math.min(open, close);
+    const volume = valueNumber(event.payload.volume ?? event.payload.v) ?? 0;
+    return { time, open, high, low, close, volume };
+  }
+
+  function updateLiveStatus(event: StreamEvent) {
+    const status = valueText(event.payload.status)?.toLowerCase();
+    if (status && ["live", "delayed", "market_closed", "entitlement_blocked", "rate_limited", "disconnected"].includes(status)) {
+      liveStatus = status as LiveStatus;
+      return;
+    }
+    liveStatus = streamConnected ? "live" : "disconnected";
+  }
+
+  function mergeLiveCandle(next: Candle) {
+    if (loading || !candles) return false;
+    const merged = [...candles];
+    const nextTs = toUtc(next.time);
+    const existingIndex = merged.findIndex((c) => toUtc(c.time) === nextTs);
+    if (existingIndex >= 0) {
+      const current = merged[existingIndex];
+      merged[existingIndex] = {
+        ...current,
+        ...next,
+        high: Math.max(current.high, next.high),
+        low: Math.min(current.low, next.low),
+        volume: next.volume || current.volume,
+      };
+    } else {
+      merged.push(next);
+      merged.sort((a, b) => (toUtc(a.time) as number) - (toUtc(b.time) as number));
+    }
+    candles = merged;
+    if (interval === "1D" && smaCandles) {
+      const daily = [...smaCandles];
+      const dailyIndex = daily.findIndex((c) => toUtc(c.time) === nextTs);
+      if (dailyIndex >= 0) daily[dailyIndex] = { ...daily[dailyIndex], ...next };
+      else daily.push(next);
+      daily.sort((a, b) => (toUtc(a.time) as number) - (toUtc(b.time) as number));
+      smaCandles = daily;
+    }
+    render();
+    return true;
+  }
+
+  function liveEventKey(event: StreamEvent): string {
+    const time = valueText(event.payload.time) ?? valueText(event.payload.ts) ?? valueText(event.payload.start) ?? "";
+    const close = String(event.payload.close ?? event.payload.c ?? "");
+    return `${event.subject}|${time}|${close}`;
+  }
+
+  function applyLiveMarketEvent(event: StreamEvent) {
+    if (event.kind !== "market_bar" && !event.subject.startsWith("market.bar.")) return;
+    const scope = marketEventScope(event);
+    if (!symbol || scope.symbol !== symbol.toUpperCase() || scope.interval !== interval) return;
+    updateLiveStatus(event);
+    const next = candleFromMarketEvent(event);
+    if (!next) return;
+    const key = liveEventKey(event);
+    if (seenLiveEventKeys.has(key)) return;
+    if (mergeLiveCandle(next)) seenLiveEventKeys.add(key);
   }
 
   function isIntraday(i: Interval) {
@@ -355,6 +483,20 @@
     if (symbol) load(symbol, range, interval);
   });
 
+  $effect(() => {
+    const scope = `${symbol ?? ""}|${interval}`;
+    if (scope !== liveScope) {
+      liveScope = scope;
+      seenLiveEventKeys = new Set<string>();
+      liveStatus = streamConnected ? "listening" : "disconnected";
+    } else if (!streamConnected) {
+      liveStatus = "disconnected";
+    } else if (liveStatus === "disconnected") {
+      liveStatus = "listening";
+    }
+    for (const event of [...liveEvents].reverse()) applyLiveMarketEvent(event);
+  });
+
   onMount(() => {
     return () => {
       chart?.remove();
@@ -375,7 +517,7 @@
       {@const last = candles[candles.length - 1]}
       <span class="meta">
         <span class="muted">close</span>
-        <strong>{last.close.toFixed(2)}</strong>
+        <strong data-testid="chart-last-close">{last.close.toFixed(2)}</strong>
       </span>
       <span class="meta">
         <span class="muted">{candles.length} bars</span>
@@ -397,6 +539,10 @@
       <span class="muted">interval</span>
       <strong>{interval}</strong>
       <span class="muted">{range}</span>
+    </span>
+    <span class="meta" data-testid="chart-live-status">
+      <span class="muted">market data</span>
+      <strong>{liveStatusLabel()}</strong>
     </span>
     {#if events.length > 0}
       <span class="meta"><span class="muted">{events.length} events</span></span>

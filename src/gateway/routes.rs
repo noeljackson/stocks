@@ -3916,6 +3916,12 @@ fn review_packet_actions(kind: &str) -> serde_json::Value {
             json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later without resolving."}),
             json!({"id": "skip", "label": "Skip", "kind": "decision_skip", "detail": "Record a structured skip/defer decision."}),
         ],
+        "thesis_review" => vec![
+            json!({"id": "record_decision", "label": "Record decision", "kind": "decision", "detail": "Open the thesis decision form for this reviewed thesis."}),
+            json!({"id": "skip", "label": "Skip / defer thesis", "kind": "decision_skip", "detail": "Record why this thesis is not being acted on now."}),
+            json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later without resolving."}),
+            json!({"id": "dismiss", "label": "Dismiss", "kind": "attention_dismiss", "detail": "Mark the review item as handled."}),
+        ],
         "risk_review" => vec![
             json!({"id": "open_decision", "label": "Review risk", "kind": "decision", "detail": "Open decision/risk context."}),
             json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later."}),
@@ -5924,6 +5930,13 @@ mod tests {
 
         assert_eq!(decision["intent"], "review_thesis_change");
         assert_eq!(decision["primary_action"]["kind"], "open_symbol");
+        assert!(
+            decision["secondary_actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["kind"] == "decision")
+        );
         assert!(decision["blockers"]
             .as_array()
             .unwrap()

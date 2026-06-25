@@ -249,11 +249,11 @@
     }
     if (item.symbol) await selectSymbol(item.symbol);
     if (action.kind === "decision") {
-      openDecisionDrawer("enter");
+      openDecisionDrawer(reviewPacketDecisionAction(item), item.thesis_id);
       return;
     }
     if (action.kind === "decision_skip") {
-      openDecisionDrawer("skip");
+      openDecisionDrawer("skip", item.thesis_id);
       return;
     }
     if (action.kind === "open_evidence") {
@@ -1326,13 +1326,26 @@
     if (!bottomOpen) bottomPane?.expand();
   }
 
-  function openDecisionDrawer(action = "skip") {
-    if (currentSymbolThesis) decThesisId = currentSymbolThesis.thesis_id;
+  function decisionActionForThesis(thesis: ThesisDetail): "enter" | "skip" {
+    return ["actionable", "armed", "building_conviction"].includes(thesis.state) ? "enter" : "skip";
+  }
+
+  function openDecisionDrawer(action = "skip", thesisId: string | null = null) {
+    if (thesisId) decThesisId = thesisId;
+    else if (currentSymbolThesis) decThesisId = currentSymbolThesis.thesis_id;
     decAction = action;
     if (action === "enter") decChoice = "confirmed";
     if (action === "skip") decChoice = "deferred";
     bottomMode = "decisions";
     if (!bottomOpen) bottomPane?.expand();
+  }
+
+  function openThesisDecision(thesis: ThesisDetail) {
+    openDecisionDrawer(decisionActionForThesis(thesis), thesis.thesis_id);
+  }
+
+  function reviewPacketDecisionAction(item: AttentionItem): "enter" | "skip" {
+    return item.kind === "thesis_actionable" ? "enter" : "skip";
   }
 
   function openBrainDrawer() {
@@ -4398,7 +4411,7 @@
                     </p>
                   {/if}
                   {#if currentSymbolThesis}
-                    <ThesisDetails thesis={currentSymbolThesis} />
+                    <ThesisDetails thesis={currentSymbolThesis} onRecordDecision={openThesisDecision} />
                   {:else}
                     <p class="muted">No open thesis for <strong>{selectedSymbol}</strong>.</p>
                   {/if}

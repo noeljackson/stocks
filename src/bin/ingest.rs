@@ -14,6 +14,7 @@ use stocks::ingest::edgar::EdgarAdapter;
 use stocks::ingest::fmp::FmpPriceAdapter;
 use stocks::ingest::fmp_estimates::FmpEstimatesAdapter;
 use stocks::ingest::fmp_estimates_service;
+use stocks::ingest::fmp_live_bars_service;
 use stocks::ingest::fmp_news::FmpNewsAdapter;
 use stocks::ingest::fmp_opinion::FmpOpinionAdapter;
 use stocks::ingest::fmp_opinion_service;
@@ -319,6 +320,23 @@ async fn main() -> Result<()> {
                     }
                 }
                 tokio::time::sleep(interval).await;
+            }
+        });
+    }
+
+    // Delayed live chart bars (#263). This is not a true websocket feed; it
+    // polls FMP native 1-minute bars, persists them, and publishes aggregate
+    // market.bar.* events so charts update without manual refresh.
+    {
+        let store = store.clone();
+        let bus = bus.clone();
+        let key = cfg.fmp_api_key.clone();
+        let base = cfg.fmp_base_url.clone();
+        tokio::spawn(async move {
+            let adapter = stocks::ingest::fmp_intraday::FmpIntradayAdapter::new(&key, &base);
+            let interval = ingest::interval_secs_from_env("FMP_LIVE_BAR_INTERVAL_SECS", 60);
+            if let Err(e) = fmp_live_bars_service::run(store, bus, adapter, interval).await {
+                error!(error = %e, "fmp_live_bars service exited");
             }
         });
     }

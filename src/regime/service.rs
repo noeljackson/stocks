@@ -34,7 +34,7 @@ struct State {
 
 /// Run the regime classifier service.
 pub async fn run(store: Store, bus: Bus) -> Result<ConsumerHandle> {
-    bus.ensure_stream(subjects::STREAM_MARKET, &["regime.*", "discovery.*"])
+    bus.ensure_stream(subjects::STREAM_MARKET, subjects::MARKET_STREAM_SUBJECTS)
         .await?;
 
     let state = Arc::new(Mutex::new(State::default()));

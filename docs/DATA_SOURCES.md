@@ -50,7 +50,7 @@ file an issue and link it from the relevant row's "status" column.
 | Commodity/factor proxy bars | First slice for copper/wheat/factor parent theses via tradable proxies such as CPER, WEAT, and XME | FMP | Starter | same EOD/intraday endpoints as equities/ETFs | wired as price bars when proxies are active tickers; direct futures/inventory/USDA/weather remain separate gaps |
 | Options chains | LEAPS thesis instrument selection (#5 epic) | Massive Options Starter $29/mo extra (or FMP has thin coverage — verify before swap) | `/v3/snapshot/options/{underlying}` (Massive) | not wired |
 | Corporate actions (splits/dividends) | Implicit — FMP serves adjusted close | FMP (built into adjusted prices) | included | implicit |
-| Realtime quotes / websocket | Not needed at v0 (forward-only validation per SPEC §9 uses end-of-day) | FMP websocket limited; Massive better | varies | not wired |
+| Live aggregate bars / websocket | TradingView-style in-progress candle updates while the operator watches a symbol | FMP delayed polling now; future upgrade path is Massive/Polygon-style aggregates or IBKR market data with entitlement caveats | FMP Starter included; true websocket provider varies by entitlement | FMP `/stable/historical-chart/1min` polled by `fmp_live_bars` | partial - ingest publishes delayed `market.bar.<interval>.<symbol>` events for active symbols, gateway fans them out over `/api/stream`, and `ChartPanel` patches/appends the visible candle for matching symbol+interval; true websocket adapter tracked in #278 |
 | Technical analog package | Multi-timeframe RSI/SMA state, time-in-zone, prior 200-day SMA cross behavior, forward paths after similar regimes | Derived from price bars | n/a | local computation over `price_bar` and `price_bar_intraday` | not wired as first-class API/table; chart displays SMA ribbon and RSI, thesis prompt receives daily `price_snapshot` |
 
 **Note:** Massive was the original price source (`src/ingest/massive.rs`); kept in
@@ -79,7 +79,9 @@ Expensive per-symbol loops do not scan the entire screener pool every pass.
 They use `Store::priority_scan_symbols()`: active tickers first, then Tier 1/2
 proposed discovery candidates, capped per provider loop. Dev defaults are
 `FMP_PRICE_MAX_SYMBOLS_PER_PASS=125`, `FMP_ESTIMATES_MAX_SYMBOLS_PER_PASS=100`,
-`FMP_OPINION_MAX_SYMBOLS_PER_PASS=75`, `NEWS_MAX_SYMBOLS_PER_PASS=100`,
+`FMP_OPINION_MAX_SYMBOLS_PER_PASS=75`, `FMP_LIVE_BAR_MAX_SYMBOLS_PER_PASS=25`,
+`FMP_LIVE_BAR_INTERVAL_SECS=60`, `FMP_LIVE_BAR_ENTITLEMENT_BACKOFF_SECS=3600`,
+`NEWS_MAX_SYMBOLS_PER_PASS=100`,
 `EDGAR_MAX_SYMBOLS_PER_PASS=100`, and `XBRL_MAX_SYMBOLS_PER_PASS=100`.
 
 ## 2. Fundamentals

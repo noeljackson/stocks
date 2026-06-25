@@ -106,14 +106,29 @@ impl Provider for OpenAiCompatProvider {
         let system = append_schema_to_system(&req.system, req.json_schema.as_ref());
         let mut msgs: Vec<Message> = Vec::with_capacity(req.messages.len() + 1);
         if !system.is_empty() {
-            msgs.push(Message { role: "system".into(), content: system });
+            msgs.push(Message {
+                role: "system".into(),
+                content: system,
+            });
         }
         msgs.extend(req.messages.iter().cloned());
 
-        let model = if req.model.is_empty() { &self.model } else { &req.model };
-        let max_tokens = if req.max_tokens == 0 { DEFAULT_MAX_TOKENS } else { req.max_tokens };
+        let model = if req.model.is_empty() {
+            &self.model
+        } else {
+            &req.model
+        };
+        let max_tokens = if req.max_tokens == 0 {
+            DEFAULT_MAX_TOKENS
+        } else {
+            req.max_tokens
+        };
 
-        let body = ReqBody { model, messages: &msgs, max_tokens };
+        let body = ReqBody {
+            model,
+            messages: &msgs,
+            max_tokens,
+        };
         let url = format!("{}/v1/chat/completions", self.base_url);
         let resp = self
             .client

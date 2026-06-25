@@ -103,8 +103,16 @@ struct ErrorBody {
 impl Provider for AnthropicProvider {
     async fn complete(&self, req: Request) -> anyhow::Result<Response> {
         let system = append_schema_to_system(&req.system, req.json_schema.as_ref());
-        let model = if req.model.is_empty() { &self.model } else { &req.model };
-        let max_tokens = if req.max_tokens == 0 { DEFAULT_MAX_TOKENS } else { req.max_tokens };
+        let model = if req.model.is_empty() {
+            &self.model
+        } else {
+            &req.model
+        };
+        let max_tokens = if req.max_tokens == 0 {
+            DEFAULT_MAX_TOKENS
+        } else {
+            req.max_tokens
+        };
 
         let body = ReqBody {
             model,
@@ -139,10 +147,14 @@ impl Provider for AnthropicProvider {
             ));
         }
 
-        let parsed: RespBody = serde_json::from_slice(&bytes)
-            .map_err(|e| anyhow::anyhow!("anthropic decode: {e}"))?;
+        let parsed: RespBody =
+            serde_json::from_slice(&bytes).map_err(|e| anyhow::anyhow!("anthropic decode: {e}"))?;
         if let Some(err) = parsed.error {
-            return Err(anyhow::anyhow!("anthropic {}: {}", err.err_type, err.message));
+            return Err(anyhow::anyhow!(
+                "anthropic {}: {}",
+                err.err_type,
+                err.message
+            ));
         }
         let content: String = parsed
             .content

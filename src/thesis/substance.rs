@@ -95,7 +95,10 @@ pub fn substance_report(t: &Thesis) -> SubstanceReport {
     }
 
     // First state this thesis cannot enter, walking the lifecycle in order.
-    let blocked_at = if missing.iter().any(|m| m == "forecast" || m == "conviction_conditions") {
+    let blocked_at = if missing
+        .iter()
+        .any(|m| m == "forecast" || m == "conviction_conditions")
+    {
         Some(ThesisState::BuildingConviction)
     } else if missing
         .iter()
@@ -110,8 +113,7 @@ pub fn substance_report(t: &Thesis) -> SubstanceReport {
         None
     };
 
-    let score = u8::try_from(SubstanceReport::MAX_SCORE as usize - missing.len())
-        .unwrap_or(0);
+    let score = u8::try_from(SubstanceReport::MAX_SCORE as usize - missing.len()).unwrap_or(0);
     SubstanceReport {
         score,
         max_score: SubstanceReport::MAX_SCORE,
@@ -224,7 +226,10 @@ mod tests {
             fulfillment: vec![vague_condition("f1")],
         };
         let r = substance_report(&t);
-        assert_eq!(r.score, 2, "forecast + intended_size, none of the conditions count");
+        assert_eq!(
+            r.score, 2,
+            "forecast + intended_size, none of the conditions count"
+        );
         assert!(r.missing.iter().any(|m| m == "conviction_conditions"));
         assert!(r.missing.iter().any(|m| m == "trigger_conditions"));
         assert!(r.missing.iter().any(|m| m == "invalidation_conditions"));
@@ -275,12 +280,8 @@ mod tests {
             conviction: vec![well_formed_condition("c")],
             ..Thesis::default()
         };
-        let err = promotion_allowed(
-            ThesisState::BuildingConviction,
-            ThesisState::Armed,
-            &t,
-        )
-        .unwrap_err();
+        let err =
+            promotion_allowed(ThesisState::BuildingConviction, ThesisState::Armed, &t).unwrap_err();
         assert!(err.iter().any(|m| m == "invalidation_conditions"));
         assert!(err.iter().any(|m| m == "trigger_conditions"));
     }
@@ -338,8 +339,7 @@ mod tests {
     #[test]
     fn no_self_transitions() {
         let t = empty_thesis();
-        let err =
-            promotion_allowed(ThesisState::Forming, ThesisState::Forming, &t).unwrap_err();
+        let err = promotion_allowed(ThesisState::Forming, ThesisState::Forming, &t).unwrap_err();
         assert!(err[0].contains("illegal transition"));
     }
 

@@ -16,7 +16,7 @@ import os
 import re
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 from xml.etree import ElementTree
 
 import asyncpg
@@ -95,12 +95,19 @@ def _truncate(value: str | None, limit: int = 500) -> str | None:
 def _parse_time(value: str | None) -> dt.datetime | None:
     if not value:
         return None
-    for fmt in ("%Y%m%d%H%M%S", "%Y-%m-%dT%H:%M:%SZ"):
+    for fmt in ("%Y%m%d%H%M%S", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
         try:
             parsed = dt.datetime.strptime(value, fmt)
             return parsed.replace(tzinfo=dt.UTC)
         except ValueError:
             continue
+    try:
+        parsed = parsedate_to_datetime(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.UTC)
+        return parsed.astimezone(dt.UTC)
+    except (TypeError, ValueError):
+        pass
     return None
 
 
@@ -189,16 +196,30 @@ def build_queries(
     profile: dict,
     context: dict | None,
     max_queries: int = 6,
+    extra_queries: list[str] | None = None,
 ) -> list[str]:
     company = (
         (profile.get("company_name") or symbol)
         .replace(", Inc.", "")
         .replace(" Corporation", "")
     )
+    company = " ".join(COMPANY_SUFFIX_RE.sub(" ", company.replace(",", " ")).split()) or symbol
     industry = profile.get("industry")
     terms = STATIC_PRODUCT_TERMS.get(symbol.upper(), []) + _extract_terms(context)
 
     raw: list[str] = []
+    company_aliases = _company_aliases(symbol, profile)
+    for query in extra_queries or []:
+        query = " ".join(str(query).split())
+        if not query:
+            continue
+        normalized = _normalized_phrase(query)
+        if (
+            not _symbol_in_text(symbol, query)
+            and not any(alias and alias in normalized for alias in company_aliases)
+        ):
+            query = f"{company} {query}"
+        raw.append(query)
     for term in terms:
         raw.append(f"{company} {term} deployment benchmark adoption")
         raw.append(f"{symbol} {term} vs competitor customer production")
@@ -526,6 +547,117 @@ class BingNewsProvider:
         return out
 
 
+class FirecrawlProvider:
+    name = "firecrawl"
+
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        search_path: str | None = None,
+        timeout_seconds: float = 30.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self.base_url = (base_url or os.getenv("FIRECRAWL_BASE_URL") or "http://localhost:3002").rstrip("/")
+        self.search_path = search_path or os.getenv("FIRECRAWL_SEARCH_PATH", "/v2/search")
+        headers = {
+            "user-agent": "stocks-research/0.1 (+https://github.com/noeljackson/stocks)",
+            "content-type": "application/json",
+        }
+        api_key = api_key if api_key is not None else os.getenv("FIRECRAWL_API_KEY")
+        if api_key:
+            headers["authorization"] = f"Bearer {api_key}"
+        self._client = httpx.AsyncClient(
+            timeout=timeout_seconds,
+            headers=headers,
+            transport=transport,
+        )
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+    async def search(self, query: str, *, max_results: int) -> list[SearchResult]:
+        resp = await self._client.post(
+            urljoin(f"{self.base_url}/", self.search_path.lstrip("/")),
+            json={
+                "query": query,
+                "limit": max_results,
+                "sources": ["web"],
+                "country": os.getenv("FIRECRAWL_SEARCH_COUNTRY", "US"),
+                "tbs": os.getenv("FIRECRAWL_SEARCH_TBS", "qdr:m"),
+                "ignoreInvalidURLs": True,
+            },
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        return self._parse_results(payload, max_results=max_results)
+
+    def _parse_results(self, payload: dict, *, max_results: int) -> list[SearchResult]:
+        data = payload.get("data") or {}
+        buckets: list[tuple[str, dict]] = []
+        if isinstance(data, list):
+            buckets.extend(("web", item) for item in data if isinstance(item, dict))
+        elif isinstance(data, dict):
+            for source_type in ("web", "news"):
+                rows = data.get(source_type) or []
+                if isinstance(rows, list):
+                    buckets.extend((source_type, item) for item in rows if isinstance(item, dict))
+
+        out: list[SearchResult] = []
+        seen_urls: set[str] = set()
+        for bucket, item in buckets:
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            url = item.get("url") or metadata.get("sourceURL") or metadata.get("url")
+            title = item.get("title") or metadata.get("title")
+            if not url or not title:
+                continue
+            canonical_url = _canonical_url(str(url))
+            if canonical_url in seen_urls:
+                continue
+            seen_urls.add(canonical_url)
+            summary = (
+                item.get("description")
+                or item.get("snippet")
+                or item.get("summary")
+                or _truncate(item.get("markdown"), 500)
+                or metadata.get("description")
+            )
+            publisher = (
+                item.get("source")
+                or item.get("publisher")
+                or metadata.get("siteName")
+                or urlparse(canonical_url).netloc
+            )
+            published_at = _parse_time(
+                item.get("date")
+                or item.get("publishedDate")
+                or metadata.get("publishedTime")
+                or metadata.get("date")
+            )
+            out.append(
+                SearchResult(
+                    title=str(title),
+                    url=canonical_url,
+                    publisher=str(publisher) if publisher else None,
+                    published_at=published_at,
+                    summary=str(summary) if summary else None,
+                    source_type="news_search" if bucket == "news" else "web_search",
+                    credibility=_credibility(canonical_url, str(publisher) if publisher else None),
+                    source_ref={
+                        "provider": self.name,
+                        "firecrawl_job_id": payload.get("id"),
+                        "firecrawl_credits_used": payload.get("creditsUsed"),
+                        "firecrawl_source": bucket,
+                        "metadata": metadata,
+                    },
+                )
+            )
+            if len(out) >= max_results:
+                break
+        return out
+
+
 async def _mark_started(pool: asyncpg.Pool, symbols_attempted: int) -> None:
     await pool.execute(
         """INSERT INTO source_health
@@ -743,7 +875,21 @@ async def _recent_run_exists(
     symbol: str,
     *,
     max_age_hours: int,
+    providers: list[str] | None = None,
 ) -> bool:
+    if providers:
+        rows = await pool.fetch(
+            """SELECT DISTINCT provider
+                 FROM research_retrieval_run
+                WHERE symbol = $1
+                  AND finished_at > now() - ($2::text || ' hours')::interval
+                  AND provider = ANY($3::text[])""",
+            symbol,
+            str(max_age_hours),
+            providers,
+        )
+        recent = {str(row["provider"]) for row in rows}
+        return set(providers).issubset(recent)
     return bool(
         await pool.fetchval(
             """SELECT EXISTS (
@@ -765,29 +911,51 @@ async def refresh_research_evidence(
     context: dict | None = None,
     force: bool = False,
     disabled_providers: set[str] | None = None,
+    extra_queries: list[str] | None = None,
 ) -> int:
     provider_setting = os.getenv("RESEARCH_PROVIDER", "gdelt,bing_news").lower()
     if provider_setting in {"", "off", "none"}:
         return 0
     max_age_hours = _env_int("RESEARCH_MAX_AGE_HOURS", 24)
-    if not force and await _recent_run_exists(pool, symbol, max_age_hours=max_age_hours):
-        return 0
 
     max_queries = max(1, _env_int("RESEARCH_MAX_QUERIES", 6))
     max_results = max(1, _env_int("RESEARCH_MAX_RESULTS_PER_QUERY", 5))
     min_interval_ms = max(0, _env_int("RESEARCH_MIN_REQUEST_INTERVAL_MS", 1500))
     profile = await _company_profile(pool, symbol)
-    queries = build_queries(symbol, profile, context, max_queries=max_queries)
+    queries = build_queries(
+        symbol,
+        profile,
+        context,
+        max_queries=max_queries,
+        extra_queries=extra_queries,
+    )
     providers = []
     requested = {p.strip() for p in provider_setting.split(",")}
     if "gdelt" in requested or "gdelt_doc" in requested:
         providers.append(GdeltProvider())
     if "bing" in requested or "bing_news" in requested or "bing_news_rss" in requested:
         providers.append(BingNewsProvider())
+    if "firecrawl" in requested:
+        providers.append(FirecrawlProvider())
     if not providers:
         providers = [BingNewsProvider()]
 
     disabled_providers = set(disabled_providers or set())
+    active_provider_names = [p.name for p in providers if p.name not in disabled_providers]
+    if (
+        not force
+        and active_provider_names
+        and await _recent_run_exists(
+            pool,
+            symbol,
+            max_age_hours=max_age_hours,
+            providers=active_provider_names,
+        )
+    ):
+        for provider in providers:
+            await provider.close()
+        return 0
+
     rows_seen = 0
     rows_inserted = 0
     provider_failures = 0

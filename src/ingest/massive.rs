@@ -170,7 +170,11 @@ impl MassiveAdapter {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("massive {symbol} {}: {}", status.as_u16(), &body[..body.len().min(256)]);
+            anyhow::bail!(
+                "massive {symbol} {}: {}",
+                status.as_u16(),
+                &body[..body.len().min(256)]
+            );
         }
         let parsed: AggsResponse = resp
             .json()

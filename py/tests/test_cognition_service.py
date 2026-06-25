@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -44,6 +45,16 @@ class FakeMsg:
 
     async def in_progress(self) -> None:
         self.progress_calls += 1
+
+
+class FakeConfirmedMsg(FakeMsg):
+    def __init__(self, payload: dict) -> None:
+        super().__init__()
+        self.data = json.dumps(payload).encode("utf-8")
+        self.acked = False
+
+    async def ack(self) -> None:
+        self.acked = True
 
 
 class ReclaimPool:
@@ -185,6 +196,93 @@ async def test_pipeline_reconciles_existing_open_thesis(monkeypatch: pytest.Monk
     assert pool.finish_args[1] == "no_change"
     assert pool.finish_args[3] == 7
     assert pool.finish_args[5] == "no_change"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_passes_force_research_to_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = FakePool(open_theses=0)
+    context_calls: list[tuple[str, bool]] = []
+
+    async def refresh_context(symbol: str, *, force_research: bool = False) -> int:
+        context_calls.append((symbol, force_research))
+        return 3
+
+    async def load_open_evidence_requirements(pool_arg, symbol: str) -> list[dict]:
+        assert pool_arg is pool
+        assert symbol == "AVGO"
+        return []
+
+    async def draft_thesis(symbol: str) -> dict:
+        assert symbol == "AVGO"
+        return {
+            "_thesis_id": "22222222-2222-4222-8222-222222222222",
+        }
+
+    async def noop(_thesis_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(cognition_service, "refresh_context", refresh_context)
+    monkeypatch.setattr(
+        cognition_service,
+        "load_open_evidence_requirements",
+        load_open_evidence_requirements,
+    )
+    monkeypatch.setattr(cognition_service, "draft_thesis", draft_thesis)
+    monkeypatch.setattr(cognition_service, "sharpen_thesis", noop)
+    monkeypatch.setattr(cognition_service, "challenge_thesis", noop)
+
+    await cognition_service._run_pipeline(
+        pool,
+        "avgo",
+        source_ref={"trigger": "ui_start_research", "force_research": True},
+    )
+
+    assert context_calls == [("AVGO", True)]
+
+
+@pytest.mark.asyncio
+async def test_on_confirmed_preserves_force_research_source_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = FakePool()
+    captured: dict[str, object] = {}
+
+    async def run_symbol_once(symbol: str, runner, *_args, **_kwargs) -> bool:
+        captured["symbol_once"] = symbol
+        await runner()
+        return True
+
+    async def run_pipeline(pool_arg, symbol: str, *, candidate_id=None, source_ref=None) -> None:
+        assert pool_arg is pool
+        captured["pipeline"] = {
+            "symbol": symbol,
+            "candidate_id": candidate_id,
+            "source_ref": source_ref,
+        }
+
+    monkeypatch.setattr(cognition_service, "_run_symbol_once", run_symbol_once)
+    monkeypatch.setattr(cognition_service, "_run_pipeline", run_pipeline)
+
+    msg = FakeConfirmedMsg({
+        "symbol": "AVGO",
+        "trigger": "ui_start_research",
+        "reason": "operator_requested_research_refresh",
+        "force_research": True,
+        "requested_actions": ["firecrawl_search"],
+    })
+
+    await cognition_service._on_confirmed(pool, msg)
+
+    assert msg.acked is True
+    assert captured["symbol_once"] == "AVGO"
+    pipeline = captured["pipeline"]
+    assert pipeline["symbol"] == "AVGO"
+    assert pipeline["candidate_id"] is None
+    assert pipeline["source_ref"]["trigger"] == "ui_start_research"
+    assert pipeline["source_ref"]["force_research"] is True
+    assert pipeline["source_ref"]["requested_actions"] == ["firecrawl_search"]
 
 
 def test_sweep_trigger_marks_open_thesis_update_when_evidence_exists() -> None:

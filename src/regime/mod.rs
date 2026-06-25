@@ -79,7 +79,11 @@ pub fn classify(cfg: &Config, inputs: &HashMap<String, f64>) -> Outcome {
                 Err(err) => reasons.push(format!("rule {state}.{name}: {err}")),
             }
         }
-        let score = if total > 0 { f64::from(sat) / f64::from(total) } else { 0.0 };
+        let score = if total > 0 {
+            f64::from(sat) / f64::from(total)
+        } else {
+            0.0
+        };
         matched.insert(state.clone(), score);
     }
 

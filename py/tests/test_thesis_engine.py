@@ -4,6 +4,7 @@ from stocks.thesis_engine import (
     _evidence_weight,
     _extract_json,
     _normalize_known_unknowns,
+    _normalize_research_requests,
     _normalize_system_confidence,
     _system_confidence_components,
     _thesis_review_attention_payload,
@@ -212,6 +213,65 @@ def test_normalize_known_unknowns_keeps_explicit_questions() -> None:
         "deadline_at": "2026-08-01T00:00:00Z",
         "evidence_source": "news:contract_pricing",
     }]
+
+
+def test_normalize_research_requests_caps_and_canonicalizes() -> None:
+    out = _normalize_research_requests(
+        "AVGO",
+        {
+            "research_requests": [
+                {
+                    "question": "AVGO Broadcom custom silicon hyperscaler share gains 2026",
+                    "requirement_key": "customer_research",
+                    "priority": "urgent",
+                    "providers": ["firecrawl", "nonsense", "bing_news_rss"],
+                    "reason": "This would change confidence in custom ASIC growth.",
+                },
+                {"question": "too short"},
+                {
+                    "question": "AVGO Broadcom custom silicon hyperscaler share gains 2026",
+                },
+                {
+                    "question": "Broadcom VMware cross-sell evidence after acquisition",
+                },
+                {
+                    "question": "Broadcom networking switch customer deployment momentum",
+                },
+                {
+                    "question": "Broadcom fourth question should be capped",
+                },
+            ],
+        },
+    )
+
+    assert len(out) == 3
+    assert out[0] == {
+        "question": "AVGO Broadcom custom silicon hyperscaler share gains 2026",
+        "requirement_key": "product_research",
+        "source_type": "web_research",
+        "priority": "high",
+        "providers": ["firecrawl", "bing_news_rss"],
+        "reason": "This would change confidence in custom ASIC growth.",
+        "status": "queued",
+        "requested_by": "thesis_engine",
+    }
+
+
+def test_normalize_known_unknowns_includes_research_requests() -> None:
+    out = _normalize_known_unknowns(
+        "AVGO",
+        {
+            "research_requests": [{
+                "question": "Is Broadcom winning more custom silicon sockets?",
+                "reason": "Customer socket wins would change confidence.",
+            }],
+        },
+    )
+
+    assert out[0]["question"] == "Is Broadcom winning more custom silicon sockets?"
+    assert out[0]["status"] == "research_requested"
+    assert out[0]["auto_research"] is True
+    assert out[0]["evidence_source"] == "auto:web_research"
 
 
 def test_normalize_known_unknowns_derives_from_missing_evidence() -> None:

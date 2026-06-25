@@ -584,7 +584,10 @@ def _extract_json(content: str) -> dict:
     try:
         return json.loads(s)
     except json.JSONDecodeError:
-        pass
+        try:
+            return json.loads(s, strict=False)
+        except json.JSONDecodeError:
+            pass
     # Strip common markdown wrappers.
     for fence in ("```json", "```"):
         if s.startswith(fence):
@@ -595,12 +598,19 @@ def _extract_json(content: str) -> dict:
     try:
         return json.loads(s)
     except json.JSONDecodeError:
-        pass
+        try:
+            return json.loads(s, strict=False)
+        except json.JSONDecodeError:
+            pass
     # Last resort: find first balanced brace.
     start = s.find("{")
     end = s.rfind("}")
     if start >= 0 and end > start:
-        return json.loads(s[start:end + 1])
+        block = s[start:end + 1]
+        try:
+            return json.loads(block)
+        except json.JSONDecodeError:
+            return json.loads(block, strict=False)
     raise ValueError(f"could not parse JSON from LLM response: {s[:200]}")
 
 
@@ -760,7 +770,7 @@ async def _persist_context(
     return new_version
 
 
-async def refresh(symbol: str, *, limit: int = 50) -> int:
+async def refresh(symbol: str, *, limit: int = 50, force_research: bool = False) -> int:
     """Refresh context for `symbol`. Returns the new ticker_context.version."""
     cfg = config.load()
     pool = await asyncpg.create_pool(cfg.database_url, min_size=1, max_size=2)
@@ -789,6 +799,7 @@ async def refresh(symbol: str, *, limit: int = 50) -> int:
             pool,
             symbol,
             context=prior,
+            force=force_research,
         )
         research_evidence = await load_research_evidence(pool, symbol)
         evidence_counts = await load_evidence_counts(pool, symbol)

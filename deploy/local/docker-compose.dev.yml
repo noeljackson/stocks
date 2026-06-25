@@ -225,6 +225,10 @@ services:
       - RESEARCH_MAX_QUERIES=${RESEARCH_MAX_QUERIES:-6}
       - RESEARCH_MAX_RESULTS_PER_QUERY=${RESEARCH_MAX_RESULTS_PER_QUERY:-5}
       - RESEARCH_MIN_REQUEST_INTERVAL_MS=${RESEARCH_MIN_REQUEST_INTERVAL_MS:-1500}
+      - FIRECRAWL_BASE_URL=${FIRECRAWL_BASE_URL:-http://firecrawl-api:3002}
+      - FIRECRAWL_API_KEY
+      - FIRECRAWL_SEARCH_PATH=${FIRECRAWL_SEARCH_PATH:-/v2/search}
+      - FIRECRAWL_SEARCH_TBS=${FIRECRAWL_SEARCH_TBS:-qdr:m}
     command: >-
       sh -c "pip install -q -e . && python -m stocks.cognition_service"
     depends_on:

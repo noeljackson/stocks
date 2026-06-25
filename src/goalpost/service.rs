@@ -143,7 +143,11 @@ async fn record_version(
     rationale: &str,
     weakens: bool,
 ) -> Result<()> {
-    let rationale_opt: Option<&str> = if rationale.is_empty() { None } else { Some(rationale) };
+    let rationale_opt: Option<&str> = if rationale.is_empty() {
+        None
+    } else {
+        Some(rationale)
+    };
     sqlx::query(
         r#"INSERT INTO thesis_version_history
              (thesis_id, version, diff, rationale, weakens_invalidation)

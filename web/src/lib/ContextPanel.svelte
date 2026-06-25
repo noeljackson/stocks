@@ -1,33 +1,24 @@
 <script lang="ts">
-  import type { TickerContext } from "./api";
+  import { startSymbolResearch, type TickerContext } from "./api";
 
   let {
     ctx,
     symbol,
     autoSynthesize = true,
     blockedReason = "",
+    onStarted = async () => {},
   }: {
     ctx: TickerContext | null;
     symbol: string;
     autoSynthesize?: boolean;
     blockedReason?: string;
+    onStarted?: () => void | Promise<void>;
   } = $props();
 
   let openBand = $state<"structural" | "narrative" | "market" | null>("structural");
   let synthError = $state<string | null>(null);
-  // Track per-symbol so we only fire once per ticker per session, even if
-  // ctx stays null across multiple re-renders.
-  const fired = new Set<string>();
-
-  // Auto-trigger synthesis the moment we render with no context. No button —
-  // the parent's polling picks up v1 within ~30s of the LLM call returning.
-  $effect(() => {
-    if (!autoSynthesize) return;
-    if (ctx !== null || !symbol) return;
-    if (fired.has(symbol)) return;
-    fired.add(symbol);
-    void synthesize();
-  });
+  let synthBusy = $state(false);
+  let synthStatus = $state<string | null>(null);
 
   function shortTs(s: string | null | undefined): string {
     if (!s) return "—";
@@ -67,14 +58,16 @@
 
   async function synthesize() {
     synthError = null;
+    synthStatus = null;
+    synthBusy = true;
     try {
-      const res = await fetch(
-        `/api/symbols/${encodeURIComponent(symbol)}/refresh-context`,
-        { method: "POST" },
-      );
-      if (!res.ok) synthError = `HTTP ${res.status}`;
+      const res = await startSymbolResearch(symbol);
+      synthStatus = `${res.queued} research task${res.queued === 1 ? "" : "s"} queued`;
+      await onStarted();
     } catch (e) {
       synthError = e instanceof Error ? e.message : String(e);
+    } finally {
+      synthBusy = false;
     }
   }
 </script>
@@ -96,14 +89,19 @@
   </div>
 {:else if ctx === null}
   <div class="empty">
-    <h4>Context <span class="muted-chip">synthesizing…</span></h4>
+    <h4>Context <span class="muted-chip">missing</span></h4>
     <p class="muted">
-      Cognition pipeline is composing the first context version for
-      <strong>{symbol}</strong> from the ingested news + estimates + price
-      evidence. Usually appears within ~30s.
+      <strong>{symbol}</strong> is in the active Universe, but no context exists yet.
+      Start research to queue web sources, refresh context, and kick thesis work.
     </p>
+    <button type="button" class="primary-action" disabled={synthBusy} onclick={synthesize}>
+      {synthBusy ? "Starting..." : "Start research now"}
+    </button>
+    {#if synthStatus}
+      <p class="muted">{synthStatus}</p>
+    {/if}
     {#if synthError}
-      <p class="err">Refresh failed: {synthError}</p>
+      <p class="err">Start research failed: {synthError}</p>
     {/if}
   </div>
 {:else}
@@ -271,6 +269,18 @@
   }
   .band-hdr:hover { background: #131927; }
   .band-hdr.active { background: rgba(137, 180, 250, 0.06); border-color: #2a3548; }
+  .primary-action {
+    border: 1px solid rgba(166, 227, 161, 0.55);
+    background: rgba(166, 227, 161, 0.16);
+    color: #dff7dc;
+    border-radius: 6px;
+    padding: .55rem .8rem;
+    cursor: pointer;
+  }
+  .primary-action:disabled {
+    cursor: wait;
+    opacity: .65;
+  }
   .caret { color: #6c7086; font-size: 0.8rem; width: 1rem; }
   .band-body {
     background: #0a0d14; padding: 0.5rem 0.75rem; border-radius: 4px;

@@ -43,7 +43,11 @@ pub fn news_sentiment_shift(
         return None;
     }
     let shift = recent_avg - prior_avg;
-    if shift.abs() >= min_shift { Some(shift) } else { None }
+    if shift.abs() >= min_shift {
+        Some(shift)
+    } else {
+        None
+    }
 }
 
 /// Volume anomaly: today's volume relative to the 20-day average.
@@ -76,7 +80,11 @@ pub fn volume_anomaly(volumes_desc: &[f64], threshold_x: f64) -> Option<f64> {
 /// (range of last 20 < 8% of midpoint). Returns Some(breakout_pct) if
 /// fired — the % above the breakout level.
 #[must_use]
-pub fn base_breakout(closes_desc: &[f64], breakout_window: usize, tightness_pct: f64) -> Option<f64> {
+pub fn base_breakout(
+    closes_desc: &[f64],
+    breakout_window: usize,
+    tightness_pct: f64,
+) -> Option<f64> {
     if closes_desc.len() < breakout_window + 1 {
         return None;
     }
@@ -89,7 +97,11 @@ pub fn base_breakout(closes_desc: &[f64], breakout_window: usize, tightness_pct:
         return None;
     }
     let mid = (high + low) / 2.0;
-    let range_pct = if mid > 0.0 { (high - low) / mid * 100.0 } else { 100.0 };
+    let range_pct = if mid > 0.0 {
+        (high - low) / mid * 100.0
+    } else {
+        100.0
+    };
     if range_pct > tightness_pct {
         return None;
     }
@@ -189,8 +201,11 @@ mod tests {
     #[test]
     fn revision_velocity_silent_when_mixed() {
         // 3 up, 2 down: net=1, way below min, OR even if min=1:
-        assert_eq!(estimate_revision_velocity(3, 2, 1), None,
-            "3 vs 2 is too close; bigger must be >2x smaller");
+        assert_eq!(
+            estimate_revision_velocity(3, 2, 1),
+            None,
+            "3 vs 2 is too close; bigger must be >2x smaller"
+        );
         // 4 up, 1 down: net=3, bigger(4) > 2*1-1=1, fires
         assert_eq!(estimate_revision_velocity(4, 1, 3), Some(3.0));
     }

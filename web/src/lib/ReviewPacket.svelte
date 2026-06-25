@@ -164,9 +164,9 @@
     {#if action.kind === "candidate_confirm" && confirmOpen}
       <section class="confirm-panel" data-testid="review-packet-confirm">
         <div>
-          <span class="kicker">confirm approval</span>
+          <span class="kicker">confirm research kickoff</span>
           <strong>Universe is always included.</strong>
-          <p class="muted">Optional watchlists can be added now; leaving all unchecked still approves the symbol.</p>
+          <p class="muted">Optional watchlists can be added now; leaving all unchecked still starts research for the symbol.</p>
         </div>
         {#if packet.candidate}
           <dl class="candidate-meta">
@@ -202,7 +202,7 @@
         {/if}
         <div class="confirm-actions">
           <button type="button" class="primary-action tone-primary" disabled={busy || Boolean(status)} onclick={() => runPrimary(packet)}>
-            {busy ? "Approving..." : "Confirm approval"}
+            {busy ? "Starting..." : "Start research"}
           </button>
           <button type="button" class="secondary-action" disabled={busy || Boolean(status)} onclick={() => (confirmOpen = false)}>Cancel</button>
         </div>

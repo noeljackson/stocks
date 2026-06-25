@@ -118,7 +118,12 @@ mod tests {
     }
 
     fn comp(name: &'static str, raw: f64, weight: f64, status: &'static str) -> ComponentScore {
-        ComponentScore { name, raw, weighted: raw * weight / 100.0, status }
+        ComponentScore {
+            name,
+            raw,
+            weighted: raw * weight / 100.0,
+            status,
+        }
     }
 
     #[test]
@@ -131,9 +136,24 @@ mod tests {
         // Every component at raw=100, weighted = its full weight, total=100.
         let c = cfg();
         let comps = vec![
-            comp("coverage_expansion", 100.0, c.weights.coverage_expansion, "ok"),
-            comp("estimate_revision_saturation", 100.0, c.weights.estimate_revision_saturation, "ok"),
-            comp("mainstream_coverage", 100.0, c.weights.mainstream_coverage, "ok"),
+            comp(
+                "coverage_expansion",
+                100.0,
+                c.weights.coverage_expansion,
+                "ok",
+            ),
+            comp(
+                "estimate_revision_saturation",
+                100.0,
+                c.weights.estimate_revision_saturation,
+                "ok",
+            ),
+            comp(
+                "mainstream_coverage",
+                100.0,
+                c.weights.mainstream_coverage,
+                "ok",
+            ),
             comp("retail_attention", 100.0, c.weights.retail_attention, "ok"),
             comp("price_extension", 100.0, c.weights.price_extension, "ok"),
         ];
@@ -147,10 +167,30 @@ mod tests {
     fn all_components_zero_yields_zero() {
         let c = cfg();
         let comps = vec![
-            comp("coverage_expansion", 0.0, c.weights.coverage_expansion, "no_data"),
-            comp("estimate_revision_saturation", 0.0, c.weights.estimate_revision_saturation, "no_data"),
-            comp("mainstream_coverage", 0.0, c.weights.mainstream_coverage, "no_data"),
-            comp("retail_attention", 0.0, c.weights.retail_attention, "no_data"),
+            comp(
+                "coverage_expansion",
+                0.0,
+                c.weights.coverage_expansion,
+                "no_data",
+            ),
+            comp(
+                "estimate_revision_saturation",
+                0.0,
+                c.weights.estimate_revision_saturation,
+                "no_data",
+            ),
+            comp(
+                "mainstream_coverage",
+                0.0,
+                c.weights.mainstream_coverage,
+                "no_data",
+            ),
+            comp(
+                "retail_attention",
+                0.0,
+                c.weights.retail_attention,
+                "no_data",
+            ),
             comp("price_extension", 0.0, c.weights.price_extension, "no_data"),
         ];
         let s = compose("NVDA", comps, &c);
@@ -166,10 +206,30 @@ mod tests {
         // total weight → final 20.
         let c = cfg();
         let comps = vec![
-            comp("coverage_expansion", 0.0, c.weights.coverage_expansion, "no_data"),
-            comp("estimate_revision_saturation", 0.0, c.weights.estimate_revision_saturation, "no_data"),
-            comp("mainstream_coverage", 0.0, c.weights.mainstream_coverage, "no_data"),
-            comp("retail_attention", 0.0, c.weights.retail_attention, "no_data"),
+            comp(
+                "coverage_expansion",
+                0.0,
+                c.weights.coverage_expansion,
+                "no_data",
+            ),
+            comp(
+                "estimate_revision_saturation",
+                0.0,
+                c.weights.estimate_revision_saturation,
+                "no_data",
+            ),
+            comp(
+                "mainstream_coverage",
+                0.0,
+                c.weights.mainstream_coverage,
+                "no_data",
+            ),
+            comp(
+                "retail_attention",
+                0.0,
+                c.weights.retail_attention,
+                "no_data",
+            ),
             comp("price_extension", 100.0, c.weights.price_extension, "ok"),
         ];
         let s = compose("NVDA", comps, &c);
@@ -181,9 +241,12 @@ mod tests {
     fn measurement_crosses_at_60_exit_at_70() {
         let c = cfg();
         // Compose hand-crafted weighted values summing to 60.
-        let comps = vec![
-            ComponentScore { name: "x", raw: 60.0, weighted: 60.0, status: "ok" },
-        ];
+        let comps = vec![ComponentScore {
+            name: "x",
+            raw: 60.0,
+            weighted: 60.0,
+            status: "ok",
+        }];
         // weight_total here is from cfg = 100; raw_total 60 / 100 * 100 = 60.
         let s = compose("X", comps, &c);
         assert_eq!(s.total, 60.0);

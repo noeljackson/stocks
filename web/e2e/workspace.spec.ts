@@ -7,6 +7,7 @@ type Calls = {
   decisionBody: unknown | null;
   addedSymbols: string[];
   refreshContextSymbols: string[];
+  researchSymbols: string[];
 };
 
 type MockWatchlistMember = {
@@ -79,7 +80,15 @@ async function mockApi(
   page: Page,
   options: { attentionItems?: Record<string, unknown>[] } = {},
 ): Promise<Calls> {
-  const calls: Calls = { candleUrls: [], confirmBody: null, promoteBody: null, decisionBody: null, addedSymbols: [], refreshContextSymbols: [] };
+  const calls: Calls = {
+    candleUrls: [],
+    confirmBody: null,
+    promoteBody: null,
+    decisionBody: null,
+    addedSymbols: [],
+    refreshContextSymbols: [],
+    researchSymbols: [],
+  };
   let attentionOpen = true;
   const attentionItems = options.attentionItems ?? [{
     id: 7001,
@@ -1143,7 +1152,7 @@ async function mockApi(
           attempts: 1,
           next_retry_at: null,
           last_error: null,
-          source_ref: { counts: { research_evidence: 2 }, fetch_actions: ["gdelt_doc_search", "bing_news_rss_search"] },
+          source_ref: { counts: { research_evidence: 2 }, fetch_actions: ["gdelt_doc_search", "bing_news_rss_search", "firecrawl_search"] },
           source_tasks: [],
           created_at: "2026-06-01T00:00:00Z",
           updated_at: "2026-06-01T00:00:00Z",
@@ -1352,6 +1361,23 @@ async function mockApi(
     if (/^\/api\/symbols\/[^/]+\/refresh-context$/.test(path) && request.method() === "POST") {
       calls.refreshContextSymbols.push(decodeURIComponent(path.split("/")[3]));
       await route.fulfill({ status: 204 });
+      return;
+    }
+    if (/^\/api\/symbols\/[^/]+\/start-research$/.test(path) && request.method() === "POST") {
+      const symbol = decodeURIComponent(path.split("/")[3]);
+      calls.researchSymbols.push(symbol);
+      await json(route, {
+        symbol,
+        requirement: { key: "product_research", state: "missing" },
+        queued: 3,
+        blocked: 0,
+        tasks: [
+          { id: 1, action: "gdelt_doc_search", provider: "gdelt", state: "queued", attempts: 0 },
+          { id: 2, action: "bing_news_rss_search", provider: "bing", state: "queued", attempts: 0 },
+          { id: 3, action: "firecrawl_search", provider: "firecrawl", state: "queued", attempts: 0 },
+        ],
+        cognition_event_published: true,
+      });
       return;
     }
     if (path === "/api/system-status") {
@@ -1716,7 +1742,7 @@ test("brain tab shows macro and theme theses with linked tickers", async ({ page
 });
 
 test("journal page shows daily history and routes ticker entries", async ({ page }) => {
-  await mockApi(page);
+  const calls = await mockApi(page);
   await page.goto("/journal/2026-06-01");
 
   await expect(page.getByRole("button", { name: "Journal" })).toHaveClass(/active/);
@@ -1737,6 +1763,9 @@ test("journal page shows daily history and routes ticker entries", async ({ page
   await expect(tradeDesk).toContainText(/research first/i);
   await expect(tradeDesk).toContainText("NVDA");
   await expect(tradeDesk).toContainText("Research only until a falsifiable thesis exists.");
+  await tradeDesk.locator(".trade-section.research").getByRole("button", { name: "Start research" }).click();
+  await expect.poll(() => calls.researchSymbols).toContainEqual("NVDA");
+  await expect(journal).toContainText("NVDA: 3 research tasks queued");
   await expect(journal.locator("[data-testid='brain-journal-memo']")).toContainText("Daily Brain Memo");
   await expect(journal.locator("[data-testid='brain-journal-memo']")).toContainText("market neutral · macro neutral");
   await expect(journal.locator("[data-testid='brain-journal-memo']")).toContainText("Top Candidates");

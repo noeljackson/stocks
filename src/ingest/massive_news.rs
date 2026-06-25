@@ -130,7 +130,11 @@ impl MassiveNewsAdapter {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("massive news {symbol} {}: {}", status.as_u16(), &body[..body.len().min(256)]);
+            anyhow::bail!(
+                "massive news {symbol} {}: {}",
+                status.as_u16(),
+                &body[..body.len().min(256)]
+            );
         }
         let parsed: MassiveNewsResponse = resp
             .json()
@@ -177,7 +181,10 @@ mod tests {
     fn normalize_carries_upstream_sentiment_through() {
         let rows = normalize(&sample_resp(), &["MU"]);
         assert_eq!(rows[0].upstream_sentiment.as_deref(), Some("positive"));
-        assert_eq!(rows[0].upstream_rationale.as_deref(), Some("capex tailwind"));
+        assert_eq!(
+            rows[0].upstream_rationale.as_deref(),
+            Some("capex tailwind")
+        );
         assert_eq!(rows[0].article.source, "massive");
     }
 

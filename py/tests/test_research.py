@@ -1,12 +1,15 @@
 import datetime as dt
 import json
 
+import httpx
 import pytest
 
 from stocks.research import (
+    FirecrawlProvider,
     SearchResult,
     _evidence_strength,
     _insert_result,
+    _recent_run_exists,
     build_queries,
     load_research_evidence,
     research_relevance,
@@ -77,6 +80,16 @@ class FakeLoadResearchPool:
         ]
 
 
+class FakeRecentRunPool:
+    def __init__(self, providers: list[str]) -> None:
+        self.providers = providers
+        self.fetch_calls: list[tuple[str, tuple[object, ...]]] = []
+
+    async def fetch(self, sql: str, *args: object) -> list[dict[str, str]]:
+        self.fetch_calls.append((sql, args))
+        return [{"provider": provider} for provider in self.providers]
+
+
 def _result(title: str, url: str = "https://example.com/story") -> SearchResult:
     return SearchResult(
         title=title,
@@ -121,12 +134,123 @@ def test_build_queries_extracts_product_tokens_from_context() -> None:
     assert "GB200" in joined
 
 
+def test_build_queries_prioritizes_llm_research_questions() -> None:
+    queries = build_queries(
+        "AVGO",
+        {"company_name": "Broadcom Inc.", "industry": "Semiconductors"},
+        None,
+        max_queries=2,
+        extra_queries=[
+            "custom silicon hyperscaler socket wins 2026",
+            "AVGO Tomahawk switch deployment momentum",
+        ],
+    )
+
+    assert queries == [
+        "Broadcom custom silicon hyperscaler socket wins 2026",
+        "AVGO Tomahawk switch deployment momentum",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recent_run_does_not_skip_missing_provider() -> None:
+    pool = FakeRecentRunPool(["bing_news_rss"])
+
+    recent = await _recent_run_exists(
+        pool,
+        "AVGO",
+        max_age_hours=24,
+        providers=["bing_news_rss", "firecrawl"],
+    )
+
+    assert recent is False
+    _sql, args = pool.fetch_calls[0]
+    assert args == ("AVGO", "24", ["bing_news_rss", "firecrawl"])
+
+
+@pytest.mark.asyncio
+async def test_recent_run_skips_when_all_requested_providers_ran() -> None:
+    pool = FakeRecentRunPool(["gdelt_doc", "bing_news_rss", "firecrawl"])
+
+    recent = await _recent_run_exists(
+        pool,
+        "AVGO",
+        max_age_hours=24,
+        providers=["gdelt_doc", "bing_news_rss", "firecrawl"],
+    )
+
+    assert recent is True
+
+
 def test_evidence_strength_maps_credibility_to_confidence() -> None:
     assert _evidence_strength("primary") == 0.9
     assert _evidence_strength("credible_media") == 0.75
     assert _evidence_strength("industry") == 0.6
     assert _evidence_strength("unknown") == 0.4
     assert _evidence_strength("unrecognized") == 0.4
+
+
+@pytest.mark.asyncio
+async def test_firecrawl_provider_parses_search_results() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == "http://firecrawl.local/v2/search"
+        payload = json.loads(request.content)
+        assert payload["query"] == "AMD MI400 deployment"
+        assert payload["sources"] == ["web"]
+        return httpx.Response(
+            200,
+            json={
+                "id": "fc-job-1",
+                "creditsUsed": 2,
+                "data": {
+                    "web": [
+                        {
+                            "title": "Advanced Micro Devices MI400 deployment update",
+                            "url": "https://www.amd.com/en/newsroom/mi400",
+                            "description": "AMD customer deployment note",
+                            "metadata": {
+                                "siteName": "AMD",
+                                "publishedTime": "2026-06-20T12:00:00Z",
+                            },
+                        },
+                        {
+                            "title": "No URL row",
+                            "description": "ignored",
+                        },
+                    ],
+                    "news": [
+                        {
+                            "title": "AMD MI400 customer adoption expands",
+                            "url": "https://www.reuters.com/technology/amd-mi400",
+                            "date": "Fri, 19 Jun 2026 10:00:00 GMT",
+                            "snippet": "Reuters report",
+                        },
+                    ],
+                },
+            },
+        )
+
+    provider = FirecrawlProvider(
+        base_url="http://firecrawl.local",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        results = await provider.search("AMD MI400 deployment", max_results=5)
+    finally:
+        await provider.close()
+
+    assert [row.title for row in results] == [
+        "Advanced Micro Devices MI400 deployment update",
+        "AMD MI400 customer adoption expands",
+    ]
+    assert results[0].publisher == "AMD"
+    assert results[0].source_type == "web_search"
+    assert results[0].credibility == "primary"
+    assert results[0].published_at == dt.datetime(2026, 6, 20, 12, tzinfo=dt.UTC)
+    assert results[0].source_ref["firecrawl_job_id"] == "fc-job-1"
+    assert results[0].source_ref["firecrawl_credits_used"] == 2
+    assert results[1].source_type == "news_search"
+    assert results[1].credibility == "credible_media"
 
 
 def test_research_relevance_accepts_company_and_specific_product_match() -> None:

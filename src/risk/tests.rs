@@ -21,7 +21,11 @@ fn cfg() -> Config {
 }
 
 fn base_portfolio() -> Portfolio {
-    Portfolio { total_value: 100_000.0, cash_pct: 50.0, drawdown_pct: 0.0 }
+    Portfolio {
+        total_value: 100_000.0,
+        cash_pct: 50.0,
+        drawdown_pct: 0.0,
+    }
 }
 
 fn contains(rs: &[String], sub: &str) -> bool {
@@ -74,9 +78,18 @@ fn vetoes_over_single_name_cap() {
 
 #[test]
 fn allows_at_exactly_single_name_cap() {
-    let existing = vec![Position { symbol: "NVDA".into(), delta_notional: 10_000.0, ..Default::default() }];
+    let existing = vec![Position {
+        symbol: "NVDA".into(),
+        delta_notional: 10_000.0,
+        ..Default::default()
+    }];
     let d = evaluate(
-        &Intent { symbol: "NVDA".into(), instrument: "equity".into(), delta_notional: 5_000.0, ..Default::default() },
+        &Intent {
+            symbol: "NVDA".into(),
+            instrument: "equity".into(),
+            delta_notional: 5_000.0,
+            ..Default::default()
+        },
         &existing,
         base_portfolio(),
         &cfg(),
@@ -88,11 +101,26 @@ fn allows_at_exactly_single_name_cap() {
 fn vetoes_over_options_aggregate() {
     // 10k + 8k existing + 3k new = 21% > 20%.
     let existing = vec![
-        Position { symbol: "AAPL".into(), instrument: "leaps".into(), premium_at_risk: 10_000.0, ..Default::default() },
-        Position { symbol: "MU".into(),   instrument: "leaps".into(), premium_at_risk:  8_000.0, ..Default::default() },
+        Position {
+            symbol: "AAPL".into(),
+            instrument: "leaps".into(),
+            premium_at_risk: 10_000.0,
+            ..Default::default()
+        },
+        Position {
+            symbol: "MU".into(),
+            instrument: "leaps".into(),
+            premium_at_risk: 8_000.0,
+            ..Default::default()
+        },
     ];
     let d = evaluate(
-        &Intent { symbol: "NVDA".into(), instrument: "leaps".into(), premium_at_risk: 3_000.0, ..Default::default() },
+        &Intent {
+            symbol: "NVDA".into(),
+            instrument: "leaps".into(),
+            premium_at_risk: 3_000.0,
+            ..Default::default()
+        },
         &existing,
         base_portfolio(),
         &cfg(),
@@ -106,7 +134,12 @@ fn vetoes_below_cash_floor() {
     let mut p = base_portfolio();
     p.cash_pct = 18.0;
     let d = evaluate(
-        &Intent { symbol: "NVDA".into(), instrument: "equity".into(), delta_notional: 1_000.0, ..Default::default() },
+        &Intent {
+            symbol: "NVDA".into(),
+            instrument: "equity".into(),
+            delta_notional: 1_000.0,
+            ..Default::default()
+        },
         &[],
         p,
         &cfg(),
@@ -120,12 +153,20 @@ fn vetoes_if_entry_would_breach_cash_floor() {
     let mut p = base_portfolio();
     p.cash_pct = 22.0;
     let d = evaluate(
-        &Intent { symbol: "NVDA".into(), instrument: "equity".into(), delta_notional: 5_000.0, ..Default::default() },
+        &Intent {
+            symbol: "NVDA".into(),
+            instrument: "equity".into(),
+            delta_notional: 5_000.0,
+            ..Default::default()
+        },
         &[],
         p,
         &cfg(),
     );
-    assert!(d.veto, "entry that would drop cash below 20% must veto: {d:?}");
+    assert!(
+        d.veto,
+        "entry that would drop cash below 20% must veto: {d:?}"
+    );
 }
 
 #[test]
@@ -133,12 +174,20 @@ fn drawdown_brake_halves_size() {
     let mut p = base_portfolio();
     p.drawdown_pct = -12.0;
     let d = evaluate(
-        &Intent { symbol: "NVDA".into(), instrument: "equity".into(), delta_notional: 5_000.0, ..Default::default() },
+        &Intent {
+            symbol: "NVDA".into(),
+            instrument: "equity".into(),
+            delta_notional: 5_000.0,
+            ..Default::default()
+        },
         &[],
         p,
         &cfg(),
     );
-    assert!(!d.veto, "drawdown -12% should warn + scale, not veto: {d:?}");
+    assert!(
+        !d.veto,
+        "drawdown -12% should warn + scale, not veto: {d:?}"
+    );
     assert_eq!(d.size_mult, 0.5);
     assert!(!d.warnings.is_empty());
 }
@@ -148,7 +197,12 @@ fn drawdown_brake_halts_below_second_tier() {
     let mut p = base_portfolio();
     p.drawdown_pct = -21.0;
     let d = evaluate(
-        &Intent { symbol: "NVDA".into(), instrument: "equity".into(), delta_notional: 1_000.0, ..Default::default() },
+        &Intent {
+            symbol: "NVDA".into(),
+            instrument: "equity".into(),
+            delta_notional: 1_000.0,
+            ..Default::default()
+        },
         &[],
         p,
         &cfg(),
@@ -159,9 +213,27 @@ fn drawdown_brake_halts_below_second_tier() {
 #[test]
 fn subsector_cluster_is_warning_not_veto() {
     let existing = vec![
-        Position { symbol: "NVDA".into(), cluster: "logic_accelerators".into(), instrument: "equity".into(), delta_notional: 14_000.0, ..Default::default() },
-        Position { symbol: "AMD".into(),  cluster: "logic_accelerators".into(), instrument: "equity".into(), delta_notional: 14_000.0, ..Default::default() },
-        Position { symbol: "AVGO".into(), cluster: "logic_accelerators".into(), instrument: "equity".into(), delta_notional:  7_000.0, ..Default::default() },
+        Position {
+            symbol: "NVDA".into(),
+            cluster: "logic_accelerators".into(),
+            instrument: "equity".into(),
+            delta_notional: 14_000.0,
+            ..Default::default()
+        },
+        Position {
+            symbol: "AMD".into(),
+            cluster: "logic_accelerators".into(),
+            instrument: "equity".into(),
+            delta_notional: 14_000.0,
+            ..Default::default()
+        },
+        Position {
+            symbol: "AVGO".into(),
+            cluster: "logic_accelerators".into(),
+            instrument: "equity".into(),
+            delta_notional: 7_000.0,
+            ..Default::default()
+        },
     ];
     let d = evaluate(
         &Intent {
@@ -188,15 +260,24 @@ fn derive_returns_none_when_account_size_unset() {
 
 #[test]
 fn derive_returns_none_when_account_size_nonpositive() {
-    let s = PortfolioSettings { account_size_usd: Some(0.0), high_water_mark_usd: None };
+    let s = PortfolioSettings {
+        account_size_usd: Some(0.0),
+        high_water_mark_usd: None,
+    };
     assert!(derive_portfolio(s, &[], 0.0).is_none());
-    let s = PortfolioSettings { account_size_usd: Some(-1.0), high_water_mark_usd: None };
+    let s = PortfolioSettings {
+        account_size_usd: Some(-1.0),
+        high_water_mark_usd: None,
+    };
     assert!(derive_portfolio(s, &[], 0.0).is_none());
 }
 
 #[test]
 fn derive_with_no_positions_is_all_cash_no_drawdown() {
-    let s = PortfolioSettings { account_size_usd: Some(100_000.0), high_water_mark_usd: None };
+    let s = PortfolioSettings {
+        account_size_usd: Some(100_000.0),
+        high_water_mark_usd: None,
+    };
     let p = derive_portfolio(s, &[], 0.0).unwrap();
     assert_eq!(p.total_value, 100_000.0);
     assert_eq!(p.cash_pct, 100.0);
@@ -205,10 +286,19 @@ fn derive_with_no_positions_is_all_cash_no_drawdown() {
 
 #[test]
 fn derive_subtracts_open_delta_and_premium_from_cash() {
-    let s = PortfolioSettings { account_size_usd: Some(100_000.0), high_water_mark_usd: None };
+    let s = PortfolioSettings {
+        account_size_usd: Some(100_000.0),
+        high_water_mark_usd: None,
+    };
     let positions = vec![
-        Position { delta_notional: 12_000.0, ..Default::default() },
-        Position { premium_at_risk: 3_000.0, ..Default::default() },
+        Position {
+            delta_notional: 12_000.0,
+            ..Default::default()
+        },
+        Position {
+            premium_at_risk: 3_000.0,
+            ..Default::default()
+        },
     ];
     let p = derive_portfolio(s, &positions, 0.0).unwrap();
     assert_eq!(p.cash_pct, 85.0);
@@ -216,15 +306,24 @@ fn derive_subtracts_open_delta_and_premium_from_cash() {
 
 #[test]
 fn derive_cash_clamps_at_zero_when_overdrawn() {
-    let s = PortfolioSettings { account_size_usd: Some(50_000.0), high_water_mark_usd: None };
-    let positions = vec![Position { delta_notional: 90_000.0, ..Default::default() }];
+    let s = PortfolioSettings {
+        account_size_usd: Some(50_000.0),
+        high_water_mark_usd: None,
+    };
+    let positions = vec![Position {
+        delta_notional: 90_000.0,
+        ..Default::default()
+    }];
     let p = derive_portfolio(s, &positions, 0.0).unwrap();
     assert_eq!(p.cash_pct, 0.0);
 }
 
 #[test]
 fn derive_drawdown_pct_from_realized_pnl() {
-    let s = PortfolioSettings { account_size_usd: Some(100_000.0), high_water_mark_usd: None };
+    let s = PortfolioSettings {
+        account_size_usd: Some(100_000.0),
+        high_water_mark_usd: None,
+    };
     // realized pnl = -8k → current = 92k vs 100k anchor → -8%
     let p = derive_portfolio(s, &[], -8_000.0).unwrap();
     assert_eq!(p.drawdown_pct, -8.0);
@@ -239,12 +338,19 @@ fn derive_drawdown_anchored_to_high_water_mark() {
         high_water_mark_usd: Some(120_000.0),
     };
     let p = derive_portfolio(s, &[], 0.0).unwrap();
-    assert!((p.drawdown_pct - (-16.666_666_67)).abs() < 0.001, "got {}", p.drawdown_pct);
+    assert!(
+        (p.drawdown_pct - (-16.666_666_67)).abs() < 0.001,
+        "got {}",
+        p.drawdown_pct
+    );
 }
 
 #[test]
 fn derive_drawdown_zero_when_at_or_above_anchor() {
-    let s = PortfolioSettings { account_size_usd: Some(100_000.0), high_water_mark_usd: None };
+    let s = PortfolioSettings {
+        account_size_usd: Some(100_000.0),
+        high_water_mark_usd: None,
+    };
     let p = derive_portfolio(s, &[], 5_000.0).unwrap();
     assert_eq!(p.drawdown_pct, 0.0);
 }
@@ -272,7 +378,12 @@ fn concurrent_positions_cap() {
         })
         .collect();
     let d = evaluate(
-        &Intent { symbol: "EIGHTH".into(), instrument: "equity".into(), delta_notional: 1_000.0, ..Default::default() },
+        &Intent {
+            symbol: "EIGHTH".into(),
+            instrument: "equity".into(),
+            delta_notional: 1_000.0,
+            ..Default::default()
+        },
         &pos,
         base_portfolio(),
         &cfg(),

@@ -5,9 +5,7 @@ use serde_json::json;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{
-    AnthropicProvider, Message, MockProvider, OpenAiCompatProvider, Provider, Request,
-};
+use super::{AnthropicProvider, Message, MockProvider, OpenAiCompatProvider, Provider, Request};
 use crate::platform::config::LlmTransport;
 
 fn anthropic_happy() -> serde_json::Value {
@@ -71,7 +69,10 @@ async fn anthropic_happy_path() {
     let r = p
         .complete(Request {
             system: "you are precise".into(),
-            messages: vec![Message { role: "user".into(), content: "say hello".into() }],
+            messages: vec![Message {
+                role: "user".into(),
+                content: "say hello".into(),
+            }],
             ..Default::default()
         })
         .await
@@ -84,7 +85,10 @@ async fn anthropic_happy_path() {
     let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
     assert_eq!(body["model"], "glm-5.1");
     assert_eq!(body["system"], "you are precise");
-    assert!(body.get("max_tokens").is_some(), "anthropic requires max_tokens");
+    assert!(
+        body.get("max_tokens").is_some(),
+        "anthropic requires max_tokens"
+    );
 }
 
 #[tokio::test]
@@ -100,7 +104,10 @@ async fn anthropic_sends_api_key_and_version() {
 
     let p = AnthropicProvider::try_new(&anthropic_cfg(server.uri(), "test-token")).unwrap();
     p.complete(Request {
-        messages: vec![Message { role: "user".into(), content: "x".into() }],
+        messages: vec![Message {
+            role: "user".into(),
+            content: "x".into(),
+        }],
         ..Default::default()
     })
     .await
@@ -112,24 +119,29 @@ async fn anthropic_http_error_propagates() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(401)
-                .set_body_json(json!({"error": {"type": "authentication_error", "message": "invalid key"}})),
-        )
+        .respond_with(ResponseTemplate::new(401).set_body_json(
+            json!({"error": {"type": "authentication_error", "message": "invalid key"}}),
+        ))
         .mount(&server)
         .await;
 
     let p = AnthropicProvider::try_new(&anthropic_cfg(server.uri(), "x")).unwrap();
     let err = p
         .complete(Request {
-            messages: vec![Message { role: "user".into(), content: "x".into() }],
+            messages: vec![Message {
+                role: "user".into(),
+                content: "x".into(),
+            }],
             ..Default::default()
         })
         .await
         .unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("401"), "error should include status: {msg}");
-    assert!(msg.contains("invalid key"), "error should include body fragment: {msg}");
+    assert!(
+        msg.contains("invalid key"),
+        "error should include body fragment: {msg}"
+    );
 }
 
 #[tokio::test]
@@ -145,7 +157,10 @@ async fn anthropic_json_schema_appends_to_system() {
     let schema = json!({"type": "object", "properties": {"x": {"type": "number"}}});
     p.complete(Request {
         system: "be helpful".into(),
-        messages: vec![Message { role: "user".into(), content: "give me x".into() }],
+        messages: vec![Message {
+            role: "user".into(),
+            content: "give me x".into(),
+        }],
         json_schema: Some(schema),
         ..Default::default()
     })
@@ -156,12 +171,18 @@ async fn anthropic_json_schema_appends_to_system() {
     let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
     let sys = body["system"].as_str().unwrap();
     assert!(sys.contains("be helpful"), "must keep caller's text");
-    assert!(sys.contains("JSON") && sys.contains("schema"), "must add schema directive: {sys}");
+    assert!(
+        sys.contains("JSON") && sys.contains("schema"),
+        "must add schema directive: {sys}"
+    );
 }
 
 #[test]
 fn anthropic_missing_key_returns_mock() {
-    let p = super::new(&LlmTransport { provider: "anthropic".into(), ..Default::default() });
+    let p = super::new(&LlmTransport {
+        provider: "anthropic".into(),
+        ..Default::default()
+    });
     // Without a key we expect Mock; verify by content (Mock returns {"mock":true}).
     let fut = p.complete(Request::default());
     let r = futures::executor::block_on(fut).unwrap();
@@ -253,7 +274,10 @@ async fn openai_happy_path() {
     let r = p
         .complete(Request {
             system: "be terse".into(),
-            messages: vec![Message { role: "user".into(), content: "say hi".into() }],
+            messages: vec![Message {
+                role: "user".into(),
+                content: "say hi".into(),
+            }],
             ..Default::default()
         })
         .await
@@ -282,7 +306,10 @@ async fn openai_sends_bearer() {
 
     let p = OpenAiCompatProvider::try_new(&openai_cfg(server.uri(), "sk-test")).unwrap();
     p.complete(Request {
-        messages: vec![Message { role: "user".into(), content: "x".into() }],
+        messages: vec![Message {
+            role: "user".into(),
+            content: "x".into(),
+        }],
         ..Default::default()
     })
     .await
@@ -302,7 +329,10 @@ async fn openai_strips_v1_suffix() {
     let p =
         OpenAiCompatProvider::try_new(&openai_cfg(format!("{}/v1", server.uri()), "k")).unwrap();
     p.complete(Request {
-        messages: vec![Message { role: "user".into(), content: "x".into() }],
+        messages: vec![Message {
+            role: "user".into(),
+            content: "x".into(),
+        }],
         ..Default::default()
     })
     .await
@@ -323,14 +353,20 @@ async fn openai_http_error_propagates() {
     let p = OpenAiCompatProvider::try_new(&openai_cfg(server.uri(), "k")).unwrap();
     let err = p
         .complete(Request {
-            messages: vec![Message { role: "user".into(), content: "x".into() }],
+            messages: vec![Message {
+                role: "user".into(),
+                content: "x".into(),
+            }],
             ..Default::default()
         })
         .await
         .unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("429"), "error should include status: {msg}");
-    assert!(msg.contains("rate"), "error should include body fragment: {msg}");
+    assert!(
+        msg.contains("rate"),
+        "error should include body fragment: {msg}"
+    );
 }
 
 #[test]
@@ -358,7 +394,10 @@ fn openai_missing_key_returns_mock() {
 #[test]
 fn factory_unknown_provider_returns_mock() {
     // Verify by observable behavior — Mock returns a known fixed payload.
-    let p = super::new(&LlmTransport { provider: "???".into(), ..Default::default() });
+    let p = super::new(&LlmTransport {
+        provider: "???".into(),
+        ..Default::default()
+    });
     let r = futures::executor::block_on(p.complete(Request::default())).unwrap();
     assert_eq!(r.content, r#"{"mock":true}"#);
 }

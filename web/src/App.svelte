@@ -37,6 +37,7 @@
     promoteTicker,
     rejectCandidate,
     removeFromWatchlist,
+    startSymbolResearch,
     subscribe,
     transitionAttention,
     type Alert,
@@ -85,7 +86,7 @@
   const RIGHT_TABS: RightTab[] = ["overview", "analyst", "technical", "context", "evidence", "theses", "alerts", "decisions"];
   type BottomMode = "brain" | "attention" | "events" | "discovery" | "decisions" | "calibration" | "diagnostics";
   type AppPage = "workspace" | "journal";
-  type WorkflowAction = "attention" | "promotion" | "promote" | "evidence" | "thesis" | "decision" | "tracking" | "overview";
+  type WorkflowAction = "attention" | "promotion" | "promote" | "research" | "evidence" | "thesis" | "decision" | "tracking" | "overview";
   type SymbolWorkflow = {
     state: string;
     tone: string;
@@ -132,6 +133,8 @@
   let journalError = $state<string | null>(null);
   let journalLoadSeq = 0;
   const JOURNAL_PER_PAGE = 50;
+  const JOURNAL_REFRESH_MS = 10000;
+  let journalRefreshTimer: ReturnType<typeof setInterval> | null = null;
   let calibration = $state<Calibration | null>(null);
   // System status (#92) — populated on demand when diagnostics tab is open.
   let sysStatus = $state<Record<string, unknown> | null>(null);
@@ -154,6 +157,9 @@
   let reviewPacketError = $state<string | null>(null);
   let promotionBusy = $state(false);
   let promotionStatus = $state<string | null>(null);
+  let researchKickoffBusy = $state(false);
+  let researchKickoffSymbol = $state<string | null>(null);
+  let researchKickoffStatus = $state<string | null>(null);
 
   async function refreshAttention() {
     try {
@@ -195,7 +201,7 @@
       const destination = watchlistIds.length > 0
         ? `Universe + ${watchlistIds.length} watchlist${watchlistIds.length === 1 ? "" : "s"}`
         : "Universe";
-      promotionStatus = `Approved to ${destination}; context and thesis work will refresh.`;
+      promotionStatus = `Research started in ${destination}; context and thesis work will refresh.`;
     } catch (e) {
       error = String(e);
     } finally {
@@ -241,6 +247,47 @@
       return;
     }
     rightTab = item.thesis_id ? "theses" : "overview";
+  }
+
+  async function startResearchForSymbol(
+    rawSymbol: string,
+    opts: { openEvidence?: boolean; refreshJournal?: boolean } = {},
+  ) {
+    const symbol = normalizeSymbol(rawSymbol);
+    if (!symbol || researchKickoffBusy) return;
+    researchKickoffBusy = true;
+    researchKickoffSymbol = symbol;
+    researchKickoffStatus = null;
+    error = null;
+    try {
+      const res = await startSymbolResearch(symbol);
+      researchKickoffStatus = `${res.symbol}: ${res.queued} research task${res.queued === 1 ? "" : "s"} queued`;
+      if (opts.openEvidence) {
+        if (selectedSymbol !== symbol) await selectSymbol(symbol);
+        rightTab = "evidence";
+        await reloadSelectedSymbolDetails();
+      } else if (selectedSymbol === symbol) {
+        await reloadSelectedSymbolDetails();
+      }
+      await Promise.all([
+        fetchTickers().then((t) => (tickers = t)).catch(() => {}),
+        refreshAttention(),
+        fetchBrainOverview().then((b) => (brainOverview = b)).catch(() => {}),
+      ]);
+      if (opts.refreshJournal || routePage === "journal") {
+        await loadBrainJournal(journalDate, journalPage, { silent: true });
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      researchKickoffBusy = false;
+      researchKickoffSymbol = null;
+    }
+  }
+
+  async function startResearchForSelected() {
+    if (!selectedSymbol) return;
+    await startResearchForSymbol(selectedSymbol, { openEvidence: true });
   }
   async function dismissOne(id: number, reason?: string) {
     try {
@@ -302,7 +349,7 @@
       ]);
       await reloadSelectedSymbolDetails();
       const destination = ids.length > 0 ? `Universe + ${ids.length} watchlist${ids.length === 1 ? "" : "s"}` : "Universe";
-      promotionStatus = `Promoted to ${destination}; cognition will refresh context and thesis.`;
+      promotionStatus = `Research started in ${destination}; cognition will refresh context and thesis.`;
     } catch (e) {
       error = String(e);
     } finally {
@@ -802,6 +849,24 @@
         return `${action}: ${state}${due}`;
       })
       .join(" · ");
+  }
+
+  function productResearchRequirement(): EvidenceRequirement | null {
+    return symbolEvidence?.find((req) => req.requirement_key === "product_research") ?? null;
+  }
+
+  function sourceTaskTone(state: string): string {
+    if (state === "queued" || state === "fetching") return "running";
+    if (state === "rate_limited" || state === "failed" || state === "blocked") return "blocked";
+    if (state === "satisfied") return "satisfied";
+    return "waiting";
+  }
+
+  function sourceTaskLabel(task: NonNullable<EvidenceRequirement["source_tasks"]>[number]): string {
+    const provider = task.provider.replace(/_/g, " ");
+    const state = task.state.replace(/_/g, " ");
+    const due = task.next_retry_at ?? task.due_at;
+    return due ? `${provider}: ${state} ${relativeTime(due)}` : `${provider}: ${state}`;
   }
 
   function evidenceItemTone(item: EvidenceItem): string {
@@ -1430,7 +1495,7 @@
         state: "Nominated, not active",
         tone: "candidate",
         reason: candidateNominationReason(selectedCandidateReview),
-        primary: "Promote to Universe",
+        primary: "Start research",
         action: "promote",
         status: statusText,
         attention: attentionText,
@@ -1444,7 +1509,7 @@
         state: inPool ? "Pool candidate" : "Not active",
         tone: "candidate",
         reason: selectedPlacement.detail,
-        primary: "Promote to Universe",
+        primary: "Start research",
         action: "promote",
         status: statusText,
         attention: attentionText,
@@ -1472,8 +1537,8 @@
         state: symbolContext ? "Enriching evidence" : "Context missing",
         tone: "blocked",
         reason: symbolBrain?.reason ?? "Evidence/context is not ready for thesis work.",
-        primary: "Open evidence",
-        action: "evidence",
+        primary: selectedTicker ? "Start research" : "Open evidence",
+        action: selectedTicker ? "research" : "evidence",
         status: statusText,
         attention: attentionText,
         evidence: evidenceText,
@@ -1570,6 +1635,10 @@
   function runWorkflowAction(action: WorkflowAction) {
     if (action === "promote") {
       void promoteSelectedToUniverse();
+      return;
+    }
+    if (action === "research") {
+      void startResearchForSelected();
       return;
     }
     if (action === "promotion") {
@@ -1853,9 +1922,9 @@
     window.history[method](null, "", path);
   }
 
-  async function loadBrainJournal(date = journalDate, page = journalPage) {
+  async function loadBrainJournal(date = journalDate, page = journalPage, opts: { silent?: boolean } = {}) {
     const seq = ++journalLoadSeq;
-    journalLoading = true;
+    if (!opts.silent) journalLoading = true;
     journalError = null;
     try {
       const next = await fetchBrainJournal({ date, page, perPage: JOURNAL_PER_PAGE });
@@ -2079,8 +2148,8 @@
       ]);
       await reloadSelectedSymbolDetails();
       poolPromotionStatus = watchlistIds.length > 0
-        ? `Promoted to Universe + ${watchlistIds.length} watchlist${watchlistIds.length === 1 ? "" : "s"}.`
-        : "Promoted to Universe.";
+        ? `Research started in Universe + ${watchlistIds.length} watchlist${watchlistIds.length === 1 ? "" : "s"}.`
+        : "Research started in Universe.";
     } catch (e) {
       error = String(e);
     } finally {
@@ -2300,6 +2369,18 @@
   });
 
   $effect(() => {
+    const shouldPoll = routePage === "journal" && journalDate === todayIsoDate();
+    if (shouldPoll) {
+      journalRefreshTimer = setInterval(() => {
+        void loadBrainJournal(journalDate, journalPage, { silent: true });
+      }, JOURNAL_REFRESH_MS);
+      return () => {
+        if (journalRefreshTimer) { clearInterval(journalRefreshTimer); journalRefreshTimer = null; }
+      };
+    }
+  });
+
+  $effect(() => {
     // Once tickers and watchlists arrive, auto-pick the first symbol.
     if (routePage === "workspace" && !selectedSymbol && (tickers.length > 0 || watchlists.length > 0)) {
       pickFirstSymbol();
@@ -2487,6 +2568,9 @@
       onPageChange={changeJournalPage}
       onOpenEntry={openJournalEntry}
       onOpenSymbol={openJournalSymbol}
+      onStartResearch={(symbol) => startResearchForSymbol(symbol, { refreshJournal: true })}
+      researchBusySymbol={researchKickoffSymbol}
+      researchStatus={researchKickoffStatus}
       onBack={() => openWorkspace()}
     />
   {:else}
@@ -2501,11 +2585,15 @@
         type="button"
         class="workflow-primary"
         data-testid="workflow-primary"
+        disabled={researchKickoffBusy && selectedWorkflow.action === "research"}
         onclick={() => runWorkflowAction(selectedWorkflow.action)}
       >
-        {selectedWorkflow.primary}
+        {researchKickoffBusy && selectedWorkflow.action === "research" ? "Starting..." : selectedWorkflow.primary}
       </button>
     </div>
+    {#if researchKickoffStatus}
+      <p class="workflow-status">{researchKickoffStatus}</p>
+    {/if}
 
     <div class="workflow-rail" aria-label="Selected ticker workflow">
       <button type="button" class="workflow-step" onclick={() => runWorkflowAction("overview")}>
@@ -2536,8 +2624,8 @@
       <section class="promotion-review" data-testid="promotion-review">
         <div class="promotion-head">
           <div>
-            <span class="workflow-kicker">promotion review</span>
-            <strong>Promote {selectedSymbol} into active Universe</strong>
+            <span class="workflow-kicker">research review</span>
+            <strong>Start research for {selectedSymbol}</strong>
           </div>
           <span class="badge tiny state-{selectedCandidateReview.fsm_state ?? 'ready_for_review'}">
             {attentionStateLabel(selectedCandidateReview.fsm_state ?? "ready_for_review")}
@@ -2571,8 +2659,8 @@
             {/if}
           </div>
           <div>
-            <span class="promotion-label">What confirming does</span>
-            <p>Records the candidate as confirmed, resolves the attention item, publishes discovery.confirmed, and starts the context/thesis loop.</p>
+            <span class="promotion-label">What starting does</span>
+            <p>Records the candidate as confirmed, resolves the attention item, publishes discovery.confirmed, and starts research, context, and thesis work.</p>
           </div>
         </div>
         <div class="promotion-destinations">
@@ -2592,7 +2680,7 @@
               </label>
             {/each}
           {:else}
-            <span class="muted">No watchlist match attached; promote as Universe-only.</span>
+            <span class="muted">No watchlist match attached; start as Universe-only.</span>
           {/if}
         </div>
         <div class="promotion-actions">
@@ -2600,7 +2688,7 @@
             class="confirm"
             disabled={promotionBusy || selectedCandidateIds.length === 0}
             onclick={() => confirmGroup(selectedCandidateIds)}
-          >Promote to Universe</button>
+          >Start research</button>
           <button
             class="reject"
             disabled={promotionBusy || selectedCandidateIds.length === 0}
@@ -2985,7 +3073,7 @@
                   <div class="att-actions">
                     <button class="confirm" onclick={() => openReviewPacketFor(g.items[0])}>Review packet</button>
                     {#if g.kind === "candidate_review"}
-                      <button class="confirm" disabled={promotionBusy} onclick={() => confirmGroup(g.candidateIds)}>Promote</button>
+                      <button class="confirm" disabled={promotionBusy} onclick={() => confirmGroup(g.candidateIds)}>Start research</button>
                       <button class="reject" onclick={() => (rejectOpenFor = rejectOpenFor === g.key ? null : g.key)}>
                         Reject ▾
                       </button>
@@ -3116,7 +3204,7 @@
                     </div>
                   {/if}
                   <div class="disc-actions">
-                    <button onclick={() => confirmOne(c.id)}>Promote</button>
+                    <button onclick={() => confirmOne(c.id)}>Start research</button>
                     <button class="reject" onclick={() => rejectOne(c.id)}>Reject</button>
                   </div>
                 </li>
@@ -3691,7 +3779,7 @@
                       {attentionStateLabel(selectedCandidateReview.fsm_state ?? "ready_for_review")}
                     </span>
                   </div>
-                  <h4>Promote {selectedSymbol} into active Universe</h4>
+                  <h4>Start research for {selectedSymbol}</h4>
                   <p>{candidateNominationReason(selectedCandidateReview)}</p>
                   {#if availableData.length > 0}
                     <div class="promotion-tokens">
@@ -3700,7 +3788,7 @@
                       {/each}
                     </div>
                   {/if}
-                  <p class="muted">Promotion records the candidate, resolves attention, publishes discovery.confirmed, and starts context plus thesis work.</p>
+                  <p class="muted">Starting research records the candidate, resolves attention, publishes discovery.confirmed, and starts evidence, context, and thesis work.</p>
                   {#if selectedPromotionLists.length > 0}
                     <div class="promotion-destinations">
                       <span class="badge tiny">Universe always included</span>
@@ -3722,7 +3810,7 @@
                       class="confirm"
                       disabled={promotionBusy || selectedCandidateIds.length === 0}
                       onclick={() => confirmGroup(selectedCandidateIds)}
-                    >Promote to Universe</button>
+                    >Start research</button>
                     <button
                       class="reject"
                       disabled={promotionBusy || selectedCandidateIds.length === 0}
@@ -3761,7 +3849,7 @@
                         </label>
                       {/each}
                     {:else}
-                      <span class="muted">No watchlists yet; promote as Universe-only.</span>
+                      <span class="muted">No watchlists yet; start as Universe-only.</span>
                     {/if}
                   </div>
                   <div class="promotion-actions">
@@ -3769,7 +3857,7 @@
                       class="confirm"
                       disabled={poolPromotionBusy}
                       onclick={promoteSelectedPoolCandidate}
-                    >Promote to Universe</button>
+                    >Start research</button>
                     <button type="button" class="text-action" onclick={() => (rightTab = "context")}>open context</button>
                     {#if poolPromotionStatus}
                       <span class="muted">{poolPromotionStatus}</span>
@@ -3831,7 +3919,7 @@
                           </label>
                         {/each}
                       {:else}
-                        <span class="muted">No watchlists yet; promote as Universe-only.</span>
+                        <span class="muted">No watchlists yet; start as Universe-only.</span>
                       {/if}
                     </div>
                     <div class="promotion-actions">
@@ -3839,7 +3927,7 @@
                         class="confirm"
                         disabled={promotionBusy || poolPromotionBusy}
                         onclick={promoteSelectedToUniverse}
-                      >Promote to Universe</button>
+                      >Start research</button>
                       {#if promotionStatus || poolPromotionStatus}
                         <span class="muted">{promotionStatus ?? poolPromotionStatus}</span>
                       {/if}
@@ -3979,6 +4067,10 @@
                   symbol={selectedSymbol}
                   autoSynthesize={symbolBrain?.active_ticker ?? false}
                   blockedReason={symbolBrain?.active_ticker ? "" : (symbolBrain?.reason ?? "")}
+                  onStarted={async () => {
+                    rightTab = "evidence";
+                    await reloadSelectedSymbolDetails();
+                  }}
                 />
               {/if}
             {:else if rightTab === "evidence"}
@@ -4007,11 +4099,25 @@
                       {#if evidenceSourceTasks(req)}
                         <p class="muted">source tasks: {evidenceSourceTasks(req)}</p>
                       {/if}
+                      {#if req.source_tasks?.length}
+                        <div class="task-chips">
+                          {#each req.source_tasks as task (task.id)}
+                            <span class={`task-chip tone-${sourceTaskTone(task.state)}`} title={task.last_error ?? sourceTaskLabel(task)}>
+                              {sourceTaskLabel(task)}
+                            </span>
+                          {/each}
+                        </div>
+                      {/if}
                       {#if req.blocking_state !== "satisfied" && evidenceCounts(req)}
                         <p class="muted">{evidenceCounts(req)}</p>
                       {/if}
                       {#if evidenceHealth(req)}
                         <p class="muted">{evidenceHealth(req)}</p>
+                      {/if}
+                      {#if req.requirement_key === "product_research" && selectedTicker && req.blocking_state !== "satisfied"}
+                        <button type="button" class="inline-action" disabled={researchKickoffBusy} onclick={startResearchForSelected}>
+                          {researchKickoffBusy ? "Starting..." : "Start research now"}
+                        </button>
                       {/if}
                       {#if req.last_error}<p class="error-text">{req.last_error}</p>{/if}
                     </li>
@@ -4061,6 +4167,25 @@
                     {/each}
                   </ul>
                 </section>
+              {:else}
+                <section class="research-sources empty-source">
+                  <h4>Research sources</h4>
+                  <p class="muted">No accepted research sources yet for <strong>{selectedSymbol}</strong>.</p>
+                  {#if productResearchRequirement()?.source_tasks?.length}
+                    <div class="task-chips">
+                      {#each productResearchRequirement()?.source_tasks ?? [] as task (task.id)}
+                        <span class={`task-chip tone-${sourceTaskTone(task.state)}`} title={task.last_error ?? sourceTaskLabel(task)}>
+                          {sourceTaskLabel(task)}
+                        </span>
+                      {/each}
+                    </div>
+                  {/if}
+                  {#if selectedTicker}
+                    <button type="button" class="inline-action" disabled={researchKickoffBusy} onclick={startResearchForSelected}>
+                      {researchKickoffBusy ? "Starting..." : "Start research now"}
+                    </button>
+                  {/if}
+                </section>
               {/if}
             {:else if rightTab === "theses"}
               <section class="symbol-placement-strip placement-{selectedPlacement.tone}" data-testid="thesis-placement-strip">
@@ -4073,7 +4198,7 @@
                     class="confirm"
                     disabled={promotionBusy || poolPromotionBusy}
                     onclick={promoteSelectedToUniverse}
-                  >Promote</button>
+                  >Start research</button>
                 {/if}
                 <button type="button" class="text-action" onclick={() => (rightTab = "overview")}>overview</button>
               </section>
@@ -4084,13 +4209,13 @@
                     <strong>Not active yet</strong>
                   </div>
                   <p>{selectedPlacement.detail}</p>
-                  <p class="muted">Promote this ticker into the active Universe before expecting context synthesis, thesis drafting, or thesis updates.</p>
+                  <p class="muted">Start research to add this ticker to the active Universe before expecting context synthesis, thesis drafting, or thesis updates.</p>
                   <div class="att-actions">
                     <button
                       class="confirm"
                       disabled={promotionBusy || poolPromotionBusy}
                       onclick={promoteSelectedToUniverse}
-                    >Promote to Universe</button>
+                    >Start research</button>
                     <button type="button" class="text-action" onclick={() => (rightTab = "overview")}>choose watchlists</button>
                   </div>
                 </section>
@@ -4147,13 +4272,13 @@
                         {/each}
                       </div>
                     {/if}
-                    <p class="muted">Promotion will {candidateAcceptanceText(selectedCandidateReview)}.</p>
+                    <p class="muted">Starting research will {candidateAcceptanceText(selectedCandidateReview)}.</p>
                     <div class="att-actions">
                       <button
                         class="confirm"
                         disabled={promotionBusy || selectedCandidateIds.length === 0}
                         onclick={() => confirmGroup(selectedCandidateIds)}
-                      >Promote to Universe</button>
+                      >Start research</button>
                       <button
                         class="reject"
                         disabled={promotionBusy || selectedCandidateIds.length === 0}
@@ -4565,6 +4690,16 @@
   }
   .workflow-primary:hover {
     background: #263144;
+  }
+  .workflow-primary:disabled {
+    cursor: wait;
+    opacity: .65;
+  }
+  .workflow-status {
+    grid-column: 1 / -1;
+    margin: -.25rem 0 0 .35rem;
+    color: #a6e3a1;
+    font-size: .76rem;
   }
   .workflow-rail {
     display: grid;
@@ -5399,6 +5534,58 @@
     display: flex; gap: .4rem; align-items: baseline; flex-wrap: wrap; margin-bottom: .25rem;
   }
   .evidence-card p { margin: 0; color: #bac2de; line-height: 1.35; }
+  .task-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .3rem;
+    margin-top: .4rem;
+  }
+  .task-chip {
+    border: 1px solid #2a3548;
+    border-radius: 999px;
+    padding: .1rem .45rem;
+    color: #bac2de;
+    background: #11161f;
+    font-size: .68rem;
+    line-height: 1.4;
+  }
+  .task-chip.tone-running {
+    border-color: rgba(166,227,161,.4);
+    color: rgb(166,227,161);
+  }
+  .task-chip.tone-blocked {
+    border-color: rgba(243,139,168,.4);
+    color: rgb(243,139,168);
+  }
+  .task-chip.tone-satisfied {
+    border-color: rgba(137,180,250,.35);
+    color: rgb(137,180,250);
+  }
+  .inline-action {
+    margin-top: .5rem;
+    border: 1px solid rgba(166,227,161,.55);
+    background: rgba(166,227,161,.14);
+    color: #dff7dc;
+    border-radius: 4px;
+    padding: .28rem .55rem;
+    font: inherit;
+    font-size: .75rem;
+    cursor: pointer;
+  }
+  .inline-action:disabled {
+    cursor: wait;
+    opacity: .65;
+  }
+  .empty-source {
+    margin-top: .55rem;
+    border: 1px solid #1f2733;
+    border-radius: 4px;
+    padding: .55rem .65rem;
+    background: #0c1019;
+  }
+  .empty-source h4 {
+    margin: 0 0 .35rem;
+  }
   .error-text { color: rgb(243, 139, 168) !important; }
 
   /* Generic */

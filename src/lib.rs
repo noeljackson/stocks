@@ -10,19 +10,19 @@
 //! - [`gateway`]  — HTTP + SSE; serves the embedded SPA from [`web`].
 //! - [`web`]      — `rust-embed` of the built Svelte SPA.
 
-pub mod platform;
+pub mod attention;
 pub mod consensus;
 pub mod discovery;
 pub mod execution;
+pub mod gateway;
+pub mod goalpost;
 pub mod ingest;
 pub mod llm;
-pub mod regime;
-pub mod router;
-pub mod risk;
-pub mod goalpost;
-pub mod attention;
+pub mod platform;
 pub mod reflection;
+pub mod regime;
+pub mod risk;
+pub mod router;
 pub mod sentiment;
 pub mod thesis;
-pub mod gateway;
 pub mod web;

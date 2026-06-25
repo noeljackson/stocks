@@ -19,6 +19,8 @@ FRESHNESS_TARGETS_MINUTES = {
     "product_research": 30,
 }
 
+RESEARCH_REQUEST_LIMIT = 3
+
 SOURCE_HEALTH_BY_REQUIREMENT = {
     "price_history": ["fmp_price"],
     "company_profile": ["fmp_profile_calendar"],
@@ -142,7 +144,7 @@ EVIDENCE_REQUIREMENTS = {
             "Need product/theme web research before claiming public evidence "
             "does or does not exist."
         ),
-        "fetch_actions": ["gdelt_doc_search", "bing_news_rss_search"],
+        "fetch_actions": ["gdelt_doc_search", "bing_news_rss_search", "firecrawl_search"],
     },
 }
 
@@ -384,6 +386,8 @@ def provider_for_fetch_action(action: str, source_type: str) -> str:
         return "gdelt"
     if action.startswith("bing_"):
         return "bing"
+    if action.startswith("firecrawl_"):
+        return "firecrawl"
     if action.startswith("llm_"):
         return "llm"
     return source_type
@@ -501,6 +505,15 @@ def build_source_tasks(
     retry_after_at = _parse_dt(requirement.get("retry_after_at"))
     for action in requirement.get("fetch_actions", []):
         provider = provider_for_fetch_action(action, requirement["source_type"])
+        requirement_ref = requirement.get("source_ref", {}) or {}
+        task_ref = {
+            "acquisition_state": requirement.get("state_reason"),
+            "evidence_counts": requirement_ref.get("counts", {}),
+            "source_health": requirement_ref.get("source_health", []),
+        }
+        for key in ("research_requests", "llm_research_request", "question"):
+            if requirement_ref.get(key) not in (None, "", [], {}):
+                task_ref[key] = requirement_ref[key]
         task = {
             "source_type": requirement["source_type"],
             "requirement_key": requirement["requirement_key"],
@@ -515,11 +528,7 @@ def build_source_tasks(
             "attempts": requirement.get("attempts", 0),
             "next_retry_at": retry_after_at,
             "last_error": requirement.get("last_error"),
-            "source_ref": {
-                "acquisition_state": requirement.get("state_reason"),
-                "evidence_counts": requirement.get("source_ref", {}).get("counts", {}),
-                "source_health": requirement.get("source_ref", {}).get("source_health", []),
-            },
+            "source_ref": task_ref,
         }
         tasks.append(apply_provider_pause(task, source_health))
     return tasks
@@ -982,6 +991,100 @@ async def sync_llm_missing_evidence(
                 **req["source_ref"],
                 "triggered_by": "thesis_engine.missing_evidence",
                 "llm_missing_evidence": item,
+            },
+        }
+        await upsert_open_evidence_requirement(pool, symbol, key, req, source_health)
+        synced.append(req)
+    return synced
+
+
+async def sync_llm_research_requests(
+    pool: asyncpg.Pool,
+    symbol: str,
+    research_requests: object,
+    *,
+    limit: int = RESEARCH_REQUEST_LIMIT,
+) -> list[dict]:
+    """Convert LLM research questions into immediate acquisition work."""
+    if not isinstance(research_requests, list):
+        return []
+
+    source_health = await load_source_health(pool)
+    normalized_items: list[dict] = []
+    seen: set[str] = set()
+    for item in research_requests:
+        if not isinstance(item, dict) or len(normalized_items) >= limit:
+            continue
+        question = str(item.get("question") or item.get("query") or "").strip()
+        if len(question) < 12:
+            continue
+        question_key = question.casefold()
+        if question_key in seen:
+            continue
+        seen.add(question_key)
+        key = canonical_requirement_key(item) or "product_research"
+        spec = EVIDENCE_REQUIREMENTS.get(key, EVIDENCE_REQUIREMENTS["product_research"])
+        priority = str(item.get("priority") or spec["priority"]).strip().lower()
+        if priority not in {"low", "medium", "high", "blocking"}:
+            priority = spec["priority"]
+        providers_raw = item.get("providers") or []
+        if isinstance(providers_raw, str):
+            providers_raw = [providers_raw]
+        if not isinstance(providers_raw, list):
+            providers_raw = []
+        providers = [
+            str(provider).strip().lower()
+            for provider in providers_raw
+            if str(provider).strip()
+        ]
+        normalized_items.append({
+            "question": question,
+            "requirement_key": key,
+            "source_type": str(item.get("source_type") or spec["source_type"]),
+            "priority": priority,
+            "reason": str(item.get("reason") or question).strip(),
+            "providers": providers,
+            "raw": item,
+        })
+
+    priority_rank = {"low": 0, "medium": 1, "high": 2, "blocking": 3}
+    grouped: dict[str, list[dict]] = {}
+    for item in normalized_items:
+        grouped.setdefault(item["requirement_key"], []).append(item)
+
+    synced: list[dict] = []
+    for key, items in grouped.items():
+        spec = EVIDENCE_REQUIREMENTS.get(key, EVIDENCE_REQUIREMENTS["product_research"])
+        priority = max(
+            (item["priority"] for item in items),
+            key=lambda value: priority_rank.get(value, priority_rank[spec["priority"]]),
+        )
+        questions = [
+            {
+                "question": item["question"],
+                "requirement_key": key,
+                "priority": item["priority"],
+                "providers": item["providers"],
+                "reason": item["reason"],
+            }
+            for item in items
+        ]
+        req = {
+            "requirement_key": key,
+            "source_type": items[0]["source_type"],
+            "priority": priority,
+            "reason": "; ".join(item["reason"] for item in items),
+            "fetch_actions": spec["fetch_actions"],
+            "blocking_state": "missing",
+            "state_reason": "llm_research_request",
+            "last_error": None,
+            "retry_after_at": None,
+            "source_ref": {
+                "fetch_actions": spec["fetch_actions"],
+                "triggered_by": "thesis_engine.research_requests",
+                "research_requests": questions,
+                "llm_research_request": items[0]["raw"],
+                "llm_research_requests": [item["raw"] for item in items],
             },
         }
         await upsert_open_evidence_requirement(pool, symbol, key, req, source_health)

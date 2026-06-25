@@ -7,6 +7,7 @@ from stocks.context_maintainer import (
     _build_context_shift_evidence,
     _build_price_snapshot,
     _build_user_message,
+    _extract_json,
     _persist_context,
 )
 from stocks.evidence import (
@@ -15,6 +16,7 @@ from stocks.evidence import (
     build_source_tasks,
     canonical_requirement_key,
     source_task_due_at,
+    sync_llm_research_requests,
 )
 
 
@@ -112,6 +114,126 @@ def test_context_shift_evidence_skips_identical_context() -> None:
         {"attention_reason": "same setup"},
         2,
     ) is None
+
+
+def test_extract_json_accepts_raw_control_characters_in_llm_strings() -> None:
+    parsed = _extract_json('{"narrative": {"summary": "Broadcom\tAI networking"}}')
+
+    assert parsed["narrative"]["summary"] == "Broadcom\tAI networking"
+
+
+def test_build_source_tasks_preserves_llm_research_question() -> None:
+    [task] = build_source_tasks(
+        "AVGO",
+        {
+            "requirement_key": "product_research",
+            "source_type": "web_research",
+            "priority": "high",
+            "blocking_state": "missing",
+            "state_reason": "llm_research_request",
+            "fetch_actions": ["firecrawl_search"],
+            "attempts": 0,
+            "retry_after_at": None,
+            "last_error": None,
+            "source_ref": {
+                "research_requests": [{
+                    "question": "Is AVGO winning incremental custom silicon sockets?",
+                }],
+                "llm_research_request": {
+                    "question": "Is AVGO winning incremental custom silicon sockets?",
+                },
+            },
+        },
+    )
+
+    assert task["action"] == "firecrawl_search"
+    assert task["source_ref"]["research_requests"][0]["question"].startswith("Is AVGO")
+    assert task["source_ref"]["llm_research_request"]["question"].startswith("Is AVGO")
+
+
+class ResearchRequestSyncPool:
+    def __init__(self) -> None:
+        self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
+        self.fetch_calls: list[tuple[str, tuple[object, ...]]] = []
+
+    async def fetch(self, sql: str, *args: object) -> list[dict]:
+        self.fetch_calls.append((sql, args))
+        return []
+
+    async def execute(self, sql: str, *args: object) -> str:
+        self.execute_calls.append((sql, args))
+        return "INSERT 0 1"
+
+
+@pytest.mark.asyncio
+async def test_sync_llm_research_requests_queues_due_product_research() -> None:
+    pool = ResearchRequestSyncPool()
+
+    synced = await sync_llm_research_requests(
+        pool,
+        "AVGO",
+        [{
+            "question": "AVGO Broadcom custom silicon hyperscaler socket wins 2026",
+            "requirement_key": "product_research",
+            "priority": "high",
+            "providers": ["firecrawl"],
+            "reason": "Would change confidence in ASIC growth.",
+        }],
+    )
+
+    assert len(synced) == 1
+    assert synced[0]["state_reason"] == "llm_research_request"
+    assert synced[0]["source_ref"]["research_requests"][0]["question"].startswith("AVGO")
+    source_task_calls = [
+        args for sql, args in pool.execute_calls if "INSERT INTO source_task" in sql
+    ]
+    assert {args[2] for args in source_task_calls} == {
+        "gdelt_doc_search",
+        "bing_news_rss_search",
+        "firecrawl_search",
+    }
+
+
+@pytest.mark.asyncio
+async def test_sync_llm_research_requests_groups_questions_per_requirement() -> None:
+    pool = ResearchRequestSyncPool()
+
+    synced = await sync_llm_research_requests(
+        pool,
+        "AVGO",
+        [
+            {
+                "question": "AVGO Broadcom custom silicon hyperscaler socket wins 2026",
+                "requirement_key": "product_research",
+                "priority": "high",
+                "reason": "Would change confidence in ASIC growth.",
+            },
+            {
+                "question": "Broadcom Tomahawk switching customer deployment momentum",
+                "requirement_key": "product_research",
+                "priority": "medium",
+                "reason": "Would change confidence in networking growth.",
+            },
+        ],
+    )
+
+    assert len(synced) == 1
+    assert synced[0]["priority"] == "high"
+    assert [
+        request["question"]
+        for request in synced[0]["source_ref"]["research_requests"]
+    ] == [
+        "AVGO Broadcom custom silicon hyperscaler socket wins 2026",
+        "Broadcom Tomahawk switching customer deployment momentum",
+    ]
+    source_task_calls = [
+        args for sql, args in pool.execute_calls if "INSERT INTO source_task" in sql
+    ]
+    assert len(source_task_calls) == 3
+    assert all(
+        len(json.loads(args[13])["research_requests"]) == 2
+        for args in source_task_calls
+    )
 
 
 def test_context_shift_evidence_captures_changed_sections() -> None:
@@ -758,7 +880,7 @@ def test_build_satisfied_source_tasks_marks_fresh_requirement_satisfied() -> Non
         {
             "source_type": "web_research",
             "priority": "high",
-            "fetch_actions": ["gdelt_doc_search", "bing_news_rss_search"],
+            "fetch_actions": ["gdelt_doc_search", "bing_news_rss_search", "firecrawl_search"],
         },
         {
             "research_evidence": 2,
@@ -769,7 +891,7 @@ def test_build_satisfied_source_tasks_marks_fresh_requirement_satisfied() -> Non
     )
 
     assert {task["state"] for task in tasks} == {"satisfied"}
-    assert {task["provider"] for task in tasks} == {"gdelt", "bing"}
+    assert {task["provider"] for task in tasks} == {"gdelt", "bing", "firecrawl"}
     assert all(task["due_at"] > now for task in tasks)
 
 

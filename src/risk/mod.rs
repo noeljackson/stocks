@@ -115,7 +115,11 @@ pub fn derive_portfolio(
         100.0 * (current_equity - anchor) / anchor
     };
 
-    Some(Portfolio { total_value: total, cash_pct, drawdown_pct })
+    Some(Portfolio {
+        total_value: total,
+        cash_pct,
+        drawdown_pct,
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -141,7 +145,12 @@ impl Default for Decision {
 
 /// Returns whether the proposed intent passes the risk overlay.
 #[must_use]
-pub fn evaluate(intent: &Intent, positions: &[Position], port: Portfolio, cfg: &Config) -> Decision {
+pub fn evaluate(
+    intent: &Intent,
+    positions: &[Position],
+    port: Portfolio,
+    cfg: &Config,
+) -> Decision {
     let mut d = Decision::default();
 
     let pct = |v: f64| -> f64 {

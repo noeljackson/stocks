@@ -18,9 +18,9 @@ use crate::llm::prompts::{InvocationRecorder, Prompt, complete_typed};
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct SentimentScore {
-    pub sentiment: String,   // "positive" | "neutral" | "negative"
-    pub polarity: f64,       // -1.0 .. 1.0
-    pub confidence: String,  // "low" | "medium" | "high"
+    pub sentiment: String,  // "positive" | "neutral" | "negative"
+    pub polarity: f64,      // -1.0 .. 1.0
+    pub confidence: String, // "low" | "medium" | "high"
     pub rationale: String,
 }
 
@@ -106,7 +106,10 @@ mod tests {
             rationale: "x".into(),
         };
         assert!(!s.is_valid());
-        let s2 = SentimentScore { polarity: -2.0, ..s };
+        let s2 = SentimentScore {
+            polarity: -2.0,
+            ..s
+        };
         assert!(!s2.is_valid());
     }
 

@@ -20,7 +20,10 @@ fn identical_is_clean() {
 
 #[test]
 fn empty_original_no_weakening() {
-    let r = analyze(&[], &conds(r#"[{"type":"quantitative","name":"new","expr":"x < 10"}]"#));
+    let r = analyze(
+        &[],
+        &conds(r#"[{"type":"quantitative","name":"new","expr":"x < 10"}]"#),
+    );
     assert!(!r.weakened);
 }
 
@@ -127,9 +130,8 @@ fn narrative_identical_no_review() {
 #[test]
 fn pure_rewrite_flags_review() {
     let original = conds(r#"[{"type":"quantitative","name":"gm","expr":"gross_margin < 45"}]"#);
-    let updated = conds(
-        r#"[{"type":"quantitative","name":"yoy_rev","expr":"yoy_revenue_growth < 5"}]"#,
-    );
+    let updated =
+        conds(r#"[{"type":"quantitative","name":"yoy_rev","expr":"yoy_revenue_growth < 5"}]"#);
     let r = analyze(&original, &updated);
     assert!(r.needs_review);
     assert!(r.weakened, "drop without retain IS weakening: {r:?}");

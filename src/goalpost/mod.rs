@@ -17,14 +17,8 @@ pub use service::run;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Condition {
-    Quantitative {
-        name: String,
-        expr: String,
-    },
-    Narrative {
-        name: String,
-        assertion: String,
-    },
+    Quantitative { name: String, expr: String },
+    Narrative { name: String, assertion: String },
 }
 
 impl Condition {
@@ -77,7 +71,10 @@ pub fn analyze(original: &[Condition], updated: &[Condition]) -> Report {
     for (name, oc) in &orig {
         let Some(uc) = upd.get(name) else { continue };
         match (oc, uc) {
-            (Condition::Quantitative { expr: oe, .. }, Condition::Quantitative { expr: ue, .. }) => {
+            (
+                Condition::Quantitative { expr: oe, .. },
+                Condition::Quantitative { expr: ue, .. },
+            ) => {
                 if expr_is_looser_than(ue, oe) {
                     r.loosened.push(name.clone());
                     r.reasons.push(format!("loosened {name}: {oe} → {ue}"));
@@ -96,7 +93,8 @@ pub fn analyze(original: &[Condition], updated: &[Condition]) -> Report {
             // Type swap (quantitative ⇄ narrative): conservatively needs review.
             _ => {
                 r.needs_review = true;
-                r.reasons.push(format!("type changed for {name} — human review"));
+                r.reasons
+                    .push(format!("type changed for {name} — human review"));
             }
         }
     }
@@ -105,7 +103,8 @@ pub fn analyze(original: &[Condition], updated: &[Condition]) -> Report {
         r.weakened = true;
     }
     for n in &r.dropped {
-        r.reasons.push(format!("dropped invalidation condition: {n}"));
+        r.reasons
+            .push(format!("dropped invalidation condition: {n}"));
     }
     // Pure rewrite: all originals dropped, all updated added.
     if !original.is_empty() && r.dropped.len() == original.len() && !r.added.is_empty() {

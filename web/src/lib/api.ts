@@ -625,6 +625,37 @@ export async function fetchTickerContext(symbol: string): Promise<TickerContext 
   return (await r.json()) as TickerContext;
 }
 
+export interface StartResearchTask {
+  id: number;
+  action: string;
+  provider: string;
+  state: string;
+  due_at?: string | null;
+  next_retry_at?: string | null;
+  attempts: number;
+  last_error?: string | null;
+}
+
+export interface StartResearchResponse {
+  symbol: string;
+  requirement: {
+    key: string;
+    state: string;
+  };
+  queued: number;
+  blocked: number;
+  tasks: StartResearchTask[];
+  cognition_event_published: boolean;
+}
+
+export async function startSymbolResearch(symbol: string): Promise<StartResearchResponse> {
+  const r = await fetch(`/api/symbols/${encodeURIComponent(symbol)}/start-research`, {
+    method: "POST",
+  });
+  if (!r.ok) throw new Error(`start-research ${r.status}`);
+  return (await r.json()) as StartResearchResponse;
+}
+
 export interface SmaPoint {
   window: number;
   value?: number | null;

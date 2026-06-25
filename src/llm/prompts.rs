@@ -79,7 +79,14 @@ pub fn load(dir: impl AsRef<Path>) -> Result<Registry> {
         let mut hasher = Sha256::new();
         hasher.update(template.as_bytes());
         let hash = hex::encode(hasher.finalize());
-        by_name.insert(name.clone(), Prompt { name, hash, template });
+        by_name.insert(
+            name.clone(),
+            Prompt {
+                name,
+                hash,
+                template,
+            },
+        );
     }
     Ok(Registry { by_name })
 }
@@ -247,7 +254,9 @@ pub async fn complete_typed<T: DeserializeOwned>(
             }
         }
     }
-    Err(anyhow::anyhow!("complete_typed: unreachable retry loop exit ({last_err})"))
+    Err(anyhow::anyhow!(
+        "complete_typed: unreachable retry loop exit ({last_err})"
+    ))
 }
 
 #[cfg(test)]
@@ -369,7 +378,11 @@ mod tests {
     }
 
     fn fixture_prompt() -> Prompt {
-        Prompt { name: "demo".into(), hash: "h".into(), template: "demo".into() }
+        Prompt {
+            name: "demo".into(),
+            hash: "h".into(),
+            template: "demo".into(),
+        }
     }
 
     #[tokio::test]
@@ -379,11 +392,24 @@ mod tests {
         };
         let vars: HashMap<&str, String> = HashMap::new();
         let out: Demo = complete_typed(
-            &provider, None, &fixture_prompt(), &vars, "give me demo", "scripted", None, 2,
+            &provider,
+            None,
+            &fixture_prompt(),
+            &vars,
+            "give me demo",
+            "scripted",
+            None,
+            2,
         )
         .await
         .unwrap();
-        assert_eq!(out, Demo { n: 42, s: "ok".into() });
+        assert_eq!(
+            out,
+            Demo {
+                n: 42,
+                s: "ok".into()
+            }
+        );
     }
 
     #[tokio::test]
@@ -397,7 +423,14 @@ mod tests {
         };
         let vars: HashMap<&str, String> = HashMap::new();
         let out: Demo = complete_typed(
-            &provider, None, &fixture_prompt(), &vars, "give me demo", "scripted", None, 2,
+            &provider,
+            None,
+            &fixture_prompt(),
+            &vars,
+            "give me demo",
+            "scripted",
+            None,
+            2,
         )
         .await
         .unwrap();
@@ -416,7 +449,14 @@ mod tests {
         };
         let vars: HashMap<&str, String> = HashMap::new();
         let err = complete_typed::<Demo>(
-            &provider, None, &fixture_prompt(), &vars, "go", "scripted", None, 2, // → 3 total attempts
+            &provider,
+            None,
+            &fixture_prompt(),
+            &vars,
+            "go",
+            "scripted",
+            None,
+            2, // → 3 total attempts
         )
         .await
         .unwrap_err();
@@ -432,7 +472,14 @@ mod tests {
         };
         let vars: HashMap<&str, String> = HashMap::new();
         let out: Demo = complete_typed(
-            &provider, None, &fixture_prompt(), &vars, "go", "scripted", None, 0,
+            &provider,
+            None,
+            &fixture_prompt(),
+            &vars,
+            "go",
+            "scripted",
+            None,
+            0,
         )
         .await
         .unwrap();

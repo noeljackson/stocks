@@ -170,17 +170,15 @@ pub async fn resolve_metric(pool: &PgPool, metric: &str) -> Result<Option<f64>> 
 
     match suffix {
         "close" => latest_close(pool, &symbol).await,
-        "gross_margin_pct" => {
-            ratio(pool, &symbol, "GrossProfit", "Revenues").await.map(|v| v.map(|r| r * 100.0))
-        }
-        "operating_margin_pct" => {
-            ratio(pool, &symbol, "OperatingIncomeLoss", "Revenues")
-                .await
-                .map(|v| v.map(|r| r * 100.0))
-        }
-        "net_margin_pct" => {
-            ratio(pool, &symbol, "NetIncomeLoss", "Revenues").await.map(|v| v.map(|r| r * 100.0))
-        }
+        "gross_margin_pct" => ratio(pool, &symbol, "GrossProfit", "Revenues")
+            .await
+            .map(|v| v.map(|r| r * 100.0)),
+        "operating_margin_pct" => ratio(pool, &symbol, "OperatingIncomeLoss", "Revenues")
+            .await
+            .map(|v| v.map(|r| r * 100.0)),
+        "net_margin_pct" => ratio(pool, &symbol, "NetIncomeLoss", "Revenues")
+            .await
+            .map(|v| v.map(|r| r * 100.0)),
         concept => latest_fact(pool, &symbol, concept).await,
     }
 }
@@ -213,13 +211,25 @@ pub fn parse_period_prefix(suffix: &str) -> Option<(PeriodTag, &str)> {
         // After "Q<n>" we should be at "_FY..." or "_<year>...".
         let rest = suffix.strip_prefix(&format!("Q{q}_"))?;
         let (year, base) = parse_year_prefix(rest)?;
-        return Some((PeriodTag { fiscal_year: year, quarter: Some(q) }, base));
+        return Some((
+            PeriodTag {
+                fiscal_year: year,
+                quarter: Some(q),
+            },
+            base,
+        ));
     }
 
     // Pattern: "FY<year>_..."
     if suffix.starts_with("FY") {
         let (year, base) = parse_year_prefix(suffix)?;
-        return Some((PeriodTag { fiscal_year: year, quarter: None }, base));
+        return Some((
+            PeriodTag {
+                fiscal_year: year,
+                quarter: None,
+            },
+            base,
+        ));
     }
     None
 }
@@ -247,13 +257,16 @@ async fn resolve_period_qualified(
         "gross_profit" => period_fact(pool, symbol, "GrossProfit", period).await?,
         "net_income" => period_fact(pool, symbol, "NetIncomeLoss", period).await?,
         "operating_income" => period_fact(pool, symbol, "OperatingIncomeLoss", period).await?,
-        "gross_margin_pct" => period_ratio(pool, symbol, "GrossProfit", "Revenues", period).await?
+        "gross_margin_pct" => period_ratio(pool, symbol, "GrossProfit", "Revenues", period)
+            .await?
             .map(|r| r * 100.0),
         "operating_margin_pct" => {
-            period_ratio(pool, symbol, "OperatingIncomeLoss", "Revenues", period).await?
+            period_ratio(pool, symbol, "OperatingIncomeLoss", "Revenues", period)
+                .await?
                 .map(|r| r * 100.0)
         }
-        "net_margin_pct" => period_ratio(pool, symbol, "NetIncomeLoss", "Revenues", period).await?
+        "net_margin_pct" => period_ratio(pool, symbol, "NetIncomeLoss", "Revenues", period)
+            .await?
             .map(|r| r * 100.0),
         // Pass-through: if the LLM wrote a literal concept name like
         // "Q3_FY2026_Revenues", honor that too.
@@ -482,7 +495,9 @@ async fn update_condition_status(
 ) -> Result<()> {
     let idx = (position - 1).max(0).to_string();
     let observed_json = match observed {
-        Some(v) => serde_json::Value::Number(serde_json::Number::from_f64(v).unwrap_or_else(|| 0.into())),
+        Some(v) => {
+            serde_json::Value::Number(serde_json::Number::from_f64(v).unwrap_or_else(|| 0.into()))
+        }
         None => serde_json::Value::Null,
     };
     let now_str = Utc::now().to_rfc3339();
@@ -516,7 +531,10 @@ const SQL_EVAL_FULFILLMENT: &str = r#"UPDATE thesis SET fulfillment_conditions =
 
 /// Long-running service entry point.
 pub async fn run(pool: PgPool, interval: std::time::Duration) -> Result<()> {
-    info!(interval_secs = interval.as_secs(), "condition evaluator started");
+    info!(
+        interval_secs = interval.as_secs(),
+        "condition evaluator started"
+    );
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -524,9 +542,12 @@ pub async fn run(pool: PgPool, interval: std::time::Duration) -> Result<()> {
         match run_once(&pool).await {
             Ok(c) if c.satisfied + c.refuted + c.inconclusive + c.stale > 0 => {
                 info!(
-                    satisfied = c.satisfied, refuted = c.refuted,
-                    inconclusive = c.inconclusive, stale = c.stale,
-                    still_pending = c.still_pending, skipped = c.skipped,
+                    satisfied = c.satisfied,
+                    refuted = c.refuted,
+                    inconclusive = c.inconclusive,
+                    stale = c.stale,
+                    still_pending = c.still_pending,
+                    skipped = c.skipped,
                     "evaluator pass complete"
                 );
             }
@@ -543,7 +564,12 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     fn t(metric: &str, op: &str, value: f64) -> Target {
-        Target { metric: metric.into(), op: op.into(), value, unit: None }
+        Target {
+            metric: metric.into(),
+            op: op.into(),
+            value,
+            unit: None,
+        }
     }
 
     // ---- period prefix parsing (#62 / PR E) ----
@@ -551,21 +577,39 @@ mod tests {
     #[test]
     fn parse_period_strips_q_fy_correctly() {
         let (p, base) = parse_period_prefix("Q3_FY2026_revenue").unwrap();
-        assert_eq!(p, PeriodTag { fiscal_year: 2026, quarter: Some(3) });
+        assert_eq!(
+            p,
+            PeriodTag {
+                fiscal_year: 2026,
+                quarter: Some(3)
+            }
+        );
         assert_eq!(base, "revenue");
     }
 
     #[test]
     fn parse_period_strips_fy_only_for_annual() {
         let (p, base) = parse_period_prefix("FY2027_net_income").unwrap();
-        assert_eq!(p, PeriodTag { fiscal_year: 2027, quarter: None });
+        assert_eq!(
+            p,
+            PeriodTag {
+                fiscal_year: 2027,
+                quarter: None
+            }
+        );
         assert_eq!(base, "net_income");
     }
 
     #[test]
     fn parse_period_accepts_q_without_fy_keyword() {
         let (p, base) = parse_period_prefix("Q1_2026_gross_margin_pct").unwrap();
-        assert_eq!(p, PeriodTag { fiscal_year: 2026, quarter: Some(1) });
+        assert_eq!(
+            p,
+            PeriodTag {
+                fiscal_year: 2026,
+                quarter: Some(1)
+            }
+        );
         assert_eq!(base, "gross_margin_pct");
     }
 
@@ -620,14 +664,25 @@ mod tests {
 
     #[test]
     fn condition_status_decodes_db_values() {
-        assert_eq!(ConditionStatus::from_db("pending"), Some(ConditionStatus::Pending));
-        assert_eq!(ConditionStatus::from_db("inconclusive"), Some(ConditionStatus::Inconclusive));
+        assert_eq!(
+            ConditionStatus::from_db("pending"),
+            Some(ConditionStatus::Pending)
+        );
+        assert_eq!(
+            ConditionStatus::from_db("inconclusive"),
+            Some(ConditionStatus::Inconclusive)
+        );
         assert_eq!(ConditionStatus::from_db("bogus"), None);
     }
 
     #[test]
     fn satisfied_when_observed_meets_target() {
-        let e = evaluate(&t("NVDA.Revenues", ">=", 100e9), Some(215e9), None, Utc::now());
+        let e = evaluate(
+            &t("NVDA.Revenues", ">=", 100e9),
+            Some(215e9),
+            None,
+            Utc::now(),
+        );
         assert_eq!(e.status, ConditionStatus::Satisfied);
         assert_eq!(e.observed, Some(215e9));
     }
@@ -636,7 +691,12 @@ mod tests {
     fn pending_when_target_not_met_within_deadline() {
         let now = Utc::now();
         let future = now + Duration::days(30);
-        let e = evaluate(&t("NVDA.Revenues", ">=", 100e9), Some(50e9), Some(future), now);
+        let e = evaluate(
+            &t("NVDA.Revenues", ">=", 100e9),
+            Some(50e9),
+            Some(future),
+            now,
+        );
         assert_eq!(e.status, ConditionStatus::Pending, "could still resolve");
     }
 
@@ -644,13 +704,23 @@ mod tests {
     fn refuted_when_target_not_met_and_deadline_past() {
         let now = Utc::now();
         let past = now - Duration::days(1);
-        let e = evaluate(&t("NVDA.Revenues", ">=", 100e9), Some(50e9), Some(past), now);
+        let e = evaluate(
+            &t("NVDA.Revenues", ">=", 100e9),
+            Some(50e9),
+            Some(past),
+            now,
+        );
         assert_eq!(e.status, ConditionStatus::Refuted);
     }
 
     #[test]
     fn pending_when_target_not_met_and_no_deadline() {
-        let e = evaluate(&t("NVDA.Revenues", ">=", 100e9), Some(50e9), None, Utc::now());
+        let e = evaluate(
+            &t("NVDA.Revenues", ">=", 100e9),
+            Some(50e9),
+            None,
+            Utc::now(),
+        );
         assert_eq!(e.status, ConditionStatus::Pending);
     }
 }

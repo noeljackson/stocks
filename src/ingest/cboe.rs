@@ -137,17 +137,33 @@ impl CboeAdapter {
 
     pub async fn fetch_pcr(&self) -> Result<Vec<CrowdRow>> {
         let url = "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv";
-        let body = self.client.get(url).send().await.context("fetch cboe pcr")?
-            .error_for_status().context("cboe pcr http")?
-            .text().await.context("cboe pcr body")?;
+        let body = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .context("fetch cboe pcr")?
+            .error_for_status()
+            .context("cboe pcr http")?
+            .text()
+            .await
+            .context("cboe pcr body")?;
         Ok(parse_cboe_pcr_csv(&body))
     }
 
     pub async fn fetch_vix(&self) -> Result<Vec<CrowdRow>> {
         let url = "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv";
-        let body = self.client.get(url).send().await.context("fetch cboe vix")?
-            .error_for_status().context("cboe vix http")?
-            .text().await.context("cboe vix body")?;
+        let body = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .context("fetch cboe vix")?
+            .error_for_status()
+            .context("cboe vix http")?
+            .text()
+            .await
+            .context("cboe vix body")?;
         Ok(parse_cboe_vix_csv(&body))
     }
 }

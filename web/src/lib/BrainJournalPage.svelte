@@ -19,6 +19,9 @@
     onPageChange?: (page: number) => void;
     onOpenEntry?: (entry: BrainJournalEntry) => void;
     onOpenSymbol?: (symbol: string) => void;
+    onStartResearch?: (symbol: string) => void | Promise<void>;
+    researchBusySymbol?: string | null;
+    researchStatus?: string | null;
     onBack?: () => void;
   };
 
@@ -32,6 +35,9 @@
     onPageChange = (_page: number) => {},
     onOpenEntry = (_entry: BrainJournalEntry) => {},
     onOpenSymbol = (_symbol: string) => {},
+    onStartResearch = (_symbol: string) => {},
+    researchBusySymbol = null as string | null,
+    researchStatus = null as string | null,
     onBack = () => {},
   }: Props = $props();
 
@@ -166,6 +172,10 @@
     return "Review setup";
   }
 
+  function researchButtonLabel(symbol: string): string {
+    return researchBusySymbol === symbol ? "Starting..." : "Start research";
+  }
+
   function themeMissing(theme: BrainJournalMemoTheme): string {
     const missing = Array.isArray(theme.missing_evidence) ? theme.missing_evidence : [];
     return missing.length ? missing.slice(0, 3).map(label).join(" · ") : "evidence current enough to read";
@@ -213,6 +223,7 @@
     <span><strong>{visibleCount}</strong> shown</span>
     <span><strong>{totalPages}</strong> page{totalPages === 1 ? "" : "s"}</span>
     {#if journal?.as_of}<span class="muted">refreshed {relativeTime(journal.as_of)}</span>{/if}
+    {#if researchStatus}<span class="research-status">{researchStatus}</span>{/if}
   </section>
 
   {#if journal?.synthesis}
@@ -242,7 +253,7 @@
             {#if section.items.length}
               <div class="trade-items">
                 {#each section.items as item, i (`${item.symbol}-${i}`)}
-                  <button type="button" class="trade-item" onclick={() => onOpenSymbol(item.symbol)}>
+                  <article class="trade-item">
                     <span class="memo-symbol-top">
                       <strong>{item.symbol}</strong>
                       <span>{item.score}</span>
@@ -256,8 +267,22 @@
                     <small>{decisionMeta(item)}</small>
                     <small>{decisionMetric(item)}</small>
                     <em>{item.why_not}</em>
-                    <b>{decisionAction(section.key, item)}</b>
-                  </button>
+                    <div class="trade-actions">
+                      <button type="button" onclick={() => onOpenSymbol(item.symbol)}>
+                        {decisionAction(section.key, item)}
+                      </button>
+                      {#if section.key === "research"}
+                        <button
+                          type="button"
+                          class="start-research"
+                          disabled={researchBusySymbol === item.symbol}
+                          onclick={() => onStartResearch(item.symbol)}
+                        >
+                          {researchButtonLabel(item.symbol)}
+                        </button>
+                      {/if}
+                    </div>
+                  </article>
                 {/each}
               </div>
             {:else}
@@ -391,6 +416,19 @@
                   <strong>{evidenceTitle(item)}</strong>
                   <span>{item.summary}</span>
                   <small>{label(item.category)} · importance {item.importance ?? "n/a"} {evidenceTime(item)}</small>
+                  {#if item.symbol}
+                    <div class="memo-actions">
+                      <button type="button" onclick={() => onOpenSymbol(item.symbol ?? "")}>Open</button>
+                      <button
+                        type="button"
+                        class="start-research"
+                        disabled={researchBusySymbol === item.symbol}
+                        onclick={() => onStartResearch(item.symbol ?? "")}
+                      >
+                        {researchButtonLabel(item.symbol)}
+                      </button>
+                    </div>
+                  {/if}
                 </div>
               {/each}
             </div>
@@ -536,6 +574,9 @@
     opacity: .45;
     cursor: not-allowed;
   }
+  .research-status {
+    color: #a6e3a1;
+  }
   .journal-memo {
     display: grid;
     gap: .65rem;
@@ -657,13 +698,43 @@
   button.memo-symbol {
     cursor: pointer;
   }
-  button.memo-symbol:hover,
-  button.trade-item:hover {
+  button.memo-symbol:hover {
     border-color: #45567a;
     background: #101723;
   }
-  .trade-item {
+  .trade-actions,
+  .memo-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .35rem;
+    margin-top: .15rem;
+  }
+  .trade-actions button,
+  .memo-actions button {
+    border: 1px solid #2a3447;
+    background: #111827;
+    color: #cdd6f4;
+    border-radius: 4px;
+    padding: .28rem .45rem;
+    font: inherit;
+    font-size: .72rem;
     cursor: pointer;
+  }
+  .trade-actions button:hover:not(:disabled),
+  .memo-actions button:hover:not(:disabled) {
+    border-color: #45567a;
+    background: #162033;
+  }
+  .trade-actions button.start-research,
+  .memo-actions button.start-research {
+    border-color: rgba(166, 227, 161, .45);
+    background: rgba(166, 227, 161, .12);
+    color: #dff7dc;
+  }
+  .trade-actions button:disabled,
+  .memo-actions button:disabled {
+    opacity: .55;
+    cursor: wait;
   }
   .trade-status {
     display: flex;
@@ -717,11 +788,6 @@
     font-size: .72rem;
     font-style: normal;
     line-height: 1.3;
-  }
-  .trade-item b {
-    color: #a6e3a1;
-    font-size: .72rem;
-    font-weight: 700;
   }
   .journal-section-title {
     color: #bac2de;

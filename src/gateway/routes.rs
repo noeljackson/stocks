@@ -105,6 +105,10 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
             "/api/symbols/{symbol}/refresh-context",
             post(trigger_refresh_context),
         )
+        .route(
+            "/api/symbols/{symbol}/start-research",
+            post(start_symbol_research),
+        )
         .route("/api/stream", get(stream))
         .fallback(spa_handler)
         .with_state(gw)
@@ -1418,8 +1422,16 @@ fn actions_for_requirement(requirement_key: &str) -> &'static [&'static str] {
         ],
         "company_profile" => &["fmp_company_profile"],
         "earnings_calendar" => &["fmp_earnings_calendar"],
-        "product_research" => &["gdelt_doc_search", "bing_news_rss_search"],
-        _ => &["gdelt_doc_search", "bing_news_rss_search"],
+        "product_research" => &[
+            "gdelt_doc_search",
+            "bing_news_rss_search",
+            "firecrawl_search",
+        ],
+        _ => &[
+            "gdelt_doc_search",
+            "bing_news_rss_search",
+            "firecrawl_search",
+        ],
     }
 }
 
@@ -1434,6 +1446,8 @@ fn provider_for_action(action: &str, source_type: &str) -> &'static str {
         "gdelt"
     } else if action.starts_with("bing_") {
         "bing"
+    } else if action.starts_with("firecrawl_") {
+        "firecrawl"
     } else if action.starts_with("llm_") {
         "llm"
     } else {
@@ -3338,7 +3352,7 @@ async fn get_brain_status(
             source_json("research", &research_status, research_at, research_health, source_tasks_for(
                 &task_rows,
                 &["product_research"],
-                &["gdelt_doc_search", "bing_news_rss_search"],
+                &["gdelt_doc_search", "bing_news_rss_search", "firecrawl_search"],
             ), json!({})),
             source_json("fundamentals", &fundamentals_status, fundamentals_at, fundamentals_health, source_tasks_for(
                 &task_rows,
@@ -3655,7 +3669,7 @@ fn review_packet_kind_summary(kind: &str, severity: &str) -> (&'static str, &'st
 fn review_packet_actions(kind: &str) -> serde_json::Value {
     let actions = match kind {
         "candidate_review" => vec![
-            json!({"id": "promote", "label": "Approve to Universe", "kind": "candidate_confirm", "detail": "Add to Universe and start context/thesis work."}),
+            json!({"id": "promote", "label": "Start research", "kind": "candidate_confirm", "detail": "Add to Universe and start context, evidence, and thesis work."}),
             json!({"id": "reject", "label": "Reject nomination", "kind": "candidate_reject", "detail": "Reject the nomination and keep the reason in history."}),
             json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later without resolving."}),
         ],
@@ -3692,10 +3706,10 @@ fn review_packet_decision(
     let (intent, headline, primary_kind, primary_label, primary_detail) = match kind {
         "candidate_review" => (
             "promote_to_universe",
-            format!("Approve {sym} to Universe?"),
+            format!("Start research for {sym}?"),
             "candidate_confirm",
-            "Approve to Universe",
-            "Promote the symbol and start context/thesis work.",
+            "Start research",
+            "Add the symbol to Universe, queue research, and start context/thesis work.",
         ),
         "thesis_actionable" | "risk_review" => (
             "record_trade_decision",
@@ -3734,7 +3748,7 @@ fn review_packet_decision(
         );
     }
     if kind != "candidate_review" && !in_universe {
-        blockers.push("No discovery candidate is attached, so approval to Universe is unavailable from this packet.");
+        blockers.push("No discovery candidate is attached, so Universe kickoff is unavailable from this packet.");
     }
 
     json!({
@@ -3753,7 +3767,7 @@ fn review_packet_decision(
                 "ticker row is created or reactivated",
                 "candidate is marked confirmed",
                 "matching attention item is resolved",
-                "context and thesis refresh work is kicked off",
+                "research, context, and thesis work is kicked off",
             ],
             "thesis_actionable" | "risk_review" => vec![
                 "human decision is recorded",
@@ -5243,6 +5257,251 @@ async fn trigger_refresh_context(
     StatusCode::ACCEPTED.into_response()
 }
 
+async fn start_symbol_research(
+    State(gw): State<Arc<Gateway>>,
+    Path(symbol): Path<String>,
+) -> impl IntoResponse {
+    let sym = symbol.to_ascii_uppercase();
+    if sym.is_empty() || sym.len() > 14 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid_symbol"})),
+        )
+            .into_response();
+    }
+
+    let active = match sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM ticker WHERE symbol = $1 AND status = 'active')",
+    )
+    .bind(&sym)
+    .fetch_one(&gw.store.pool)
+    .await
+    {
+        Ok(active) => active,
+        Err(e) => {
+            warn!(symbol = %sym, error = %e, "start research active ticker check failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    if !active {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "symbol_not_active",
+                "symbol": sym,
+                "message": "Add the symbol to Universe before starting research.",
+            })),
+        )
+            .into_response();
+    }
+
+    let source_type = source_type_for_requirement("product_research");
+    let actions = actions_for_requirement("product_research");
+    let actions_vec = actions.iter().map(|a| (*a).to_string()).collect::<Vec<_>>();
+    let source_ref = json!({
+        "requested_by": "ui_start_research",
+        "reason": "operator_requested_research_refresh",
+        "fetch_actions": actions_vec,
+        "requested_at": chrono::Utc::now(),
+    });
+
+    let mut tx = match gw.store.pool.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            warn!(symbol = %sym, error = %e, "start research begin tx failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let requirement_state: String = match sqlx::query_scalar(
+        r#"INSERT INTO evidence_requirement
+                (symbol, requirement_key, source_type, reason, priority,
+                 blocking_state, next_retry_at, last_error, source_ref, satisfied_at)
+           VALUES ($1, 'product_research', $2,
+                   'Operator requested fresh product/theme research before context/thesis work.',
+                   'high', 'missing', now(), NULL, $3, NULL)
+           ON CONFLICT (symbol, requirement_key) DO UPDATE SET
+                source_type = EXCLUDED.source_type,
+                reason = EXCLUDED.reason,
+                priority = 'high',
+                blocking_state = CASE
+                    WHEN evidence_requirement.blocking_state = 'fetching' THEN 'fetching'
+                    ELSE 'missing'
+                END,
+                next_retry_at = now(),
+                last_error = NULL,
+                source_ref = evidence_requirement.source_ref || EXCLUDED.source_ref,
+                satisfied_at = NULL,
+                updated_at = now()
+         RETURNING blocking_state"#,
+    )
+    .bind(&sym)
+    .bind(source_type)
+    .bind(&source_ref)
+    .fetch_one(&mut *tx)
+    .await
+    {
+        Ok(state) => state,
+        Err(e) => {
+            warn!(symbol = %sym, error = %e, "start research evidence upsert failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let mut task_rows = Vec::new();
+    for action in actions {
+        let provider = provider_for_action(action, source_type);
+        let task_ref = json!({
+            "requested_by": "ui_start_research",
+            "reason": "operator_requested_research_refresh",
+            "force_research": true,
+        });
+        let row = match sqlx::query(
+            r#"INSERT INTO source_task
+                    (source_type, requirement_key, action, scope, target_id,
+                     provider, limiter_key, state, priority, due_at,
+                     next_retry_at, last_error, source_ref)
+               VALUES ($1, 'product_research', $2, 'symbol', $3,
+                       $4, $4, 'queued', 'high', now(),
+                       NULL, NULL, $5)
+               ON CONFLICT (scope, target_id, requirement_key, action) DO UPDATE SET
+                    source_type = EXCLUDED.source_type,
+                    provider = EXCLUDED.provider,
+                    limiter_key = EXCLUDED.limiter_key,
+                    state = CASE
+                        WHEN source_task.state = 'fetching' THEN source_task.state
+                        WHEN source_task.state = 'rate_limited'
+                         AND source_task.next_retry_at > now() THEN source_task.state
+                        ELSE 'queued'
+                    END,
+                    priority = 'high',
+                    due_at = CASE
+                        WHEN source_task.state = 'fetching' THEN source_task.due_at
+                        WHEN source_task.state = 'rate_limited'
+                         AND source_task.next_retry_at > now() THEN source_task.due_at
+                        ELSE now()
+                    END,
+                    next_retry_at = CASE
+                        WHEN source_task.state = 'rate_limited'
+                         AND source_task.next_retry_at > now() THEN source_task.next_retry_at
+                        ELSE NULL
+                    END,
+                    last_error = CASE
+                        WHEN source_task.state = 'rate_limited'
+                         AND source_task.next_retry_at > now() THEN source_task.last_error
+                        ELSE NULL
+                    END,
+                    source_ref = source_task.source_ref || EXCLUDED.source_ref,
+                    updated_at = now()
+             RETURNING id, action, provider, state, due_at, next_retry_at,
+                       attempts, last_error"#,
+        )
+        .bind(source_type)
+        .bind(action)
+        .bind(&sym)
+        .bind(provider)
+        .bind(&task_ref)
+        .fetch_one(&mut *tx)
+        .await
+        {
+            Ok(row) => row,
+            Err(e) => {
+                warn!(symbol = %sym, action, error = %e, "start research source_task upsert failed");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": e.to_string()})),
+                )
+                    .into_response();
+            }
+        };
+        task_rows.push(json!({
+            "id": row.try_get::<i64, _>("id").unwrap_or_default(),
+            "action": row.try_get::<String, _>("action").unwrap_or_else(|_| (*action).to_string()),
+            "provider": row.try_get::<String, _>("provider").unwrap_or_else(|_| provider.to_string()),
+            "state": row.try_get::<String, _>("state").unwrap_or_else(|_| "queued".to_string()),
+            "due_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("due_at").ok(),
+            "next_retry_at": row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("next_retry_at").ok().flatten(),
+            "attempts": row.try_get::<i32, _>("attempts").unwrap_or_default(),
+            "last_error": row.try_get::<Option<String>, _>("last_error").ok().flatten(),
+        }));
+    }
+
+    if let Err(e) = tx.commit().await {
+        warn!(symbol = %sym, error = %e, "start research commit failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    let payload = json!({
+        "symbol": sym,
+        "source": "ui-start-research",
+        "trigger": "ui_start_research",
+        "reason": "operator_requested_research_refresh",
+        "force_research": true,
+        "requested_actions": actions_vec,
+    });
+    if let Err(e) = gw
+        .bus
+        .publish(
+            subjects::DISCOVERY_CONFIRMED,
+            payload.to_string().as_bytes(),
+        )
+        .await
+    {
+        warn!(symbol = %sym, error = %e, "publish start-research failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    let queued_count = task_rows
+        .iter()
+        .filter(|row| row.get("state").and_then(serde_json::Value::as_str) == Some("queued"))
+        .count();
+    let blocked_count = task_rows
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.get("state").and_then(serde_json::Value::as_str),
+                Some("fetching" | "rate_limited")
+            )
+        })
+        .count();
+
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "symbol": sym,
+            "requirement": {
+                "key": "product_research",
+                "state": requirement_state,
+            },
+            "queued": queued_count,
+            "blocked": blocked_count,
+            "tasks": task_rows,
+            "cognition_event_published": true,
+        })),
+    )
+        .into_response()
+}
+
 async fn reject_candidate(
     State(gw): State<Arc<Gateway>>,
     Path(id): Path<i64>,
@@ -5368,13 +5627,13 @@ mod tests {
     }
 
     #[test]
-    fn review_packet_candidate_decision_is_universe_approval() {
+    fn review_packet_candidate_decision_starts_research() {
         let decision = review_packet_decision("candidate_review", Some("CRDO"), false);
 
         assert_eq!(decision["intent"], "promote_to_universe");
-        assert_eq!(decision["headline"], "Approve CRDO to Universe?");
+        assert_eq!(decision["headline"], "Start research for CRDO?");
         assert_eq!(decision["primary_action"]["kind"], "candidate_confirm");
-        assert_eq!(decision["primary_action"]["label"], "Approve to Universe");
+        assert_eq!(decision["primary_action"]["label"], "Start research");
         assert_eq!(decision["blockers"].as_array().unwrap().len(), 0);
         assert!(
             decision["consequences"]
@@ -5397,6 +5656,14 @@ mod tests {
             .iter()
             .any(|item| item
                 == "Already in Universe; this packet is about the next workflow action, not promotion."));
+    }
+
+    #[test]
+    fn firecrawl_action_maps_to_firecrawl_provider() {
+        assert_eq!(
+            provider_for_action("firecrawl_search", "web_research"),
+            "firecrawl"
+        );
     }
 
     #[test]
@@ -5438,7 +5705,11 @@ mod tests {
         assert!(out.reason.contains("product_research"));
         assert_eq!(
             actions_for_requirement(&out.requirement_key),
-            ["gdelt_doc_search", "bing_news_rss_search"]
+            [
+                "gdelt_doc_search",
+                "bing_news_rss_search",
+                "firecrawl_search"
+            ]
         );
 
         let catalyst = canonical_requested_evidence(&RequestedEvidence {

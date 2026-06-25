@@ -338,6 +338,7 @@ fred_macro                        Rust FRED loop claims/completes benchmark task
 cboe_crowd_sentiment              Rust CBOE loop claims/completes benchmark task
 gdelt_doc_search                  Python source_task worker
 bing_news_rss_search              Python source_task worker
+firecrawl_search                  Python source_task worker
 ```
 
 Provider backoff is now applied at planning time across every task that shares

@@ -1067,7 +1067,8 @@ Goal: stale or missing data creates work automatically. The UI should never be
 the trigger for basic acquisition.
 
 Current implementation note: the first active source-task worker owns
-Python-native web research (`gdelt_doc_search`, `bing_news_rss_search`) and is
+Python-native web research (`gdelt_doc_search`, `bing_news_rss_search`,
+`firecrawl_search`) and is
 embedded in the cognition service. Rust ingest loops own source tasks for FMP,
 Massive, XBRL, EDGAR, FRED, CBOE, and sentiment scoring. Those expensive Rust
 loops now use a tiered deep-research universe or benchmark-scoped macro tasks

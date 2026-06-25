@@ -38,8 +38,9 @@ async fn main() -> Result<()> {
     // Best-effort DB connection — the audit recorder is optional so llmsmoke
     // still works without postgres reachable.
     let store = Store::connect(&cfg.database_url).await.ok();
-    let recorder: Option<&dyn prompts::InvocationRecorder> =
-        store.as_ref().map(|s| s as &dyn prompts::InvocationRecorder);
+    let recorder: Option<&dyn prompts::InvocationRecorder> = store
+        .as_ref()
+        .map(|s| s as &dyn prompts::InvocationRecorder);
 
     // echo.md uses `{{expected}}`; the user message ALSO doubles as the
     // expected reply token so the smoke is a real round-trip check.

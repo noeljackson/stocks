@@ -55,6 +55,7 @@ from .evidence import (
     load_open_evidence_requirements,
     refresh_open_evidence_requirements,
     sync_llm_missing_evidence,
+    sync_llm_research_requests,
 )
 from .sharpen import sharpen as sharpen_thesis
 from .source_tasks import loop as source_task_loop
@@ -386,7 +387,10 @@ async def _run_pipeline(
 
     try:
         try:
-            context_version = await refresh_context(symbol)
+            refresh_kwargs = {}
+            if bool((source_ref or {}).get("force_research")):
+                refresh_kwargs["force_research"] = True
+            context_version = await refresh_context(symbol, **refresh_kwargs)
             final_status = "context_refreshed"
             final_reason = f"context refreshed to v{context_version}"
             log.info("cognition: %s context refreshed to v%s", symbol, context_version)
@@ -425,18 +429,42 @@ async def _run_pipeline(
         result = None
         try:
             result = await draft_thesis(symbol)
+            synced_research_requests = []
+            if result and result.get("research_requests"):
+                synced_research_requests = await sync_llm_research_requests(
+                    pool,
+                    symbol,
+                    result["research_requests"],
+                )
+            queued_research_count = sum(
+                len(req.get("source_ref", {}).get("research_requests") or [])
+                for req in synced_research_requests
+            )
             final_status, thesis_classification = _status_for_thesis_result(result)
             if result and result.get("_thesis_id"):
                 thesis_id = result["_thesis_id"]
-                final_reason = (
-                    f"thesis {final_status}: {thesis_classification}"
-                    if thesis_classification
-                    else f"thesis {final_status}"
-                )
+                if queued_research_count:
+                    final_reason = (
+                        f"thesis {final_status}; queued "
+                        f"{queued_research_count} research request"
+                        f"{'' if queued_research_count == 1 else 's'}"
+                    )
+                else:
+                    final_reason = (
+                        f"thesis {final_status}: {thesis_classification}"
+                        if thesis_classification
+                        else f"thesis {final_status}"
+                    )
                 log.info("cognition: %s thesis drafted/reconciled %s", symbol, thesis_id)
             else:
                 log.info("cognition: %s thesis declined (no edge)", symbol)
                 decline_ref = dict(source_ref or {"reason": "no_edge"})
+                if synced_research_requests:
+                    decline_ref["synced_research_requests"] = [
+                        request["question"]
+                        for req in synced_research_requests
+                        for request in req.get("source_ref", {}).get("research_requests", [])
+                    ]
                 llm_missing_evidence = []
                 if result and result.get("missing_evidence"):
                     llm_missing_evidence = result["missing_evidence"]
@@ -486,7 +514,7 @@ async def _run_pipeline(
             thesis_classification=thesis_classification,
             evidence=open_evidence,
             error=final_error,
-            source_ref={"candidate_id": candidate_id},
+            source_ref={**(source_ref or {}), "candidate_id": candidate_id},
         )
 
 
@@ -522,6 +550,10 @@ async def _on_confirmed(pool: asyncpg.Pool, msg) -> None:
         await msg.ack()
         return
 
+    source_ref = dict(env)
+    source_ref.setdefault("trigger", "discovery.confirmed")
+    source_ref.setdefault("reason", "no_edge")
+
     await _await_with_ack_progress(
         msg,
         _run_symbol_once(
@@ -530,7 +562,7 @@ async def _on_confirmed(pool: asyncpg.Pool, msg) -> None:
                 pool,
                 symbol,
                 candidate_id=candidate_id,
-                source_ref={"reason": "no_edge", "trigger": "discovery.confirmed"},
+                source_ref=source_ref,
             ),
         ),
         progress_interval_seconds=max(1, _env_int("COGNITION_ACK_PROGRESS_SECONDS", 10)),

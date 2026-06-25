@@ -8,6 +8,7 @@ COMPOSE := docker compose -f deploy/local/docker-compose.yml
 COMPOSE_DEV := docker compose \
     -f deploy/local/docker-compose.yml \
     -f deploy/local/docker-compose.dev.yml
+COMPOSE_FIRECRAWL := $(COMPOSE_DEV) -f deploy/local/docker-compose.firecrawl.yml
 PSQL_URL ?= postgres://stocks:stocks_dev_only@localhost:5432/stocks?sslmode=disable
 
 # Secrets injector: when `infisical` is on PATH, wrap commands so the binaries
@@ -45,7 +46,7 @@ psql: ## Open psql against local db
 # ---- all-in-docker dev environment (#36) ----
 # Brings up postgres + nats + ALL rust services + vite SPA dev server, each
 # with hot-reload on source changes. Secrets injected via Infisical.
-.PHONY: dev dev-down dev-logs dev-build dev-restart
+.PHONY: dev dev-down dev-logs dev-build dev-restart firecrawl-up firecrawl-enable firecrawl-down firecrawl-logs
 dev: dev-warm ## Start the full dev stack (postgres + nats + 6 rust services + vite) with hot reload
 	$(RUN) $(COMPOSE_DEV) up -d
 	@echo
@@ -80,6 +81,23 @@ dev-build: ## Rebuild the dev images (Rust + Vite). Run after Cargo.toml changes
 
 dev-restart: ## Restart one service (SVC=gateway make dev-restart)
 	$(COMPOSE_DEV) restart $(SVC)
+
+firecrawl-up: ## Start optional local Firecrawl API sidecar on :3002
+	$(RUN) $(COMPOSE_FIRECRAWL) up -d firecrawl-api
+	@echo "Firecrawl API: http://localhost:$${FIRECRAWL_PORT:-3002}"
+	@echo "Queue UI:      http://localhost:$${FIRECRAWL_PORT:-3002}/admin/$${FIRECRAWL_BULL_AUTH_KEY:-stocks-dev}/queues"
+
+firecrawl-enable: ## Start Firecrawl and recreate cognition with RESEARCH_PROVIDER including firecrawl
+	$(RUN) env RESEARCH_PROVIDER=gdelt,bing_news,firecrawl $(COMPOSE_FIRECRAWL) up -d --force-recreate firecrawl-api cognition
+	@echo "Firecrawl API: http://localhost:$${FIRECRAWL_PORT:-3002}"
+	@echo "Cognition:     RESEARCH_PROVIDER=gdelt,bing_news,firecrawl"
+
+firecrawl-down: ## Stop optional local Firecrawl sidecar without stopping the stocks dev stack
+	$(COMPOSE_FIRECRAWL) stop firecrawl-api firecrawl-playwright firecrawl-redis firecrawl-rabbitmq firecrawl-postgres
+	$(COMPOSE_FIRECRAWL) rm -f firecrawl-api firecrawl-playwright firecrawl-redis firecrawl-rabbitmq firecrawl-postgres
+
+firecrawl-logs: ## Follow optional local Firecrawl logs
+	$(COMPOSE_FIRECRAWL) logs -f firecrawl-api firecrawl-playwright firecrawl-rabbitmq firecrawl-postgres
 
 seed-demo: ## Seed sample tickers + theses so the UI has content on first load
 	PSQL_URL="$(PSQL_URL)" ./scripts/seed-demo.sh

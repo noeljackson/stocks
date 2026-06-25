@@ -2332,6 +2332,9 @@ impl Store {
                 let title = match category {
                     "changed" => format!("Fresh {provider} data for {target}"),
                     "blocked" => format!("Data blocked: {target} {}", journal_label(&action)),
+                    "research" if state == "fetching" => {
+                        format!("Research in progress: {target} {}", journal_label(&action))
+                    }
                     "research" => format!("Research queued: {target} {}", journal_label(&action)),
                     _ => format!("No new rows: {target} {}", journal_label(&action)),
                 };
@@ -4810,6 +4813,10 @@ mod tests {
         );
         assert_eq!(
             journal_source_task_category("queued", None, "blocking"),
+            ("research", 62)
+        );
+        assert_eq!(
+            journal_source_task_category("fetching", None, "high"),
             ("research", 62)
         );
 

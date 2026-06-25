@@ -28,7 +28,11 @@ import asyncpg
 from . import config
 from .context_maintainer import _llm_cfg, _provider_name, _repo_root  # noqa: PLC2701
 from .context_maintainer import refresh as refresh_context
-from .evidence import load_open_evidence_requirements
+from .evidence import (
+    EVIDENCE_REQUIREMENTS,
+    canonical_requirement_key,
+    load_open_evidence_requirements,
+)
 from .llm import new_provider
 from .prompts import AsyncpgRecorder, invoke, load
 
@@ -40,6 +44,9 @@ REVIEWABLE_RECONCILIATIONS = {
     "invalidates_existing_view",
 }
 SYSTEM_CONFIDENCE_VALUES = {"low", "medium", "high", "very_high"}
+RESEARCH_REQUEST_LIMIT = 3
+RESEARCH_PROVIDERS = {"gdelt", "gdelt_doc", "bing", "bing_news", "bing_news_rss", "firecrawl"}
+PRIORITY_VALUES = {"low", "medium", "high", "blocking"}
 
 
 async def _load_latest_context(pool: asyncpg.Pool, symbol: str) -> dict | None:
@@ -430,6 +437,7 @@ def _normalize_known_unknowns(symbol: str, draft: dict) -> list[dict]:
             "requirement_key",
             "priority",
             "source_type",
+            "auto_research",
         ):
             value = item.get(optional_key)
             if value not in (None, "", [], {}):
@@ -441,6 +449,22 @@ def _normalize_known_unknowns(symbol: str, draft: dict) -> list[dict]:
         for item in raw:
             if isinstance(item, dict):
                 add(item)
+
+    research_requests = draft.get("research_requests") or []
+    if isinstance(research_requests, list):
+        for item in research_requests:
+            if not isinstance(item, dict) or len(out) >= 6:
+                continue
+            add({
+                "question": item.get("question"),
+                "watch_for": item.get("reason") or item.get("watch_for") or "auto research result",
+                "requirement_key": item.get("requirement_key") or "product_research",
+                "source_type": item.get("source_type") or "web_research",
+                "priority": item.get("priority") or "high",
+                "evidence_source": "auto:web_research",
+                "status": "research_requested",
+                "auto_research": True,
+            })
 
     missing = draft.get("missing_evidence") or []
     if isinstance(missing, list):
@@ -467,6 +491,49 @@ def _normalize_known_unknowns(symbol: str, draft: dict) -> list[dict]:
             ),
             "evidence_source": "normalized evidence_item stream",
             "status": "open",
+        })
+    return out
+
+
+def _normalize_research_requests(_symbol: str, draft: dict) -> list[dict]:
+    out: list[dict] = []
+    seen: set[str] = set()
+    raw = draft.get("research_requests") or []
+    if not isinstance(raw, list):
+        return out
+
+    for item in raw:
+        if not isinstance(item, dict) or len(out) >= RESEARCH_REQUEST_LIMIT:
+            continue
+        question = str(item.get("question") or item.get("query") or "").strip()
+        if len(question) < 12:
+            continue
+        key = question.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        requirement_key = canonical_requirement_key(item) or "product_research"
+        spec = EVIDENCE_REQUIREMENTS.get(requirement_key, EVIDENCE_REQUIREMENTS["product_research"])
+        priority = str(item.get("priority") or spec["priority"]).strip().lower()
+        if priority not in PRIORITY_VALUES:
+            priority = spec["priority"]
+        providers = item.get("providers") or ["gdelt", "bing_news_rss", "firecrawl"]
+        if isinstance(providers, str):
+            providers = [providers]
+        providers = [
+            str(provider).strip().lower()
+            for provider in providers
+            if str(provider).strip().lower() in RESEARCH_PROVIDERS
+        ][:3]
+        out.append({
+            "question": question,
+            "requirement_key": requirement_key,
+            "source_type": str(item.get("source_type") or spec["source_type"]),
+            "priority": priority,
+            "providers": providers or ["gdelt", "bing_news_rss", "firecrawl"],
+            "reason": str(item.get("reason") or item.get("watch_for") or question).strip(),
+            "status": "queued",
+            "requested_by": "thesis_engine",
         })
     return out
 
@@ -687,6 +754,7 @@ def _draft_snapshot(draft: dict) -> dict:
         "invalidation_conditions": draft.get("invalidation_conditions") or [],
         "fulfillment_conditions": draft.get("fulfillment_conditions") or [],
         "known_unknowns": draft.get("known_unknowns") or [],
+        "research_requests": draft.get("research_requests") or [],
         "conviction_tier": draft.get("conviction_tier"),
         "system_confidence": _normalize_system_confidence(draft),
         "system_confidence_components": _system_confidence_components(draft),
@@ -980,6 +1048,7 @@ def _normalize_monitoring_draft(symbol: str, parsed: dict) -> dict:
     out["invalidation_conditions"] = out.get("invalidation_conditions") or []
     out["fulfillment_conditions"] = out.get("fulfillment_conditions") or []
     out["missing_evidence"] = out.get("missing_evidence") or []
+    out["research_requests"] = _normalize_research_requests(symbol, out)
     out["known_unknowns"] = _normalize_known_unknowns(symbol, out)
     out["conviction_tier"] = out.get("conviction_tier") or "low"
     out["system_confidence"] = _normalize_system_confidence(out)
@@ -1068,6 +1137,7 @@ async def draft(symbol: str) -> dict:
             today=today,
         )
 
+        parsed["research_requests"] = _normalize_research_requests(symbol, parsed)
         kind = _draft_kind(parsed, context)
         if kind == "monitoring":
             parsed = _normalize_monitoring_draft(symbol, parsed)

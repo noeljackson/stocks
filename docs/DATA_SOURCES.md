@@ -150,7 +150,7 @@ deployments, benchmarks, and adoption?"
 | Data | Why | Vendor | Tier / cost | Endpoint | Status |
 |---|---|---|---|---|---|
 | Product/theme web articles | Public evidence for roadmaps, benchmarks, deployment reports, customer adoption, and competitive claims that may not be tagged to a ticker by FMP/Massive | **GDELT Doc 2.0** + Bing News RSS fallback | free, no key | GDELT `/api/v2/doc/doc?query=&mode=ArtList&format=json`; Bing `/news/search?q=&format=rss` | wired — `py/src/stocks/research.py`, persisted to `research_evidence`, source health `web_research` |
-| Paid semantic search uplift | Better recall for niche engineering blogs, benchmark posts, and product docs | Exa / Tavily / Brave / SerpAPI | not chosen | provider abstraction planned | not wired (#130 follow-up if GDELT recall is insufficient) |
+| Semantic web retrieval uplift | Better recall for niche engineering blogs, benchmark posts, product docs, and other public pages that RSS/news-only search misses | **Firecrawl** via hosted API or optional local compose sidecar | local self-host or hosted credits | Firecrawl `/v2/search` with `sources=["web"]`, optional self-host at `http://firecrawl-api:3002` | wired behind `RESEARCH_PROVIDER=...,firecrawl`; local sidecar in `deploy/local/docker-compose.firecrawl.yml` |
 
 Provider search results are relevance-gated before they become symbol-level
 research evidence. A result must match the requested ticker, a company alias

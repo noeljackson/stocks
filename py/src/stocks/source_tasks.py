@@ -24,15 +24,17 @@ from .research import refresh_research_evidence
 
 log = logging.getLogger("source_tasks")
 
-WEB_RESEARCH_ACTIONS = ("gdelt_doc_search", "bing_news_rss_search")
+WEB_RESEARCH_ACTIONS = ("gdelt_doc_search", "bing_news_rss_search", "firecrawl_search")
 CLAIMABLE_STATES = ("queued", "no_rows", "failed", "rate_limited", "satisfied")
 RESEARCH_PROVIDER_ACTION = {
     "gdelt_doc": "gdelt_doc_search",
     "bing_news_rss": "bing_news_rss_search",
+    "firecrawl": "firecrawl_search",
 }
 RESEARCH_PROVIDER_NAME_BY_TASK_PROVIDER = {
     "gdelt": "gdelt_doc",
     "bing": "bing_news_rss",
+    "firecrawl": "firecrawl",
 }
 
 
@@ -144,6 +146,68 @@ async def claim_due_web_research_symbols(
         limit,
     )
     return [row["target_id"] for row in rows]
+
+
+def _research_questions_from_ref(source_ref: object) -> list[str]:
+    if isinstance(source_ref, str):
+        try:
+            source_ref = json.loads(source_ref)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(source_ref, dict):
+        return []
+    questions: list[str] = []
+    direct = source_ref.get("question")
+    if isinstance(direct, str):
+        questions.append(direct)
+    request = source_ref.get("llm_research_request")
+    if isinstance(request, dict) and isinstance(request.get("question"), str):
+        questions.append(request["question"])
+    requests = source_ref.get("research_requests")
+    if isinstance(requests, list):
+        for item in requests:
+            if isinstance(item, dict) and isinstance(item.get("question"), str):
+                questions.append(item["question"])
+            elif isinstance(item, str):
+                questions.append(item)
+    out: list[str] = []
+    seen: set[str] = set()
+    for question in questions:
+        normalized = " ".join(question.split())
+        key = normalized.casefold()
+        if len(normalized) < 12 or key in seen:
+            continue
+        seen.add(key)
+        out.append(normalized)
+        if len(out) >= 3:
+            break
+    return out
+
+
+async def load_claimed_research_questions(pool: asyncpg.Pool, symbol: str) -> list[str]:
+    rows = await pool.fetch(
+        """SELECT source_ref
+             FROM source_task
+            WHERE scope = 'symbol'
+              AND target_id = $1
+              AND action = ANY($2::text[])
+              AND state = 'fetching'
+         ORDER BY updated_at DESC""",
+        symbol,
+        list(WEB_RESEARCH_ACTIONS),
+    )
+    questions: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for question in _research_questions_from_ref(row["source_ref"]):
+            key = question.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            questions.append(question)
+            if len(questions) >= 3:
+                return questions
+    return questions
 
 
 async def _mark_failed(pool: asyncpg.Pool, symbol: str, error: str) -> None:
@@ -261,11 +325,13 @@ async def paused_research_providers(pool: asyncpg.Pool) -> set[str]:
 
 async def process_web_research_symbol(pool: asyncpg.Pool, symbol: str) -> int:
     disabled_providers = await paused_research_providers(pool)
+    extra_queries = await load_claimed_research_questions(pool, symbol)
     inserted = await refresh_research_evidence(
         pool,
         symbol,
         force=True,
         disabled_providers=disabled_providers,
+        extra_queries=extra_queries,
     )
     evidence_counts = await load_evidence_counts(pool, symbol)
     source_health = await load_source_health(pool)

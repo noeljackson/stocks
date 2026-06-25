@@ -2147,7 +2147,7 @@ test("thesis card opens a prefilled decision form", async ({ page }) => {
   await expect(page.getByLabel("Action")).toHaveValue("skip");
 });
 
-test("thesis review packet opens a prefilled decision form", async ({ page }) => {
+test("thesis review packet opens an inline prefilled decision form", async ({ page }) => {
   await mockApi(page);
   await page.goto("/symbol/OKTA");
 
@@ -2157,9 +2157,40 @@ test("thesis review packet opens a prefilled decision form", async ({ page }) =>
 
   await packet.getByRole("button", { name: /Record decision/ }).click();
 
-  await expect(page.locator(".bottom-tabs button.active")).toHaveText("decisions");
-  await expect(page.getByLabel("Thesis ID")).toHaveValue("12ceaea3-9df3-416a-bfe5-107d3233dd59");
-  await expect(page.getByLabel("Action")).toHaveValue("skip");
+  const inline = page.getByTestId("review-packet-decision-form");
+  await expect(inline).toBeVisible();
+  await expect(inline.getByLabel("Thesis ID")).toHaveValue("12ceaea3-9df3-416a-bfe5-107d3233dd59");
+  await expect(inline.getByLabel("Action")).toHaveValue("skip");
+  await expect(page.locator(".bottom-tabs button.active")).not.toHaveText("decisions");
+});
+
+test("thesis review packet submits the decision inline", async ({ page }) => {
+  const calls = await mockApi(page);
+  await page.goto("/symbol/OKTA");
+
+  await page.getByTestId("workflow-attention").getByRole("button", { name: /OKTA thesis changed/ }).click();
+  const packet = page.getByTestId("review-packet");
+  await packet.getByRole("button", { name: /Record decision/ }).click();
+
+  const inline = page.getByTestId("review-packet-decision-form");
+  await expect(inline).toBeVisible();
+  await expect(inline.getByLabel("Thesis ID")).toHaveValue("12ceaea3-9df3-416a-bfe5-107d3233dd59");
+  await expect(inline.getByLabel("Action")).toHaveValue("skip");
+  await expect(page.locator(".bottom-tabs button.active")).not.toHaveText("decisions");
+
+  await inline.getByLabel("Why").selectOption("valuation_priced");
+  await inline.getByLabel("Human conviction").selectOption("low");
+  await inline.getByLabel("Decision reason").fill("Inline review packet decision.");
+  await inline.getByRole("button", { name: "Submit" }).click();
+
+  await expect.poll(() => calls.decisionBody).toMatchObject({
+    thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+    action: "skip",
+    user_choice: "deferred",
+    disagreement_reason: "valuation_priced",
+    human_conviction: "low",
+    reason: "Inline review packet decision.",
+  });
 });
 
 test("brain tab shows macro and theme theses with linked tickers", async ({ page }) => {

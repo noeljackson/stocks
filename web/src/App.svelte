@@ -165,6 +165,7 @@
   let reviewPacket = $state<AttentionReviewPacket | null>(null);
   let reviewPacketLoading = $state(false);
   let reviewPacketError = $state<string | null>(null);
+  let reviewPacketDecisionOpen = $state(false);
   let promotionBusy = $state(false);
   let promotionStatus = $state<string | null>(null);
   let researchKickoffBusy = $state(false);
@@ -184,6 +185,7 @@
   async function openReviewPacketById(id: number, fallbackSymbol?: string | null) {
     reviewPacketLoading = true;
     reviewPacketError = null;
+    reviewPacketDecisionOpen = false;
     promotionStatus = null;
     try {
       reviewPacket = await fetchAttentionReviewPacket(id);
@@ -249,11 +251,11 @@
     }
     if (item.symbol) await selectSymbol(item.symbol);
     if (action.kind === "decision") {
-      openDecisionDrawer(reviewPacketDecisionAction(item), item.thesis_id);
+      openReviewPacketDecision(reviewPacketDecisionAction(item), item);
       return;
     }
     if (action.kind === "decision_skip") {
-      openDecisionDrawer("skip", item.thesis_id);
+      openReviewPacketDecision("skip", item);
       return;
     }
     if (action.kind === "open_evidence") {
@@ -1330,12 +1332,16 @@
     return ["actionable", "armed", "building_conviction"].includes(thesis.state) ? "enter" : "skip";
   }
 
-  function openDecisionDrawer(action = "skip", thesisId: string | null = null) {
+  function prefillDecision(action = "skip", thesisId: string | null = null) {
     if (thesisId) decThesisId = thesisId;
     else if (currentSymbolThesis) decThesisId = currentSymbolThesis.thesis_id;
     decAction = action;
     if (action === "enter") decChoice = "confirmed";
     if (action === "skip") decChoice = "deferred";
+  }
+
+  function openDecisionDrawer(action = "skip", thesisId: string | null = null) {
+    prefillDecision(action, thesisId);
     bottomMode = "decisions";
     if (!bottomOpen) bottomPane?.expand();
   }
@@ -1346,6 +1352,14 @@
 
   function reviewPacketDecisionAction(item: AttentionItem): "enter" | "skip" {
     return item.kind === "thesis_actionable" ? "enter" : "skip";
+  }
+
+  function openReviewPacketDecision(action: "enter" | "skip", item: AttentionItem) {
+    prefillDecision(action, item.thesis_id ?? null);
+    reviewPacketDecisionOpen = true;
+    setTimeout(() => {
+      document.querySelector('[data-testid="review-packet-decision-form"]')?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
   }
 
   function openBrainDrawer() {
@@ -2586,6 +2600,141 @@
   }
 </script>
 
+{#snippet decisionForm()}
+  <form onsubmit={submitDecision} class="decform">
+    <label>
+      Thesis ID
+      <input bind:value={decThesisId} placeholder="(leave blank for ad-hoc)" />
+    </label>
+    {#if decThesisDirection}
+      <span class="decision-context thesis-{decThesisDirection}">
+        thesis {decThesisDirection}
+      </span>
+    {/if}
+    <label>
+      Action
+      <select bind:value={decAction}>
+        <option value="enter">enter thesis</option>
+        <option value="exit">exit position</option>
+        <option value="skip">skip</option>
+        <option value="resize">resize</option>
+      </select>
+    </label>
+    <label>
+      Side
+      <select bind:value={decSide}>
+        <option value="none">choose side...</option>
+        <option value="long">long common</option>
+        <option value="short">short common</option>
+        <option value="call">calls / call spread</option>
+        <option value="put">puts / put spread</option>
+        <option value="hedge">hedge</option>
+      </select>
+    </label>
+    <label>
+      Instrument
+      <select bind:value={decInstrument}>
+        <option value="equity">equity</option>
+        <option value="leaps">LEAPS</option>
+        <option value="options">options</option>
+      </select>
+    </label>
+    <label>
+      User choice
+      <select bind:value={decChoice}>
+        <option>confirmed</option><option>rejected</option><option>deferred</option>
+      </select>
+    </label>
+    <label>
+      Human conviction
+      <select bind:value={decHumanConviction}>
+        <option value="">choose conviction...</option>
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
+      </select>
+    </label>
+    <label class="wide">
+      Decision reason
+      <textarea
+        bind:value={decReason}
+        rows="2"
+        placeholder="optional operator rationale"
+      ></textarea>
+    </label>
+    {#if decNeedsDisagreement}
+      <label>
+        Why
+        <select bind:value={decDisagreementReason}>
+          <option value="">choose reason...</option>
+          {#each DISAGREEMENT_REASONS as reason (reason.value)}
+            <option value={reason.value}>{reason.label}</option>
+          {/each}
+        </select>
+      </label>
+      <label class="wide">
+        Detail
+        <textarea
+          bind:value={decDisagreementDetail}
+          rows="2"
+          placeholder={decDisagreementReason === "other" ? "required for other" : "optional"}
+        ></textarea>
+      </label>
+    {/if}
+    <label class="checkline">
+      <input type="checkbox" bind:checked={decRecordFill} />
+      <span>record manual fill</span>
+    </label>
+    {#if decRecordFill}
+      {#if decAction === "exit" && openSymbolPositions.length > 0}
+        <label>
+          Position
+          <select bind:value={decPositionId} onchange={() => {
+            const p = openSymbolPositions.find((x) => x.position_id === decPositionId);
+            if (p) {
+              decSide = p.side;
+              decInstrument = p.instrument;
+              decQty = String(p.qty);
+              decPrice = p.latest_price ? String(p.latest_price) : decPrice;
+            }
+          }}>
+            <option value="">latest open position</option>
+            {#each openSymbolPositions as p (p.position_id)}
+              <option value={p.position_id}>{p.side} {p.instrument} · {p.qty} @ {price(p.avg_price)}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
+      <label>
+        Qty
+        <input type="number" min="0" step="any" bind:value={decQty} />
+      </label>
+      <label>
+        Fill price
+        <input type="number" min="0" step="any" bind:value={decPrice} />
+      </label>
+      <label>
+        Fees
+        <input type="number" min="0" step="any" bind:value={decFees} />
+      </label>
+      <label>
+        Delta notional
+        <input type="number" min="0" step="any" bind:value={decDeltaNotional} placeholder="auto for equity" />
+      </label>
+      <label>
+        Premium at risk
+        <input type="number" min="0" step="any" bind:value={decPremiumAtRisk} placeholder="auto for options" />
+      </label>
+      <label class="wide">
+        Notes
+        <input bind:value={decFillNotes} placeholder="fill source, broker note, reason" />
+      </label>
+    {/if}
+    <button type="submit">Submit</button>
+    {#if decStatus}<span class="muted">{decStatus}</span>{/if}
+  </form>
+{/snippet}
+
 <div class="workspace">
   <!-- Top bar: symbol + regime + connection -->
   <header class="top">
@@ -2823,6 +2972,15 @@
         status={promotionStatus}
         onAction={handleReviewPacketAction}
       />
+      {#if reviewPacketDecisionOpen && reviewPacket}
+        <section class="review-decision-panel" data-testid="review-packet-decision-form">
+          <div class="review-decision-head">
+            <span class="workflow-kicker">decision</span>
+            <strong>{reviewPacket.attention.symbol ?? selectedSymbol} · reviewed thesis</strong>
+          </div>
+          {@render decisionForm()}
+        </section>
+      {/if}
     {/if}
   </section>
 
@@ -3336,138 +3494,7 @@
             </ul>
           {/if}
         {:else if bottomMode === "decisions"}
-          <form onsubmit={submitDecision} class="decform">
-            <label>
-              Thesis ID
-              <input bind:value={decThesisId} placeholder="(leave blank for ad-hoc)" />
-            </label>
-            {#if decThesisDirection}
-              <span class="decision-context thesis-{decThesisDirection}">
-                thesis {decThesisDirection}
-              </span>
-            {/if}
-            <label>
-              Action
-              <select bind:value={decAction}>
-                <option value="enter">enter thesis</option>
-                <option value="exit">exit position</option>
-                <option value="skip">skip</option>
-                <option value="resize">resize</option>
-              </select>
-            </label>
-            <label>
-              Side
-              <select bind:value={decSide}>
-                <option value="none">choose side…</option>
-                <option value="long">long common</option>
-                <option value="short">short common</option>
-                <option value="call">calls / call spread</option>
-                <option value="put">puts / put spread</option>
-                <option value="hedge">hedge</option>
-              </select>
-            </label>
-            <label>
-              Instrument
-              <select bind:value={decInstrument}>
-                <option value="equity">equity</option>
-                <option value="leaps">LEAPS</option>
-                <option value="options">options</option>
-              </select>
-            </label>
-            <label>
-              User choice
-              <select bind:value={decChoice}>
-                <option>confirmed</option><option>rejected</option><option>deferred</option>
-              </select>
-            </label>
-            <label>
-              Human conviction
-              <select bind:value={decHumanConviction}>
-                <option value="">choose conviction…</option>
-                <option value="low">low</option>
-                <option value="medium">medium</option>
-                <option value="high">high</option>
-              </select>
-            </label>
-            <label class="wide">
-              Decision reason
-              <textarea
-                bind:value={decReason}
-                rows="2"
-                placeholder="optional operator rationale"
-              ></textarea>
-            </label>
-            {#if decNeedsDisagreement}
-              <label>
-                Why
-                <select bind:value={decDisagreementReason}>
-                  <option value="">choose reason…</option>
-                  {#each DISAGREEMENT_REASONS as reason (reason.value)}
-                    <option value={reason.value}>{reason.label}</option>
-                  {/each}
-                </select>
-              </label>
-              <label class="wide">
-                Detail
-                <textarea
-                  bind:value={decDisagreementDetail}
-                  rows="2"
-                  placeholder={decDisagreementReason === "other" ? "required for other" : "optional"}
-                ></textarea>
-              </label>
-            {/if}
-            <label class="checkline">
-              <input type="checkbox" bind:checked={decRecordFill} />
-              <span>record manual fill</span>
-            </label>
-            {#if decRecordFill}
-              {#if decAction === "exit" && openSymbolPositions.length > 0}
-                <label>
-                  Position
-                  <select bind:value={decPositionId} onchange={() => {
-                    const p = openSymbolPositions.find((x) => x.position_id === decPositionId);
-                    if (p) {
-                      decSide = p.side;
-                      decInstrument = p.instrument;
-                      decQty = String(p.qty);
-                      decPrice = p.latest_price ? String(p.latest_price) : decPrice;
-                    }
-                  }}>
-                    <option value="">latest open position</option>
-                    {#each openSymbolPositions as p (p.position_id)}
-                      <option value={p.position_id}>{p.side} {p.instrument} · {p.qty} @ {price(p.avg_price)}</option>
-                    {/each}
-                  </select>
-                </label>
-              {/if}
-              <label>
-                Qty
-                <input type="number" min="0" step="any" bind:value={decQty} />
-              </label>
-              <label>
-                Fill price
-                <input type="number" min="0" step="any" bind:value={decPrice} />
-              </label>
-              <label>
-                Fees
-                <input type="number" min="0" step="any" bind:value={decFees} />
-              </label>
-              <label>
-                Delta notional
-                <input type="number" min="0" step="any" bind:value={decDeltaNotional} placeholder="auto for equity" />
-              </label>
-              <label>
-                Premium at risk
-                <input type="number" min="0" step="any" bind:value={decPremiumAtRisk} placeholder="auto for options" />
-              </label>
-              <label class="wide">
-                Notes
-                <input bind:value={decFillNotes} placeholder="fill source, broker note, reason" />
-              </label>
-            {/if}
-            <button type="submit">Submit</button>
-            {#if decStatus}<span class="muted">{decStatus}</span>{/if}
-          </form>
+          {@render decisionForm()}
         {:else if bottomMode === "calibration"}
           {#if calibration}
             <dl class="meta-list inline">
@@ -5574,6 +5601,24 @@
   }
 
   /* Decision form */
+  .review-decision-panel {
+    border: 1px solid #273246;
+    border-left: 3px solid #fab387;
+    background: #0a0f18;
+    border-radius: 4px;
+    padding: .65rem;
+    display: grid;
+    gap: .55rem;
+  }
+  .review-decision-head {
+    display: flex;
+    gap: .5rem;
+    align-items: baseline;
+    flex-wrap: wrap;
+  }
+  .review-decision-panel .decform {
+    max-width: none;
+  }
   .decform {
     display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; max-width: 760px;
     font-size: .85rem;

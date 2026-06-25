@@ -397,6 +397,24 @@ async function mockApi(
       } : null,
       sections: [
         { key: "what_happened", title: "What happened", body: String(item.reason ?? item.title) },
+        {
+          key: "why_it_matters",
+          title: "Why it matters",
+          body: isCandidate
+            ? "The symbol can enter the monitored Universe and start cognition work."
+            : "The selected thesis needs operator review before the next action is recorded.",
+        },
+        { key: "evidence", title: "Evidence", items: ["Mock source-backed review packet fixture."] },
+        {
+          key: "recommendation",
+          title: "Recommendation",
+          body: isCandidate ? "Start research or reject the nomination." : "Review the thesis and record the operator decision.",
+        },
+        {
+          key: "recorded_artifacts",
+          title: "What will be recorded",
+          items: ["attention state history", "operator action, deferral, or dismissal"],
+        },
       ],
       allowed_actions: [
         primary,
@@ -2074,7 +2092,15 @@ test("workflow primary opens nominated review packet", async ({ page }) => {
   await expect(page.getByTestId("workflow-primary")).toHaveText("Promote to Universe");
   await page.getByTestId("workflow-primary").click();
 
-  await expect(page.getByTestId("review-packet")).toContainText("Start research for ORCL?");
+  const packet = page.getByTestId("review-packet");
+  await expect(packet).toContainText("Start research for ORCL?");
+  const sections = page.getByTestId("review-packet-sections");
+  await expect(sections.getByText("What happened")).toBeVisible();
+  await expect(sections.getByText("Why it matters")).toBeVisible();
+  await expect(sections.getByText("Evidence")).toBeVisible();
+  await expect(sections.getByText("Recommendation")).toBeVisible();
+  await expect(sections.getByText("What will be recorded")).toBeVisible();
+  await expect(packet.getByText("Receipts")).toHaveCount(0);
 });
 
 test("selected promotion review posts checked watchlist destinations", async ({ page }) => {

@@ -83,7 +83,7 @@
       <p class="muted">{blockedReason}</p>
     {/if}
     <p class="muted">
-      Promote the ticker first; promotion publishes <code>discovery.confirmed</code>
+      Promote the symbol first; promotion publishes <code>discovery.confirmed</code>
       and starts context plus thesis work.
     </p>
   </div>

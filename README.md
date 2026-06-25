@@ -1,7 +1,7 @@
 # stocks — thesis-driven trading intelligence
 
 An LLM-augmented **investment intelligence amplifier** (Product A): it maintains
-synthesized per-ticker context, discovers evidence-backed market inflections
+synthesized per-symbol context, discovers evidence-backed market inflections
 before consensus, and generates trade ideas for a human to evaluate and execute
 manually. Tech infrastructure is a current strength, not the product boundary:
 copper, wheat, financials, staples, energy, healthcare, and any liquid market
@@ -21,7 +21,7 @@ The system is built around one repeated loop:
 ```text
 continuous scan
   -> fresh evidence
-  -> maintained ticker context
+  -> maintained symbol context
   -> structured theses
   -> risk-gated attention
   -> human decisions
@@ -34,6 +34,16 @@ record with an edge rationale, forecast, conviction conditions, trigger
 conditions, invalidation conditions, and fulfillment conditions. The system is
 useful only when those objects make the operator faster and more disciplined
 than manual research alone.
+
+The operator-facing model is intentionally small:
+
+```text
+Symbol    what we monitor
+Context   what we know
+Thesis    what we believe might happen
+Decision  what the human chose
+Outcome   what actually happened
+```
 
 The background system should always scan with tiered depth:
 
@@ -51,10 +61,10 @@ Important mental models:
 
 - **Product A, not Product B:** the system proposes and explains; the human
   decides and executes manually.
-- **Ticker context is memory:** structural, narrative, and market bands are
+- **Symbol context is memory:** structural, narrative, and market bands are
   stored separately, versioned, and freshness-tracked.
-- **Watchlists are navigation:** tickers are browsed through watchlists,
-  including a system `Universe` / `All Tickers` list.
+- **Watchlists are navigation:** symbols are browsed through watchlists,
+  including a system `Universe` / `All Symbols` list.
 - **Risk is independent:** the thesis engine proposes; the risk overlay
   constrains; the human decides.
 - **Validation is forward:** lead-time-to-consensus, forecast calibration, and
@@ -98,7 +108,7 @@ Local development is usually:
 make dev
   -> Postgres + NATS + Rust services + Vite UI
 
-seed or ingest ticker data
+seed or ingest symbol data
   -> refresh context
   -> draft/sharpen/challenge thesis
   -> review alerts/theses in gateway UI

@@ -55,6 +55,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/candles", get(get_candles))
         .route("/api/technical-state", get(get_technical_state))
         .route("/api/chat-analyst", post(post_chat_analyst))
+        .route("/api/symbol-workflow", get(get_symbol_workflow))
         .route("/api/symbol-events", get(get_symbol_events))
         .route("/api/decisions", get(get_decisions).post(record_decision))
         .route("/api/decisions/{id}/replay", get(get_decision_replay))
@@ -150,6 +151,22 @@ async fn list_thesis_declines(
         Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
         Err(e) => {
             warn!(symbol = %sym, error = %e, "list_thesis_declines failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn get_symbol_workflow(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<ThesesQuery>,
+) -> impl IntoResponse {
+    let Some(sym) = q.symbol else {
+        return (StatusCode::BAD_REQUEST, "symbol query param required").into_response();
+    };
+    match gw.store.symbol_workflow(&sym).await {
+        Ok(row) => (StatusCode::OK, Json(row)).into_response(),
+        Err(e) => {
+            warn!(symbol = %sym, error = %e, "get_symbol_workflow failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }

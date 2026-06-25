@@ -111,6 +111,219 @@ async function mockApi(
     resurface_at: null,
     state_reason: "candidate_review",
   }];
+  const workflowAttentionFor = (symbol: string) =>
+    attentionOpen
+      ? attentionItems.filter((item) => typeof item.symbol === "string" && item.symbol === symbol)
+      : [];
+  const workflowStep = (key: string, label: string, value: string, action: string, tone = "muted") => ({
+    key,
+    label,
+    value,
+    action,
+    tone,
+  });
+  const symbolWorkflow = (symbol: string) => {
+    const items = workflowAttentionFor(symbol);
+    const candidate = items.find((item) => item.kind === "candidate_review");
+    if (symbol === "ORCL" && candidate) {
+      return {
+        symbol,
+        state: "nominated",
+        state_label: "Nominated, not active",
+        tone: "candidate",
+        reason: String(candidate.reason ?? "Discovery nominated this symbol for operator review."),
+        primary_action: {
+          kind: "attention",
+          label: "Promote to Universe",
+          detail: "Open the review packet and choose Universe/watchlist destinations.",
+          attention_id: candidate.id,
+        },
+        steps: [
+          workflowStep("status", "Status", "nominated", "overview", "candidate"),
+          workflowStep("attention", "Attention", "1 attention", "attention", "actionable"),
+          workflowStep("evidence", "Evidence", "evidence ready", "evidence", "ready"),
+          workflowStep("thesis", "Thesis", "nominated", "thesis", "muted"),
+          workflowStep("decision", "Decision", "no decision", "tracking", "muted"),
+        ],
+        attention: items,
+        review_packet_attention_id: candidate.id,
+        updated_at: "2026-06-01T00:00:00Z",
+      };
+    }
+    if (symbol === "SNDK") {
+      return {
+        symbol,
+        state: "pool_candidate",
+        state_label: "Pool candidate",
+        tone: "candidate",
+        reason: "This symbol is in the discovery pool but not the active Universe.",
+        primary_action: {
+          kind: "promote",
+          label: "Promote to Universe",
+          detail: "Add this symbol to the monitored Universe before scheduled cognition runs.",
+        },
+        steps: [
+          workflowStep("status", "Status", "Discovery Pool", "overview", "candidate"),
+          workflowStep("attention", "Attention", "no attention", "attention"),
+          workflowStep("evidence", "Evidence", "evidence ready", "evidence", "ready"),
+          workflowStep("thesis", "Thesis", "no thesis", "thesis"),
+          workflowStep("decision", "Decision", "no decision", "tracking"),
+        ],
+        attention: [],
+        review_packet_attention_id: null,
+        updated_at: "2026-06-01T00:00:00Z",
+      };
+    }
+    if (symbol === "OKTA") {
+      return {
+        symbol,
+        state: "position_tracking",
+        state_label: "Position tracking",
+        tone: "tracking",
+        reason: "A position is open; conditions and exits matter now.",
+        primary_action: {
+          kind: "tracking",
+          label: "Track position",
+          detail: "Open the decision and position history for this symbol.",
+        },
+        steps: [
+          workflowStep("status", "Status", "Universe T2", "overview", "tracking"),
+          workflowStep("attention", "Attention", "1 attention", "attention", "actionable"),
+          workflowStep("evidence", "Evidence", "1 open evidence", "evidence", "monitoring"),
+          workflowStep("thesis", "Thesis", "forming · bull", "thesis", "monitoring"),
+          workflowStep("decision", "Decision", "1 open position", "tracking", "tracking"),
+        ],
+        attention: [{
+          id: 7601,
+          kind: "thesis_review",
+          title: "OKTA thesis changed",
+          reason: "Fresh evidence changed the thesis.",
+          severity: "review",
+          fsm_state: "ready_for_review",
+          owner: "operator",
+          created_at: "2026-06-01T00:00:00Z",
+        }],
+        review_packet_attention_id: 7601,
+        updated_at: "2026-06-01T00:00:00Z",
+      };
+    }
+    if (symbol === "MSFT") {
+      return {
+        symbol,
+        state: "declined",
+        state_label: "Declined thesis",
+        tone: "declined",
+        reason: "No source-backed edge yet.",
+        primary_action: {
+          kind: "thesis",
+          label: "Review decline",
+          detail: "Open thesis attempts and review why cognition declined.",
+        },
+        steps: [
+          workflowStep("status", "Status", "Universe T1", "overview", "declined"),
+          workflowStep("attention", "Attention", "no attention", "attention"),
+          workflowStep("evidence", "Evidence", "1 open evidence", "evidence", "monitoring"),
+          workflowStep("thesis", "Thesis", "declined attempt", "thesis", "declined"),
+          workflowStep("decision", "Decision", "no decision", "tracking"),
+        ],
+        attention: [],
+        review_packet_attention_id: null,
+        updated_at: "2026-06-01T00:00:00Z",
+      };
+    }
+    return {
+      symbol,
+      state: "context_ready",
+      state_label: "Context ready",
+      tone: "ready",
+      reason: "Context exists; cognition should draft or decline a thesis.",
+      primary_action: {
+        kind: "overview",
+        label: "Check cognition",
+        detail: "Review the latest context, evidence, and cognition status.",
+      },
+      steps: [
+        workflowStep("status", "Status", "Universe T1", "overview", "ready"),
+        workflowStep("attention", "Attention", `${items.length} attention`, "attention", items.length ? "actionable" : "muted"),
+        workflowStep("evidence", "Evidence", "evidence ready", "evidence", "ready"),
+        workflowStep("thesis", "Thesis", "no thesis", "thesis"),
+        workflowStep("decision", "Decision", "no decision", "tracking"),
+      ],
+      attention: items,
+      review_packet_attention_id: null,
+      updated_at: "2026-06-01T00:00:00Z",
+    };
+  };
+  const reviewPacketFor = (id: number) => {
+    const item = attentionItems.find((candidate) => candidate.id === id)
+      ?? (id === 7601 ? {
+        id,
+        kind: "thesis_review",
+        symbol: "OKTA",
+        thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+        candidate_id: null,
+        severity: "review",
+        status: "open",
+        fsm_state: "ready_for_review",
+        owner: "operator",
+        title: "OKTA thesis changed",
+        reason: "Fresh evidence changed the thesis.",
+        source: "thesis",
+        source_ref: {},
+        created_at: "2026-06-01T00:00:00Z",
+        resolved_at: null,
+        resolution_kind: null,
+        next_retry_at: null,
+        resurface_at: null,
+        state_reason: "thesis_review",
+      } : null);
+    if (!item) return null;
+    const symbol = typeof item.symbol === "string" ? item.symbol : null;
+    const candidateId = typeof item.candidate_id === "number" ? item.candidate_id : null;
+    const isCandidate = item.kind === "candidate_review";
+    const primary = isCandidate
+      ? { id: "promote", label: "Start research", kind: "candidate_confirm", detail: "Add to Universe and start context, evidence, and thesis work." }
+      : { id: "open_symbol", label: "Open symbol", kind: "open_symbol", detail: "Inspect context and evidence." };
+    return {
+      attention: item,
+      decision: {
+        intent: isCandidate ? "promote_to_universe" : "inspect_symbol",
+        headline: isCandidate ? `Start research for ${symbol}?` : `${symbol ?? "Symbol"} review`,
+        primary_action: primary,
+        secondary_actions: [
+          { id: "defer", label: "Defer", kind: "attention_defer", detail: "Resurface later." },
+          { id: "dismiss", label: "Dismiss", kind: "attention_dismiss", detail: "Mark as not actionable." },
+        ],
+        blockers: [],
+        consequences: isCandidate ? ["ticker promoted into Universe", "context and thesis work starts"] : [],
+      },
+      universe_status: {
+        in_universe: ["MSFT", "NVDA", "OKTA"].includes(symbol ?? ""),
+        tier: symbol === "OKTA" ? 2 : 1,
+        added_at: "2026-01-01T00:00:00Z",
+        open_theses: symbol === "OKTA" ? 1 : 0,
+      },
+      candidate: isCandidate && candidateId ? {
+        id: candidateId,
+        symbol,
+        signal_name: "research_nomination",
+        proposed_tier: 2,
+        reasoning: String(item.reason ?? ""),
+        proposed_at: "2026-06-01T00:00:00Z",
+        proposed_lists: [],
+        rank_score: 86,
+        rank_bucket: "high",
+        rank_reasons: ["AI infrastructure fit"],
+      } : null,
+      sections: [
+        { key: "what_happened", title: "What happened", body: String(item.reason ?? item.title) },
+      ],
+      allowed_actions: [
+        primary,
+        { id: "defer", label: "Defer", kind: "attention_defer", detail: "Resurface later." },
+      ],
+    };
+  };
   const watchlistMembers: MockWatchlistMember[] = [{
     watchlist_id: "wl-core",
     symbol: "OKTA",
@@ -796,6 +1009,20 @@ async function mockApi(
     }
     if (path === "/api/attention") {
       await json(route, attentionOpen ? attentionItems : []);
+      return;
+    }
+    if (path === "/api/symbol-workflow") {
+      await json(route, symbolWorkflow(url.searchParams.get("symbol") ?? "MSFT"));
+      return;
+    }
+    if (/^\/api\/attention\/\d+\/review-packet$/.test(path)) {
+      const id = Number(path.split("/")[3]);
+      const packet = reviewPacketFor(id);
+      if (!packet) {
+        await route.fulfill({ status: 404, body: "attention not found" });
+        return;
+      }
+      await json(route, packet);
       return;
     }
     if (/^\/api\/discovery\/candidates\/\d+\/confirm$/.test(path) && request.method() === "POST") {
@@ -1488,7 +1715,7 @@ test("pool-only symbol context does not imply active synthesis", async ({ page }
   await expect(review).toContainText("Universe always included");
   await expect(review).toContainText("not the active Universe");
 
-  await review.getByRole("button", { name: "Promote to Universe" }).click();
+  await review.getByRole("button", { name: "Start research" }).click();
   await expect.poll(() => calls.promoteBody).toEqual({ symbol: "SNDK", tier: 2, watchlist_ids: [] });
 
   await page.getByRole("button", { name: "context", exact: true }).click();
@@ -1579,7 +1806,7 @@ test("placement card directly promotes pool-only symbols", async ({ page }) => {
   const promote = page.getByTestId("placement-promote");
   await expect(promote).toContainText("Universe always included");
   await promote.getByLabel("Core").check();
-  await promote.getByRole("button", { name: "Promote to Universe" }).click();
+  await promote.getByRole("button", { name: "Start research" }).click();
 
   await expect.poll(() => calls.promoteBody).toEqual({
     symbol: "SNDK",
@@ -1647,19 +1874,19 @@ test("theses tab shows nominated state for unpromoted tickers", async ({ page })
   await expect(page.getByTestId("workflow-primary")).toHaveText("Promote to Universe");
 
   const promotion = page.getByTestId("promotion-review");
-  await expect(promotion).toContainText("Promote ORCL into active Universe");
+  await expect(promotion).toContainText("Start research for ORCL");
   await expect(promotion).toContainText("Discovery nominated ORCL for operator review.");
   await expect(promotion).toContainText("software infrastructure for AI/cloud operations");
-  await expect(promotion).toContainText("What confirming does");
+  await expect(promotion).toContainText("What starting does");
   await expect(promotion).toContainText("publishes discovery.confirmed");
   await expect(promotion).toContainText("Universe always included");
-  await expect(promotion).toContainText("promote as Universe-only");
+  await expect(promotion).toContainText("start as Universe-only");
 
   await page.getByRole("button", { name: "theses" }).click();
 
   const promotionPanel = page.getByTestId("thesis-promotion-panel");
   await expect(promotionPanel).toContainText("Not active yet");
-  await expect(promotionPanel).toContainText("Promote to Universe");
+  await expect(promotionPanel).toContainText("Start research");
 
   const nomination = page.locator(".nomination-state").filter({ hasText: "Nominated, not active" });
   await expect(nomination).toContainText("Nominated, not active");
@@ -1669,15 +1896,56 @@ test("theses tab shows nominated state for unpromoted tickers", async ({ page })
   await expect(nomination).toContainText("news");
   await expect(nomination).toContainText("estimates");
   await expect(nomination).toContainText("fundamentals");
-  await expect(nomination).toContainText("Promotion will add to monitored universe/watchlists and run context/thesis.");
+  await expect(nomination).toContainText("Starting research will add to monitored universe/watchlists and run context/thesis.");
   await expect(page.getByText("No thesis attempts")).toHaveCount(0);
 
   const placement = page.getByTestId("thesis-placement-strip");
   await expect(placement).toContainText("Nominated");
   await expect(placement).toContainText("nomination");
-  await placement.getByRole("button", { name: "Promote" }).click();
+  await placement.getByRole("button", { name: "Start research" }).click();
 
   await expect.poll(() => calls.confirmBody).toEqual({ watchlist_ids: [] });
+});
+
+test("workflow primary opens nominated review packet", async ({ page }) => {
+  await mockApi(page, {
+    attentionItems: [{
+      id: 8801,
+      kind: "candidate_review",
+      symbol: "ORCL",
+      thesis_id: null,
+      candidate_id: 880,
+      severity: "review",
+      status: "open",
+      fsm_state: "ready_for_review",
+      owner: "operator",
+      title: "ORCL: research nomination",
+      reason: "Research nomination: Oracle fits software infrastructure for AI/cloud operations.",
+      source: "discovery",
+      source_ref: {
+        interpretation_kind: "research_nomination",
+        available_data: { price: true, news: true, estimates: true, fundamentals: true },
+        nomination_reasons: {
+          acceptance_effect: "add to monitored universe/watchlists and run context/thesis",
+          business_fit: "AI infrastructure needs secure, observable, automated cloud/software operations",
+          theme: "software infrastructure for AI/cloud operations",
+          suggested_watchlists: ["Software Infrastructure"],
+        },
+      },
+      created_at: "2026-06-01T00:00:00Z",
+      resolved_at: null,
+      resolution_kind: null,
+      next_retry_at: null,
+      resurface_at: null,
+      state_reason: "candidate_review",
+    }],
+  });
+  await page.goto("/symbol/ORCL");
+
+  await expect(page.getByTestId("workflow-primary")).toHaveText("Promote to Universe");
+  await page.getByTestId("workflow-primary").click();
+
+  await expect(page.getByTestId("review-packet")).toContainText("Start research for ORCL?");
 });
 
 test("selected promotion review posts checked watchlist destinations", async ({ page }) => {
@@ -1685,13 +1953,13 @@ test("selected promotion review posts checked watchlist destinations", async ({ 
   await page.goto("/symbol/NVDA");
 
   const promotion = page.getByTestId("promotion-review");
-  await expect(promotion).toContainText("Promote NVDA into active Universe");
+  await expect(promotion).toContainText("Start research for NVDA");
   await expect(promotion).toContainText("Core");
   await expect(promotion).toContainText("AI infrastructure fit");
   const corePick = promotion.locator("label", { hasText: "Core" }).getByRole("checkbox");
   await expect(corePick).toBeChecked();
 
-  await promotion.getByRole("button", { name: "Promote to Universe" }).click();
+  await promotion.getByRole("button", { name: "Start research" }).click();
 
   await expect.poll(() => calls.confirmBody).toEqual({ watchlist_ids: ["wl-core"] });
 });
@@ -1706,6 +1974,7 @@ test("workflow rail surfaces open position tracking and routes to decisions", as
   await expect(strip).toContainText("1 attention");
   await expect(strip).toContainText("forming · bull");
   await expect(page.getByTestId("workflow-primary")).toHaveText("Track position");
+  await expect(page.getByTestId("workflow-attention")).toContainText("OKTA thesis changed");
 
   await page.getByTestId("workflow-primary").click();
 
@@ -1762,7 +2031,7 @@ test("journal page shows daily history and routes ticker entries", async ({ page
   await expect(tradeDesk).toContainText("Blocked data and extended technicals make it a no-trade today.");
   await expect(tradeDesk).toContainText(/research first/i);
   await expect(tradeDesk).toContainText("NVDA");
-  await expect(tradeDesk).toContainText("Research only until a falsifiable thesis exists.");
+  await expect(tradeDesk).toContainText("No open thesis yet.");
   await tradeDesk.locator(".trade-section.research").getByRole("button", { name: "Start research" }).click();
   await expect.poll(() => calls.researchSymbols).toContainEqual("NVDA");
   await expect(journal).toContainText("NVDA: 3 research tasks queued");
@@ -1948,7 +2217,7 @@ test("attention Promote posts selected watchlist memberships", async ({ page }) 
   await expect(card).toContainText("2.4x volume vs 200-day SMA");
   await expect(page.locator(".att-section-head").filter({ hasText: "ready for review" })).toContainText("operator owns next step");
 
-  await card.getByRole("button", { name: "Promote" }).click();
+  await card.getByRole("button", { name: "Start research" }).click();
 
   await expect.poll(() => calls.confirmBody).toEqual({ watchlist_ids: ["wl-core"] });
   await expect(page.getByText("No open attention. The system is quiet.")).toBeVisible();
@@ -1989,7 +2258,7 @@ test("attention thesis review opens selected ticker thesis panel", async ({ page
   await expect(card).toContainText("thesis changed");
   await expect(card).toContainText("Fresh evidence changed");
 
-  await card.getByRole("button", { name: "Review" }).click();
+  await card.getByRole("button", { name: "Review", exact: true }).click();
 
   await expect(page.locator(".tabs button.active")).toHaveText("theses");
   await expect(page.getByTestId("workflow-strip")).toContainText("OKTA");

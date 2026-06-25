@@ -2,12 +2,13 @@
 #
 # Dev image for the Svelte+Vite SPA. HMR over websocket; bind-mounted source.
 
-FROM node:26-alpine
+FROM oven/bun:1.3.14-alpine
 WORKDIR /app
+COPY bunfig.toml ./
 # Install deps inside the image so node_modules lives on a named volume
 # (not on the bind mount — cross-OS bind-mounted node_modules is slow).
-COPY web/package.json web/package-lock.json web/.npmrc ./
-RUN npm ci --ignore-scripts
+COPY web/package.json web/bun.lock ./
+RUN bun install --frozen-lockfile
 EXPOSE 5173
 # --host 0.0.0.0 so HMR works through the docker network → host browser.
-CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+CMD ["bun", "run", "dev", "--", "--host", "0.0.0.0"]

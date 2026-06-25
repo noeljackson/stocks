@@ -1,14 +1,14 @@
 // Supply-chain scanner (SPEC §11 / JS dependency policy).
-// Fails if any package in the resolved lockfile matches the May-2026
+// Fails if any package in the resolved Bun lockfile matches the May-2026
 // compromised set, or belongs to an org compromised in that wave.
-// Run from web/: `node ../scripts/scan-deps.mjs`
+// Run from web/: `bun ../scripts/scan-deps.mjs`
 import { readFileSync } from "node:fs";
 
-let lock;
+let lockText;
 try {
-  lock = JSON.parse(readFileSync("package-lock.json", "utf8"));
+  lockText = readFileSync("bun.lock", "utf8");
 } catch {
-  console.error("scan-deps: package-lock.json not found (run `npm install` first).");
+  console.error("scan-deps: bun.lock not found (run `bun install --lockfile-only` first).");
   process.exit(2);
 }
 
@@ -23,14 +23,15 @@ const BAD_EXACT = new Set([
 // their presence (even transitive) is a red flag → hard fail.
 const BAD_PREFIX = ["@antv/", "@cap-js/", "@tanstack/"];
 
-const pkgs = lock.packages || {};
 const findings = [];
-for (const [path, info] of Object.entries(pkgs)) {
-  const marker = "node_modules/";
-  const idx = path.lastIndexOf(marker);
-  if (idx < 0) continue;
-  const name = path.slice(idx + marker.length);
-  const id = `${name}@${info.version ?? ""}`;
+let count = 0;
+const packageLine = /^\s{4}"([^"]+)": \["([^"]+)"/gm;
+for (const match of lockText.matchAll(packageLine)) {
+  const [, name, spec] = match;
+  const prefix = `${name}@`;
+  const version = spec.startsWith(prefix) ? spec.slice(prefix.length) : spec.slice(spec.lastIndexOf("@") + 1);
+  const id = `${name}@${version}`;
+  count += 1;
   if (BAD_EXACT.has(id)) findings.push(`COMPROMISED: ${id}`);
   for (const p of BAD_PREFIX) {
     if (name.startsWith(p)) findings.push(`UNEXPECTED (compromised org): ${id}`);
@@ -43,5 +44,4 @@ if (findings.length) {
   process.exit(1);
 }
 
-const count = Object.keys(pkgs).filter((p) => p.includes("node_modules/")).length;
 console.log(`Supply-chain scan OK — ${count} resolved packages, none in the May-2026 compromised set.`);

@@ -135,23 +135,24 @@ clippy: ## cargo clippy on all targets, deny warnings
 # ---- Frontend (supply-chain hardened) ----
 .PHONY: web-install web-audit web-scan web-build web-dev web-e2e
 web-install: ## Install pinned deps with NO lifecycle scripts (from lockfile)
-	cd web && npm ci --ignore-scripts
+	./scripts/web-preflight.sh
 
 web-audit: ## Vulnerability audit
-	cd web && npm audit --audit-level=moderate
+	cd web && bun audit --audit-level=moderate
 
 web-scan: ## Fail if any known-compromised (May 2026 wave) package is present
-	@cd web && node ../scripts/scan-deps.mjs
+	@cd web && bun ../scripts/scan-deps.mjs
 
 web-build: ## Build SPA into internal/web/dist (embedded by gateway via rust-embed)
-	cd web && npm run build
+	cd web && bun run build
 
 web-dev: ## Vite dev server
-	cd web && npm run dev
+	cd web && bun run dev
 
 web-e2e: ## Playwright UI workflow tests (mocked API, no DB mutation)
-	cd web && npx playwright install chromium
-	cd web && npm run test:e2e
+	@mkdir -p "$${TMPDIR:-$${HOME}/.cache/tmp}"
+	cd web && TMPDIR="$${TMPDIR:-$${HOME}/.cache/tmp}" ./node_modules/.bin/playwright install chromium-headless-shell
+	cd web && TMPDIR="$${TMPDIR:-$${HOME}/.cache/tmp}" bun run test:e2e
 
 # ---- run (local dev; build once with `make build`, then ./target/release/<bin>) ----
 # $(RUN) injects infisical when installed (see top of file). Override with

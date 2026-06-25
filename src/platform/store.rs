@@ -7,6 +7,7 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
+use serde::Serialize;
 use sqlx::{
     Row,
     postgres::{PgPool, PgPoolOptions},
@@ -77,6 +78,61 @@ struct DerivedRefreshTask {
     reason: String,
     dependency_kind: String,
     dependency_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SymbolWorkflowFacts {
+    symbol: String,
+    active_tier: Option<i32>,
+    in_pool: bool,
+    context_version: Option<i32>,
+    evidence_item_count: i64,
+    open_evidence: i64,
+    blocking_evidence: i64,
+    due_source_tasks: i64,
+    latest_thesis_id: Option<uuid::Uuid>,
+    thesis_state: Option<String>,
+    thesis_direction: Option<String>,
+    thesis_reason: Option<String>,
+    decline_count: i64,
+    decline_reason: Option<String>,
+    decision_count: i64,
+    pending_manual_fill_count: i64,
+    open_position_count: i64,
+    open_attention_count: i64,
+    candidate_attention_id: Option<i64>,
+    review_packet_attention_id: Option<i64>,
+    attention_items: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+struct SymbolWorkflowDecision {
+    state: &'static str,
+    state_label: &'static str,
+    tone: &'static str,
+    reason: String,
+    primary_kind: &'static str,
+    primary_label: &'static str,
+    primary_detail: String,
+    review_packet_attention_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SymbolWorkflowAction {
+    kind: &'static str,
+    label: &'static str,
+    detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attention_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SymbolWorkflowStep {
+    key: &'static str,
+    label: &'static str,
+    value: String,
+    action: &'static str,
+    tone: &'static str,
 }
 
 fn age_component(
@@ -424,6 +480,379 @@ fn journal_event_key(
 fn parse_derived_refresh_day(target_id: &str) -> Result<NaiveDate> {
     NaiveDate::parse_from_str(target_id, "%Y-%m-%d")
         .with_context(|| format!("invalid derived refresh day {target_id}"))
+}
+
+fn workflow_direction_label(direction: Option<&str>) -> &'static str {
+    match direction {
+        Some("up") => "bull",
+        Some("down") => "bear",
+        Some("neutral") => "neutral",
+        _ => "none",
+    }
+}
+
+fn workflow_count(value: i64, singular: &str, plural: &str) -> String {
+    if value == 1 {
+        format!("1 {singular}")
+    } else {
+        format!("{value} {plural}")
+    }
+}
+
+fn workflow_status_step(facts: &SymbolWorkflowFacts, decision: &SymbolWorkflowDecision) -> String {
+    if let Some(tier) = facts.active_tier {
+        return format!("Universe T{tier}");
+    }
+    if decision.state == "nominated" {
+        return "nominated".to_string();
+    }
+    if facts.in_pool {
+        return "Discovery Pool".to_string();
+    }
+    "not active".to_string()
+}
+
+fn workflow_attention_step(facts: &SymbolWorkflowFacts) -> String {
+    if facts.open_attention_count > 0 {
+        workflow_count(facts.open_attention_count, "attention", "attention")
+    } else {
+        "no attention".to_string()
+    }
+}
+
+fn workflow_evidence_step(facts: &SymbolWorkflowFacts) -> String {
+    if facts.blocking_evidence > 0 {
+        workflow_count(
+            facts.blocking_evidence,
+            "blocking evidence",
+            "blocking evidence",
+        )
+    } else if facts.open_evidence > 0 {
+        workflow_count(facts.open_evidence, "open evidence", "open evidence")
+    } else if facts.evidence_item_count > 0 {
+        workflow_count(facts.evidence_item_count, "fact", "facts")
+    } else if facts.due_source_tasks > 0 {
+        workflow_count(
+            facts.due_source_tasks,
+            "due source task",
+            "due source tasks",
+        )
+    } else {
+        "evidence ready".to_string()
+    }
+}
+
+fn workflow_thesis_step(facts: &SymbolWorkflowFacts, decision: &SymbolWorkflowDecision) -> String {
+    if let Some(state) = facts.thesis_state.as_deref() {
+        return format!(
+            "{} · {}",
+            journal_label(state),
+            workflow_direction_label(facts.thesis_direction.as_deref())
+        );
+    }
+    if decision.state == "nominated" {
+        return "nominated".to_string();
+    }
+    if facts.decline_count > 0 {
+        return "declined attempt".to_string();
+    }
+    "no thesis".to_string()
+}
+
+fn workflow_decision_step(facts: &SymbolWorkflowFacts) -> String {
+    if facts.open_position_count > 0 {
+        return workflow_count(facts.open_position_count, "open position", "open positions");
+    }
+    if facts.pending_manual_fill_count > 0 {
+        return "manual fill needed".to_string();
+    }
+    if facts.decision_count > 0 {
+        return workflow_count(facts.decision_count, "decision", "decisions");
+    }
+    "no decision".to_string()
+}
+
+fn symbol_workflow_steps(
+    facts: &SymbolWorkflowFacts,
+    decision: &SymbolWorkflowDecision,
+) -> Vec<SymbolWorkflowStep> {
+    vec![
+        SymbolWorkflowStep {
+            key: "status",
+            label: "Status",
+            value: workflow_status_step(facts, decision),
+            action: "overview",
+            tone: decision.tone,
+        },
+        SymbolWorkflowStep {
+            key: "attention",
+            label: "Attention",
+            value: workflow_attention_step(facts),
+            action: "attention",
+            tone: if facts.open_attention_count > 0 {
+                "actionable"
+            } else {
+                "muted"
+            },
+        },
+        SymbolWorkflowStep {
+            key: "evidence",
+            label: "Evidence",
+            value: workflow_evidence_step(facts),
+            action: "evidence",
+            tone: if facts.blocking_evidence > 0 {
+                "blocked"
+            } else if facts.open_evidence > 0 || facts.due_source_tasks > 0 {
+                "monitoring"
+            } else {
+                "ready"
+            },
+        },
+        SymbolWorkflowStep {
+            key: "thesis",
+            label: "Thesis",
+            value: workflow_thesis_step(facts, decision),
+            action: "thesis",
+            tone: match facts.thesis_state.as_deref() {
+                Some("actionable") | Some("armed") | Some("building_conviction") => "actionable",
+                Some(_) => "monitoring",
+                None if facts.decline_count > 0 => "declined",
+                None => "muted",
+            },
+        },
+        SymbolWorkflowStep {
+            key: "decision",
+            label: "Decision",
+            value: workflow_decision_step(facts),
+            action: "tracking",
+            tone: if facts.open_position_count > 0 || facts.decision_count > 0 {
+                "tracking"
+            } else {
+                "muted"
+            },
+        },
+    ]
+}
+
+fn classify_symbol_workflow(facts: &SymbolWorkflowFacts) -> SymbolWorkflowDecision {
+    if facts.active_tier.is_none()
+        && facts.candidate_attention_id.is_some()
+        && facts.latest_thesis_id.is_none()
+    {
+        let attention_id = facts.candidate_attention_id;
+        return SymbolWorkflowDecision {
+            state: "nominated",
+            state_label: "Nominated, not active",
+            tone: "candidate",
+            reason: facts.candidate_reason(),
+            primary_kind: "attention",
+            primary_label: "Promote to Universe",
+            primary_detail: "Open the review packet and choose Universe/watchlist destinations."
+                .to_string(),
+            review_packet_attention_id: attention_id,
+        };
+    }
+
+    if facts.active_tier.is_none() {
+        return SymbolWorkflowDecision {
+            state: "pool_candidate",
+            state_label: if facts.in_pool {
+                "Pool candidate"
+            } else {
+                "Not active"
+            },
+            tone: "candidate",
+            reason: if facts.in_pool {
+                "This symbol is in the discovery pool but not the active Universe.".to_string()
+            } else {
+                "This symbol is not in the active Universe yet.".to_string()
+            },
+            primary_kind: "promote",
+            primary_label: "Promote to Universe",
+            primary_detail:
+                "Add this symbol to the monitored Universe before scheduled cognition runs."
+                    .to_string(),
+            review_packet_attention_id: None,
+        };
+    }
+
+    if facts.blocking_evidence > 0 {
+        return SymbolWorkflowDecision {
+            state: "evidence_blocked",
+            state_label: "Evidence blocked",
+            tone: "blocked",
+            reason: format!(
+                "{} must be resolved before thesis work is reliable.",
+                workflow_count(
+                    facts.blocking_evidence,
+                    "blocking evidence item",
+                    "blocking evidence items"
+                )
+            ),
+            primary_kind: "research",
+            primary_label: "Start research",
+            primary_detail: "Queue source tasks and refresh evidence for this symbol.".to_string(),
+            review_packet_attention_id: facts.review_packet_attention_id,
+        };
+    }
+
+    if facts.context_version.is_none() {
+        return SymbolWorkflowDecision {
+            state: "context_missing",
+            state_label: "Context missing",
+            tone: "blocked",
+            reason: "Context is missing; cognition needs source-backed context before a thesis."
+                .to_string(),
+            primary_kind: "research",
+            primary_label: "Start research",
+            primary_detail: "Queue context, evidence, and thesis work for this symbol.".to_string(),
+            review_packet_attention_id: facts.review_packet_attention_id,
+        };
+    }
+
+    if facts.open_position_count > 0 {
+        return SymbolWorkflowDecision {
+            state: "position_tracking",
+            state_label: "Position tracking",
+            tone: "tracking",
+            reason: "A position is open; conditions and exits matter now.".to_string(),
+            primary_kind: "tracking",
+            primary_label: "Track position",
+            primary_detail: "Open the decision and position history for this symbol.".to_string(),
+            review_packet_attention_id: facts.review_packet_attention_id,
+        };
+    }
+
+    if facts.pending_manual_fill_count > 0 {
+        return SymbolWorkflowDecision {
+            state: "decision_recorded",
+            state_label: "Fill needed",
+            tone: "actionable",
+            reason: "A confirmed decision exists, but no open position is recorded yet."
+                .to_string(),
+            primary_kind: "decision",
+            primary_label: "Record fill",
+            primary_detail: "Open the decision drawer and record the manual fill.".to_string(),
+            review_packet_attention_id: facts.review_packet_attention_id,
+        };
+    }
+
+    if facts.decision_count > 0 {
+        return SymbolWorkflowDecision {
+            state: "decision_recorded",
+            state_label: "Decision recorded",
+            tone: "tracking",
+            reason: "A decision exists; review replay and follow-up conditions.".to_string(),
+            primary_kind: "tracking",
+            primary_label: "Track decision",
+            primary_detail: "Open decision history and replay for this symbol.".to_string(),
+            review_packet_attention_id: facts.review_packet_attention_id,
+        };
+    }
+
+    if let Some(state) = facts.thesis_state.as_deref() {
+        let actionable = matches!(state, "actionable" | "armed" | "building_conviction");
+        return SymbolWorkflowDecision {
+            state: if actionable {
+                "thesis_actionable"
+            } else {
+                "thesis_monitoring"
+            },
+            state_label: if actionable {
+                "Actionable thesis"
+            } else {
+                "Monitoring thesis"
+            },
+            tone: if actionable {
+                "actionable"
+            } else {
+                "monitoring"
+            },
+            reason: facts.thesis_reason.clone().unwrap_or_else(|| {
+                "Review the current thesis and source-backed evidence.".to_string()
+            }),
+            primary_kind: if actionable { "decision" } else { "thesis" },
+            primary_label: if actionable {
+                "Record decision"
+            } else {
+                "Review thesis"
+            },
+            primary_detail: if actionable {
+                "Open the decision drawer prefilled from the current thesis.".to_string()
+            } else {
+                "Open the thesis tab for evidence, risks, and conditions.".to_string()
+            },
+            review_packet_attention_id: facts.review_packet_attention_id,
+        };
+    }
+
+    if facts.decline_count > 0 {
+        return SymbolWorkflowDecision {
+            state: "declined",
+            state_label: "Declined thesis",
+            tone: "declined",
+            reason: facts
+                .decline_reason
+                .clone()
+                .unwrap_or_else(|| "The system declined to invent an edge.".to_string()),
+            primary_kind: "thesis",
+            primary_label: "Review decline",
+            primary_detail: "Open thesis attempts and review why cognition declined.".to_string(),
+            review_packet_attention_id: facts.review_packet_attention_id,
+        };
+    }
+
+    SymbolWorkflowDecision {
+        state: "context_ready",
+        state_label: "Context ready",
+        tone: "ready",
+        reason: "Context exists; cognition should draft or decline a thesis.".to_string(),
+        primary_kind: "overview",
+        primary_label: "Check cognition",
+        primary_detail: "Review the latest context, evidence, and cognition status.".to_string(),
+        review_packet_attention_id: facts.review_packet_attention_id,
+    }
+}
+
+impl SymbolWorkflowFacts {
+    fn candidate_reason(&self) -> String {
+        self.attention_reason()
+            .unwrap_or_else(|| "Discovery nominated this symbol for operator review.".to_string())
+    }
+
+    fn attention_reason(&self) -> Option<String> {
+        self.attention_items.as_array().and_then(|items| {
+            items
+                .iter()
+                .find(|item| {
+                    item.get("kind").and_then(serde_json::Value::as_str) == Some("candidate_review")
+                })
+                .and_then(|item| item.get("reason").and_then(serde_json::Value::as_str))
+                .map(str::to_string)
+        })
+    }
+}
+
+fn symbol_workflow_response(facts: &SymbolWorkflowFacts) -> serde_json::Value {
+    let decision = classify_symbol_workflow(facts);
+    let steps = symbol_workflow_steps(facts, &decision);
+    serde_json::json!({
+        "symbol": facts.symbol.clone(),
+        "state": decision.state,
+        "state_label": decision.state_label,
+        "tone": decision.tone,
+        "reason": decision.reason,
+        "primary_action": SymbolWorkflowAction {
+            kind: decision.primary_kind,
+            label: decision.primary_label,
+            detail: decision.primary_detail,
+            attention_id: decision.review_packet_attention_id,
+        },
+        "steps": steps,
+        "attention": facts.attention_items.clone(),
+        "review_packet_attention_id": decision.review_packet_attention_id,
+        "updated_at": Utc::now(),
+    })
 }
 
 impl Store {
@@ -1324,6 +1753,170 @@ impl Store {
                 }))
             })
             .collect()
+    }
+
+    pub async fn symbol_workflow(&self, symbol: &str) -> Result<serde_json::Value> {
+        self.resurface_due_attention().await?;
+        let symbol = symbol.trim().to_ascii_uppercase();
+        let row = sqlx::query(
+            r#"WITH selected AS (
+                    SELECT $1::text AS symbol
+                )
+                SELECT s.symbol,
+                       t.tier AS active_tier,
+                       dp.symbol IS NOT NULL AS in_pool,
+                       ctx.version AS context_version,
+                       COALESCE(evidence.item_count, 0) AS evidence_item_count,
+                       COALESCE(evidence.open_count, 0) AS open_evidence,
+                       COALESCE(evidence.blocking_count, 0) AS blocking_evidence,
+                       COALESCE(tasks.due_count, 0) AS due_source_tasks,
+                       latest.thesis_id AS latest_thesis_id,
+                       latest.state AS thesis_state,
+                       latest.direction AS thesis_direction,
+                       latest.edge_rationale AS thesis_reason,
+                       COALESCE(declines.decline_count, 0) AS decline_count,
+                       declines.decline_reason AS decline_reason,
+                       COALESCE(decisions.decision_count, 0) AS decision_count,
+                       COALESCE(decisions.pending_manual_fill_count, 0) AS pending_manual_fill_count,
+                       COALESCE(positions.open_position_count, 0) AS open_position_count,
+                       COALESCE(attention.open_count, 0) AS open_attention_count,
+                       attention.candidate_attention_id,
+                       attention.review_packet_attention_id,
+                       COALESCE(attention.items, '[]'::jsonb) AS attention_items
+                  FROM selected s
+             LEFT JOIN ticker t
+                    ON t.symbol = s.symbol
+                   AND t.status = 'active'
+             LEFT JOIN discovery_pool dp
+                    ON dp.symbol = s.symbol
+                   AND dp.dropped_at IS NULL
+             LEFT JOIN LATERAL (
+                    SELECT tc.version
+                      FROM ticker_context tc
+                     WHERE tc.symbol = s.symbol
+                  ORDER BY tc.version DESC
+                     LIMIT 1
+                ) ctx ON TRUE
+             LEFT JOIN LATERAL (
+                    SELECT count(*) FILTER (WHERE er.blocking_state <> 'satisfied') AS open_count,
+                           count(*) FILTER (
+                             WHERE er.priority = 'blocking'
+                               AND er.blocking_state <> 'satisfied'
+                           ) AS blocking_count,
+                           (SELECT count(*) FROM evidence_item ei WHERE ei.symbol = s.symbol) AS item_count
+                      FROM evidence_requirement er
+                     WHERE er.symbol = s.symbol
+                ) evidence ON TRUE
+             LEFT JOIN LATERAL (
+                    SELECT count(*) FILTER (
+                             WHERE st.state IN ('queued', 'no_rows', 'failed', 'rate_limited', 'blocked')
+                               AND st.due_at <= now()
+                           ) AS due_count
+                      FROM source_task st
+                     WHERE st.scope = 'symbol'
+                       AND st.target_id = s.symbol
+                ) tasks ON TRUE
+             LEFT JOIN LATERAL (
+                    SELECT th.thesis_id,
+                           th.state,
+                           th.forecast->>'direction' AS direction,
+                           th.edge_rationale
+                      FROM thesis th
+                     WHERE th.symbol = s.symbol
+                       AND th.state NOT IN ('closed', 'disqualified')
+                  ORDER BY th.updated_at DESC, th.created_at DESC
+                     LIMIT 1
+                ) latest ON TRUE
+             LEFT JOIN LATERAL (
+                    SELECT count(*) AS decline_count,
+                           (array_agg(ai.reason ORDER BY ai.created_at DESC))[1] AS decline_reason
+                      FROM attention_item ai
+                     WHERE ai.symbol = s.symbol
+                       AND ai.kind = 'thesis_incomplete'
+                ) declines ON TRUE
+             LEFT JOIN LATERAL (
+                    SELECT count(*) AS decision_count,
+                           count(*) FILTER (
+                             WHERE d.action IN ('enter', 'resize')
+                               AND d.user_choice = 'confirmed'
+                           ) AS pending_manual_fill_count
+                      FROM decision d
+                      JOIN thesis th ON th.thesis_id = d.thesis_id
+                     WHERE th.symbol = s.symbol
+                ) decisions ON TRUE
+             LEFT JOIN LATERAL (
+                    SELECT count(*) AS open_position_count
+                      FROM position p
+                     WHERE p.symbol = s.symbol
+                       AND p.closed_at IS NULL
+                ) positions ON TRUE
+             LEFT JOIN LATERAL (
+                    SELECT count(*) AS open_count,
+                           (array_agg(ai.id ORDER BY
+                                CASE ai.severity
+                                  WHEN 'blocked' THEN 0
+                                  WHEN 'decision' THEN 1
+                                  WHEN 'review' THEN 2
+                                  ELSE 3
+                                END,
+                                ai.created_at DESC))[1] AS review_packet_attention_id,
+                           (array_agg(ai.id ORDER BY ai.created_at DESC)
+                                FILTER (WHERE ai.kind = 'candidate_review'))[1] AS candidate_attention_id,
+                           COALESCE(jsonb_agg(jsonb_build_object(
+                                'id', ai.id,
+                                'kind', ai.kind,
+                                'title', ai.title,
+                                'reason', ai.reason,
+                                'severity', ai.severity,
+                                'fsm_state', ai.fsm_state,
+                                'owner', ai.owner,
+                                'created_at', ai.created_at
+                           ) ORDER BY
+                                CASE ai.severity
+                                  WHEN 'blocked' THEN 0
+                                  WHEN 'decision' THEN 1
+                                  WHEN 'review' THEN 2
+                                  ELSE 3
+                                END,
+                                ai.created_at DESC), '[]'::jsonb) AS items
+                      FROM attention_item ai
+                     WHERE ai.symbol = s.symbol
+                       AND ai.status = 'open'
+                       AND (
+                         ai.fsm_state <> 'operator_deferred'
+                         OR (ai.resurface_at IS NOT NULL AND ai.resurface_at <= now())
+                       )
+                ) attention ON TRUE"#,
+        )
+        .bind(&symbol)
+        .fetch_one(&self.pool)
+        .await
+        .context("symbol_workflow")?;
+
+        let facts = SymbolWorkflowFacts {
+            symbol: row.try_get("symbol")?,
+            active_tier: row.try_get("active_tier")?,
+            in_pool: row.try_get("in_pool")?,
+            context_version: row.try_get("context_version")?,
+            evidence_item_count: row.try_get("evidence_item_count")?,
+            open_evidence: row.try_get("open_evidence")?,
+            blocking_evidence: row.try_get("blocking_evidence")?,
+            due_source_tasks: row.try_get("due_source_tasks")?,
+            latest_thesis_id: row.try_get("latest_thesis_id")?,
+            thesis_state: row.try_get("thesis_state")?,
+            thesis_direction: row.try_get("thesis_direction")?,
+            thesis_reason: row.try_get("thesis_reason")?,
+            decline_count: row.try_get("decline_count")?,
+            decline_reason: row.try_get("decline_reason")?,
+            decision_count: row.try_get("decision_count")?,
+            pending_manual_fill_count: row.try_get("pending_manual_fill_count")?,
+            open_position_count: row.try_get("open_position_count")?,
+            open_attention_count: row.try_get("open_attention_count")?,
+            candidate_attention_id: row.try_get("candidate_attention_id")?,
+            review_packet_attention_id: row.try_get("review_packet_attention_id")?,
+            attention_items: row.try_get("attention_items")?,
+        };
+        Ok(symbol_workflow_response(&facts))
     }
 
     pub async fn thesis_declines_for_symbol(
@@ -5261,6 +5854,144 @@ impl InvocationRecorder for Store {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    fn workflow_facts() -> SymbolWorkflowFacts {
+        SymbolWorkflowFacts {
+            symbol: "AMD".to_string(),
+            active_tier: Some(2),
+            context_version: Some(1),
+            attention_items: serde_json::json!([]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn workflow_classifies_candidate_attention_as_nominated() {
+        let mut facts = workflow_facts();
+        facts.active_tier = None;
+        facts.context_version = None;
+        facts.latest_thesis_id = None;
+        facts.open_attention_count = 1;
+        facts.candidate_attention_id = Some(7);
+        facts.attention_items = serde_json::json!([{
+            "id": 7,
+            "kind": "candidate_review",
+            "reason": "2.4x volume vs SMA"
+        }]);
+
+        let decision = classify_symbol_workflow(&facts);
+
+        assert_eq!(decision.state, "nominated");
+        assert_eq!(decision.primary_kind, "attention");
+        assert_eq!(decision.primary_label, "Promote to Universe");
+        assert_eq!(decision.review_packet_attention_id, Some(7));
+        assert_eq!(decision.reason, "2.4x volume vs SMA");
+    }
+
+    #[test]
+    fn workflow_classifies_pool_candidate_before_active_work() {
+        let mut facts = workflow_facts();
+        facts.active_tier = None;
+        facts.context_version = None;
+        facts.in_pool = true;
+
+        let decision = classify_symbol_workflow(&facts);
+
+        assert_eq!(decision.state, "pool_candidate");
+        assert_eq!(decision.primary_kind, "promote");
+        assert_eq!(decision.state_label, "Pool candidate");
+    }
+
+    #[test]
+    fn workflow_blocks_active_symbol_without_context() {
+        let mut facts = workflow_facts();
+        facts.context_version = None;
+
+        let decision = classify_symbol_workflow(&facts);
+
+        assert_eq!(decision.state, "context_missing");
+        assert_eq!(decision.primary_kind, "research");
+    }
+
+    #[test]
+    fn workflow_prioritizes_blocking_evidence() {
+        let mut facts = workflow_facts();
+        facts.blocking_evidence = 2;
+
+        let decision = classify_symbol_workflow(&facts);
+
+        assert_eq!(decision.state, "evidence_blocked");
+        assert_eq!(decision.tone, "blocked");
+        assert_eq!(decision.primary_kind, "research");
+    }
+
+    #[test]
+    fn workflow_tracks_open_positions_before_decision_history() {
+        let mut facts = workflow_facts();
+        facts.open_position_count = 1;
+        facts.decision_count = 2;
+
+        let decision = classify_symbol_workflow(&facts);
+
+        assert_eq!(decision.state, "position_tracking");
+        assert_eq!(decision.primary_kind, "tracking");
+    }
+
+    #[test]
+    fn workflow_flags_confirmed_decision_without_open_position_as_fill_needed() {
+        let mut facts = workflow_facts();
+        facts.decision_count = 1;
+        facts.pending_manual_fill_count = 1;
+
+        let decision = classify_symbol_workflow(&facts);
+
+        assert_eq!(decision.state, "decision_recorded");
+        assert_eq!(decision.state_label, "Fill needed");
+        assert_eq!(decision.primary_kind, "decision");
+    }
+
+    #[test]
+    fn workflow_distinguishes_actionable_and_monitoring_theses() {
+        let mut actionable = workflow_facts();
+        actionable.latest_thesis_id = Some(uuid::Uuid::nil());
+        actionable.thesis_state = Some("armed".to_string());
+        actionable.thesis_direction = Some("up".to_string());
+
+        let decision = classify_symbol_workflow(&actionable);
+
+        assert_eq!(decision.state, "thesis_actionable");
+        assert_eq!(decision.primary_kind, "decision");
+
+        let mut monitoring = workflow_facts();
+        monitoring.latest_thesis_id = Some(uuid::Uuid::nil());
+        monitoring.thesis_state = Some("forming".to_string());
+        monitoring.thesis_direction = Some("up".to_string());
+
+        let response = symbol_workflow_response(&monitoring);
+
+        assert_eq!(response["state"], "thesis_monitoring");
+        assert_eq!(response["primary_action"]["kind"], "thesis");
+        assert_eq!(response["steps"][3]["value"], "forming · bull");
+    }
+
+    #[test]
+    fn workflow_surfaces_declines_and_context_ready_fallback() {
+        let mut declined = workflow_facts();
+        declined.decline_count = 1;
+        declined.decline_reason = Some("No differentiated evidence.".to_string());
+
+        let decision = classify_symbol_workflow(&declined);
+
+        assert_eq!(decision.state, "declined");
+        assert_eq!(decision.primary_kind, "thesis");
+        assert_eq!(decision.reason, "No differentiated evidence.");
+
+        let ready = workflow_facts();
+        let decision = classify_symbol_workflow(&ready);
+
+        assert_eq!(decision.state, "context_ready");
+        assert_eq!(decision.primary_kind, "overview");
+    }
 
     #[test]
     fn freshness_components_penalize_stale_context() {

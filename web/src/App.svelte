@@ -26,6 +26,7 @@
     fetchPositions,
     fetchRegime,
     fetchResearchEvidence,
+    fetchSymbolWorkflow,
     fetchTechnicalState,
     fetchThesisDeclines,
     fetchTheses,
@@ -64,6 +65,10 @@
     type ReviewPacketAction,
     type ReviewPacketActionPayload,
     type StreamEvent,
+    type SymbolWorkflow as ApiSymbolWorkflow,
+    type SymbolWorkflowAttention,
+    type SymbolWorkflowStep,
+    type WorkflowActionKind,
     type TechnicalState,
     type ThesisDetail,
     type ThesisDecline,
@@ -87,13 +92,17 @@
   const RIGHT_TABS: RightTab[] = ["overview", "analyst", "technical", "context", "evidence", "theses", "alerts", "decisions"];
   type BottomMode = "brain" | "attention" | "events" | "discovery" | "decisions" | "calibration" | "diagnostics";
   type AppPage = "workspace" | "journal";
-  type WorkflowAction = "attention" | "promotion" | "promote" | "research" | "evidence" | "thesis" | "decision" | "tracking" | "overview";
+  type WorkflowAction = WorkflowActionKind;
   type SymbolWorkflow = {
     state: string;
     tone: string;
     reason: string;
     primary: string;
     action: WorkflowAction;
+    primaryDetail?: string | null;
+    reviewPacketAttentionId?: number | null;
+    attentionItems?: SymbolWorkflowAttention[];
+    steps?: SymbolWorkflowStep[];
     status: string;
     attention: string;
     evidence: string;
@@ -172,19 +181,23 @@
       document.querySelector('[data-testid="review-packet"]')?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 50);
   }
-  async function openReviewPacketFor(item: AttentionItem) {
+  async function openReviewPacketById(id: number, fallbackSymbol?: string | null) {
     reviewPacketLoading = true;
     reviewPacketError = null;
     promotionStatus = null;
     try {
-      reviewPacket = await fetchAttentionReviewPacket(item.id);
-      if (item.symbol) await selectSymbol(item.symbol);
+      reviewPacket = await fetchAttentionReviewPacket(id);
+      const symbol = reviewPacket.attention.symbol ?? fallbackSymbol;
+      if (symbol) await selectSymbol(symbol);
       focusReviewPacket();
     } catch (e) {
       reviewPacketError = String(e);
     } finally {
       reviewPacketLoading = false;
     }
+  }
+  async function openReviewPacketFor(item: AttentionItem) {
+    await openReviewPacketById(item.id, item.symbol);
   }
   async function confirmReviewPacketCandidate(candidateId: number, watchlistIds: string[]) {
     promotionBusy = true;
@@ -1036,6 +1049,7 @@
   let symbolResearch = $state<ResearchEvidence[] | undefined>(undefined);
   let symbolTechnical = $state<TechnicalState | null | undefined>(undefined);
   let symbolBrain = $state<BrainStatus | null | undefined>(undefined);
+  let symbolWorkflow = $state<ApiSymbolWorkflow | null | undefined>(undefined);
   let symbolTheses = $state<ThesisDetail[] | null | undefined>(undefined);
   let symbolDeclines = $state<ThesisDecline[] | null | undefined>(undefined);
   let symbolDecisions = $state<DecisionRow[] | null | undefined>(undefined);
@@ -1472,6 +1486,29 @@
     return "no attention";
   }
 
+  function apiWorkflowStep(workflow: ApiSymbolWorkflow, key: string, fallback: string): string {
+    return workflow.steps.find((step) => step.key === key)?.value ?? fallback;
+  }
+
+  function workflowFromApi(workflow: ApiSymbolWorkflow): SymbolWorkflow {
+    return {
+      state: workflow.state_label,
+      tone: workflow.tone,
+      reason: workflow.reason,
+      primary: workflow.primary_action.label,
+      action: workflow.primary_action.kind,
+      primaryDetail: workflow.primary_action.detail ?? null,
+      reviewPacketAttentionId: workflow.primary_action.attention_id ?? workflow.review_packet_attention_id ?? null,
+      attentionItems: workflow.attention ?? [],
+      steps: workflow.steps,
+      status: apiWorkflowStep(workflow, "status", "unknown"),
+      attention: apiWorkflowStep(workflow, "attention", "no attention"),
+      evidence: apiWorkflowStep(workflow, "evidence", "evidence ready"),
+      thesis: apiWorkflowStep(workflow, "thesis", "no thesis"),
+      decision: apiWorkflowStep(workflow, "decision", "no decision"),
+    };
+  }
+
   function workflowLoading(): boolean {
     return [
       symbolContext,
@@ -1501,6 +1538,9 @@
       decision: "no decision",
     };
     if (!selectedSymbol) return defaultWorkflow;
+    if (symbolWorkflow && symbolWorkflow.symbol.toUpperCase() === selectedSymbol.toUpperCase()) {
+      return workflowFromApi(symbolWorkflow);
+    }
 
     const attentionText = workflowAttentionText();
     const evidenceText = workflowEvidenceText();
@@ -1686,6 +1726,14 @@
       return;
     }
     rightTab = "overview";
+  }
+
+  function runSelectedWorkflowPrimary() {
+    if (selectedWorkflow.reviewPacketAttentionId && selectedWorkflow.action === "attention") {
+      void openReviewPacketById(selectedWorkflow.reviewPacketAttentionId, selectedSymbol);
+      return;
+    }
+    runWorkflowAction(selectedWorkflow.action);
   }
 
   function pctCompact(value: number | null | undefined): string {
@@ -1991,6 +2039,7 @@
     symbolResearch = undefined;
     symbolTechnical = undefined;
     symbolBrain = undefined;
+    symbolWorkflow = undefined;
     symbolTheses = undefined;
     symbolDeclines = undefined;
     symbolDecisions = undefined;
@@ -2000,13 +2049,14 @@
   }
 
   async function loadSelectedSymbolDetails(symbol: string) {
-    const [ctx, evidence, evidenceItems, research, technical, brain, theses, declines, decisions, positions] = await Promise.all([
+    const [ctx, evidence, evidenceItems, research, technical, brain, workflow, theses, declines, decisions, positions] = await Promise.all([
       fetchTickerContext(symbol).catch(() => null),
       fetchEvidenceRequirements(symbol).catch(() => []),
       fetchEvidenceItems(symbol).catch(() => []),
       fetchResearchEvidence(symbol).catch(() => []),
       fetchTechnicalState(symbol).catch(() => null),
       fetchBrainStatus(symbol).catch(() => null),
+      fetchSymbolWorkflow(symbol).catch(() => null),
       fetchTheses(symbol).catch(() => []),
       fetchThesisDeclines(symbol).catch(() => []),
       fetchDecisions(symbol).catch(() => []),
@@ -2019,6 +2069,7 @@
     symbolResearch = research;
     symbolTechnical = technical;
     symbolBrain = brain;
+    symbolWorkflow = workflow;
     symbolTheses = theses;
     symbolDeclines = declines;
     symbolDecisions = decisions;
@@ -2604,10 +2655,15 @@
         type="button"
         class="workflow-primary"
         data-testid="workflow-primary"
-        disabled={researchKickoffBusy && selectedWorkflow.action === "research"}
-        onclick={() => runWorkflowAction(selectedWorkflow.action)}
+        title={selectedWorkflow.primaryDetail ?? selectedWorkflow.reason}
+        disabled={(researchKickoffBusy && selectedWorkflow.action === "research") || (reviewPacketLoading && selectedWorkflow.action === "attention")}
+        onclick={runSelectedWorkflowPrimary}
       >
-        {researchKickoffBusy && selectedWorkflow.action === "research" ? "Starting..." : selectedWorkflow.primary}
+        {researchKickoffBusy && selectedWorkflow.action === "research"
+          ? "Starting..."
+          : reviewPacketLoading && selectedWorkflow.action === "attention"
+            ? "Opening..."
+            : selectedWorkflow.primary}
       </button>
     </div>
     {#if researchKickoffStatus}
@@ -2636,6 +2692,20 @@
         <strong>{selectedWorkflow.decision}</strong>
       </button>
     </div>
+
+    {#if (selectedWorkflow.attentionItems ?? []).length}
+      <div class="workflow-attention" data-testid="workflow-attention">
+        {#each (selectedWorkflow.attentionItems ?? []).slice(0, 3) as item (item.id)}
+          <button type="button" onclick={() => openReviewPacketById(item.id, selectedSymbol)}>
+            <span>{attentionStateLabel(item.kind)}</span>
+            <strong>{item.title}</strong>
+            {#if item.reason}
+              <small>{item.reason}</small>
+            {/if}
+          </button>
+        {/each}
+      </div>
+    {/if}
 
     {#if selectedCandidateReview}
       {@const availableData = candidateAvailableData(selectedCandidateReview)}
@@ -4783,6 +4853,53 @@
     grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: .35rem;
   }
+  .workflow-attention {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: .35rem;
+  }
+  .workflow-attention button {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: .1rem .4rem;
+    align-items: baseline;
+    min-width: 0;
+    border: 1px solid #263144;
+    border-radius: 4px;
+    background: #0a0d14;
+    color: #cdd6f4;
+    padding: .36rem .5rem;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+  }
+  .workflow-attention button:hover {
+    border-color: #45567a;
+    background: #111827;
+  }
+  .workflow-attention span {
+    color: #7f8aa3;
+    font-size: .66rem;
+    text-transform: uppercase;
+    letter-spacing: 0;
+  }
+  .workflow-attention strong {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: .78rem;
+  }
+  .workflow-attention small {
+    grid-column: 1 / -1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #9aa3b8;
+    font-size: .72rem;
+  }
   .workflow-step {
     display: flex;
     flex-direction: column;
@@ -5015,7 +5132,8 @@
   }
   @media (max-width: 760px) {
     .promotion-grid,
-    .workflow-rail {
+    .workflow-rail,
+    .workflow-attention {
       grid-template-columns: minmax(0, 1fr);
     }
   }
@@ -5886,6 +6004,9 @@
     }
     .workflow-rail {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .workflow-attention {
+      grid-template-columns: minmax(0, 1fr);
     }
     :global([data-pane-group][data-direction="horizontal"]) {
       flex-direction: column !important;

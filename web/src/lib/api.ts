@@ -79,6 +79,62 @@ export async function promoteTicker(symbol: string, watchlistIds: string[] = [],
   if (!r.ok && r.status !== 204) throw new Error(`promote ticker ${r.status}`);
 }
 
+export type WorkflowActionKind =
+  | "attention"
+  | "promotion"
+  | "promote"
+  | "research"
+  | "evidence"
+  | "thesis"
+  | "decision"
+  | "tracking"
+  | "overview";
+
+export interface SymbolWorkflowAction {
+  kind: WorkflowActionKind;
+  label: string;
+  detail?: string | null;
+  attention_id?: number | null;
+}
+
+export interface SymbolWorkflowStep {
+  key: string;
+  label: string;
+  value: string;
+  action: WorkflowActionKind;
+  tone?: string | null;
+}
+
+export interface SymbolWorkflowAttention {
+  id: number;
+  kind: string;
+  title: string;
+  reason?: string | null;
+  severity: string;
+  fsm_state?: string | null;
+  owner?: string | null;
+  created_at?: string | null;
+}
+
+export interface SymbolWorkflow {
+  symbol: string;
+  state: string;
+  state_label: string;
+  tone: string;
+  reason: string;
+  primary_action: SymbolWorkflowAction;
+  steps: SymbolWorkflowStep[];
+  attention?: SymbolWorkflowAttention[];
+  review_packet_attention_id?: number | null;
+  updated_at?: string;
+}
+
+export async function fetchSymbolWorkflow(symbol: string): Promise<SymbolWorkflow> {
+  const r = await fetch(`/api/symbol-workflow?symbol=${encodeURIComponent(symbol)}`);
+  if (!r.ok) throw new Error(`symbol workflow ${r.status}`);
+  return (await r.json()) as SymbolWorkflow;
+}
+
 export interface Condition {
   type: "quantitative" | "narrative";
   name: string;

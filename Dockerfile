@@ -5,12 +5,14 @@
 # router, risk, goalpost, devpub) into one distroless image. Each k8s pod
 # picks its own entrypoint with `command:` — one pull per node, one SBOM.
 
-FROM node:26-alpine AS web
+FROM oven/bun:1.3.14-alpine AS web
+WORKDIR /app
+COPY bunfig.toml ./
 WORKDIR /app/web
-COPY web/package.json web/package-lock.json web/.npmrc ./
-RUN npm ci --ignore-scripts
+COPY web/package.json web/bun.lock ./
+RUN bun install --frozen-lockfile
 COPY web/ ./
-RUN npm run build            # → /app/web/dist (vite outDir, embedded by rust-embed)
+RUN bun run build            # → /app/web/dist (vite outDir, embedded by rust-embed)
 
 FROM rust:1.95-slim-bookworm AS build
 ENV CARGO_TERM_COLOR=always CARGO_HOME=/usr/local/cargo

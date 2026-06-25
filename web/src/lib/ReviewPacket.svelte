@@ -1,22 +1,112 @@
 <script lang="ts">
-  import type { AttentionReviewPacket, ReviewPacketAction } from "./api";
+  import type {
+    AttentionReviewPacket,
+    ProposedList,
+    ReviewPacketAction,
+    ReviewPacketActionPayload,
+  } from "./api";
 
   type Props = {
     packet?: AttentionReviewPacket | null;
     loading?: boolean;
     error?: string | null;
-    onAction?: (action: ReviewPacketAction, packet: AttentionReviewPacket) => void;
+    busy?: boolean;
+    status?: string | null;
+    onAction?: (
+      action: ReviewPacketAction,
+      packet: AttentionReviewPacket,
+      payload?: ReviewPacketActionPayload,
+    ) => void;
   };
 
   let {
     packet = null as AttentionReviewPacket | null,
     loading = false,
     error = null as string | null,
-    onAction = (_action: ReviewPacketAction, _packet: AttentionReviewPacket) => {},
+    busy = false,
+    status = null as string | null,
+    onAction = (
+      _action: ReviewPacketAction,
+      _packet: AttentionReviewPacket,
+      _payload?: ReviewPacketActionPayload,
+    ) => {},
   }: Props = $props();
+
+  let confirmOpen = $state(false);
+  let selectedWatchlists = $state<Record<string, boolean>>({});
+  let lastPacketId = $state<number | null>(null);
+
+  $effect(() => {
+    const nextId = packet?.attention.id ?? null;
+    if (nextId !== lastPacketId) {
+      lastPacketId = nextId;
+      confirmOpen = false;
+      selectedWatchlists = {};
+    }
+  });
 
   function label(value?: string | null): string {
     return value ? value.replace(/_/g, " ") : "unknown";
+  }
+
+  function primaryAction(packet: AttentionReviewPacket): ReviewPacketAction {
+    return packet.decision?.primary_action ?? packet.allowed_actions[0] ?? {
+      id: "open_symbol",
+      label: "Open symbol",
+      kind: "open_symbol",
+      detail: "Inspect context and evidence.",
+    };
+  }
+
+  function secondaryActions(packet: AttentionReviewPacket): ReviewPacketAction[] {
+    const primary = primaryAction(packet);
+    const actions = packet.decision?.secondary_actions?.length ? packet.decision.secondary_actions : packet.allowed_actions;
+    return actions.filter((action) => action.kind !== primary.kind || action.id !== primary.id);
+  }
+
+  function proposedLists(packet: AttentionReviewPacket): ProposedList[] {
+    return (packet.candidate?.proposed_lists ?? []).filter((item) => Boolean(item.watchlist_id));
+  }
+
+  function selectedListIds(): string[] {
+    return Object.entries(selectedWatchlists)
+      .filter(([, selected]) => selected)
+      .map(([id]) => id);
+  }
+
+  function setList(id: string | null | undefined, checked: boolean) {
+    if (!id) return;
+    selectedWatchlists = { ...selectedWatchlists, [id]: checked };
+  }
+
+  function universeLine(packet: AttentionReviewPacket): string {
+    const status = packet.universe_status;
+    if (status?.in_universe) {
+      const tier = status.tier ? `T${status.tier}` : "active";
+      const theses = status.open_theses ?? 0;
+      return `Universe ${tier} · ${theses} open thesis${theses === 1 ? "" : "es"}`;
+    }
+    if (packet.candidate) return `Not in Universe · proposed T${packet.candidate.proposed_tier ?? 2}`;
+    return "Not in Universe";
+  }
+
+  function actionTone(action: ReviewPacketAction): string {
+    if (action.kind === "candidate_confirm" || action.kind === "decision") return "primary";
+    if (action.kind === "candidate_reject" || action.kind === "attention_dismiss") return "danger";
+    return "secondary";
+  }
+
+  function runPrimary(packet: AttentionReviewPacket) {
+    const action = primaryAction(packet);
+    if (action.kind === "candidate_confirm") {
+      if (!confirmOpen) {
+        confirmOpen = true;
+        return;
+      }
+      onAction(action, packet, { watchlistIds: selectedListIds() });
+      return;
+    }
+    onAction(action, packet);
   }
 </script>
 
@@ -29,38 +119,133 @@
     <p>{error}</p>
   </section>
 {:else if packet}
-  <section class="review-packet" data-testid="review-packet">
+  {@const action = primaryAction(packet)}
+  {@const lists = proposedLists(packet)}
+  <section class={`review-packet intent-${packet.decision?.intent ?? "inspect_symbol"}`} data-testid="review-packet">
     <div class="packet-head">
       <div>
         <span class="kicker">review packet</span>
-        <strong>{packet.attention.symbol ?? "System"} · {label(packet.attention.kind)}</strong>
+        <strong>{packet.decision?.headline ?? `${packet.attention.symbol ?? "System"} · ${label(packet.attention.kind)}`}</strong>
       </div>
-      <span class="badge state-{packet.attention.fsm_state ?? 'ready_for_review'}">{label(packet.attention.fsm_state)}</span>
+      <div class="packet-status">
+        <span class="badge state-{packet.attention.fsm_state ?? 'ready_for_review'}">{label(packet.attention.fsm_state)}</span>
+        <span class="badge">{universeLine(packet)}</span>
+      </div>
     </div>
 
-    <div class="packet-grid">
-      {#each packet.sections as section (section.key)}
-        <article class="packet-section">
-          <span>{section.title}</span>
-          {#if section.body}
-            <p>{section.body}</p>
-          {/if}
-          {#if section.items?.length}
-            <ul>
-              {#each section.items as item}
-                <li>{item}</li>
+    {#if status}
+      <p class="packet-result">{status}</p>
+    {/if}
+
+    <div class="decision-panel">
+      <div>
+        <span class="kicker">next action</span>
+        <h3>{action.label}</h3>
+        <p>{action.detail}</p>
+      </div>
+      <button
+        type="button"
+        class={`primary-action tone-${actionTone(action)}`}
+        disabled={busy || Boolean(status)}
+        onclick={() => runPrimary(packet)}
+      >
+        {busy ? "Working..." : action.label}
+      </button>
+    </div>
+
+    {#if packet.decision?.blockers?.length}
+      <div class="blockers">
+        {#each packet.decision.blockers as blocker, i (`${blocker}-${i}`)}
+          <span>{blocker}</span>
+        {/each}
+      </div>
+    {/if}
+
+    {#if action.kind === "candidate_confirm" && confirmOpen}
+      <section class="confirm-panel" data-testid="review-packet-confirm">
+        <div>
+          <span class="kicker">confirm approval</span>
+          <strong>Universe is always included.</strong>
+          <p class="muted">Optional watchlists can be added now; leaving all unchecked still approves the symbol.</p>
+        </div>
+        {#if packet.candidate}
+          <dl class="candidate-meta">
+            <dt>signal</dt><dd>{label(packet.candidate.signal_name)}</dd>
+            <dt>rank</dt><dd>{Math.round(packet.candidate.rank_score ?? 0)} · {packet.candidate.rank_bucket ?? "unranked"}</dd>
+            <dt>tier</dt><dd>T{packet.candidate.proposed_tier ?? 2}</dd>
+          </dl>
+          {#if packet.candidate.rank_reasons?.length}
+            <ul class="compact-list">
+              {#each packet.candidate.rank_reasons.slice(0, 3) as reason, i (`${reason}-${i}`)}
+                <li>{reason}</li>
               {/each}
             </ul>
-          {:else if !section.body}
-            <p class="muted">No source-backed details attached.</p>
           {/if}
-        </article>
-      {/each}
-    </div>
+        {/if}
+        {#if lists.length}
+          <div class="watchlist-picks">
+            {#each lists as list (list.watchlist_id)}
+              <label>
+                <input
+                  type="checkbox"
+                  disabled={busy || Boolean(status)}
+                  checked={Boolean(selectedWatchlists[list.watchlist_id ?? ""])}
+                  onchange={(event) => setList(list.watchlist_id, (event.currentTarget as HTMLInputElement).checked)}
+                />
+                <span>
+                  {list.watchlist_name}
+                  <small>{list.confidence} · {list.rationale}</small>
+                </span>
+              </label>
+            {/each}
+          </div>
+        {/if}
+        <div class="confirm-actions">
+          <button type="button" class="primary-action tone-primary" disabled={busy || Boolean(status)} onclick={() => runPrimary(packet)}>
+            {busy ? "Approving..." : "Confirm approval"}
+          </button>
+          <button type="button" class="secondary-action" disabled={busy || Boolean(status)} onclick={() => (confirmOpen = false)}>Cancel</button>
+        </div>
+      </section>
+    {/if}
+
+    {#if packet.decision?.consequences?.length}
+      <div class="consequences">
+        <span class="kicker">what will be recorded</span>
+        <ul>
+          {#each packet.decision.consequences as item, i (`${item}-${i}`)}
+            <li>{item}</li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+
+    <details class="receipts">
+      <summary>Receipts</summary>
+      <div class="packet-grid">
+        {#each packet.sections as section, i (`${section.key}-${i}`)}
+          <article class="packet-section">
+            <span>{section.title}</span>
+            {#if section.body}
+              <p>{section.body}</p>
+            {/if}
+            {#if section.items?.length}
+              <ul>
+                {#each section.items as item, j (`${item}-${j}`)}
+                  <li>{item}</li>
+                {/each}
+              </ul>
+            {:else if !section.body}
+              <p class="muted">No source-backed details attached.</p>
+            {/if}
+          </article>
+        {/each}
+      </div>
+    </details>
 
     <div class="packet-actions">
-      {#each packet.allowed_actions as action (action.id)}
-        <button type="button" onclick={() => onAction(action, packet)}>
+      {#each secondaryActions(packet) as action (`${action.id}-${action.kind}`)}
+        <button type="button" class={`tone-${actionTone(action)}`} disabled={busy || Boolean(status)} onclick={() => onAction(action, packet)}>
           {action.label}
           <small>{action.detail}</small>
         </button>
@@ -75,20 +260,42 @@
     border-left: 3px solid #89b4fa;
     background: #0a0f18;
     border-radius: 4px;
-    padding: .6rem;
+    padding: .65rem;
     display: grid;
-    gap: .6rem;
+    gap: .65rem;
   }
   .review-packet.error {
     border-left-color: #f38ba8;
     color: #f38ba8;
   }
-  .packet-head {
+  .intent-promote_to_universe {
+    border-left-color: #a6e3a1;
+  }
+  .intent-resolve_evidence_blocker {
+    border-left-color: #f9e2af;
+  }
+  .intent-review_thesis_change {
+    border-left-color: #89b4fa;
+  }
+  .intent-record_trade_decision {
+    border-left-color: #fab387;
+  }
+  .packet-head,
+  .packet-status,
+  .decision-panel,
+  .confirm-actions,
+  .packet-actions {
     display: flex;
-    justify-content: space-between;
     gap: .5rem;
     align-items: start;
     flex-wrap: wrap;
+  }
+  .packet-head,
+  .decision-panel {
+    justify-content: space-between;
+  }
+  .packet-status {
+    justify-content: end;
   }
   .kicker,
   .packet-section span {
@@ -98,22 +305,14 @@
     text-transform: uppercase;
     letter-spacing: 0;
   }
-  .packet-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-    gap: .45rem;
-  }
-  .packet-section {
-    display: grid;
-    gap: .25rem;
-    border: 1px solid #1f2733;
-    background: #080c13;
-    border-radius: 4px;
-    padding: .45rem .5rem;
-    min-width: 0;
+  h3 {
+    margin: .1rem 0;
+    font-size: 1rem;
+    line-height: 1.25;
   }
   p,
-  ul {
+  ul,
+  dl {
     margin: 0;
     color: #a6adc8;
     font-size: .78rem;
@@ -125,40 +324,149 @@
   li {
     margin: .12rem 0;
   }
-  .packet-actions {
+  .decision-panel,
+  .confirm-panel,
+  .consequences,
+  .receipts {
+    border: 1px solid #1f2733;
+    background: #080c13;
+    border-radius: 4px;
+    padding: .55rem .6rem;
+  }
+  .confirm-panel {
+    display: grid;
+    gap: .5rem;
+  }
+  .candidate-meta {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: .18rem .55rem;
+  }
+  .candidate-meta dt {
+    color: #7f849c;
+  }
+  .candidate-meta dd {
+    margin: 0;
+  }
+  .compact-list {
+    display: grid;
+    gap: .1rem;
+  }
+  .watchlist-picks {
+    display: grid;
+    gap: .35rem;
+  }
+  .watchlist-picks label {
     display: flex;
     gap: .4rem;
-    flex-wrap: wrap;
+    align-items: start;
+    color: #cdd6f4;
+    font-size: .78rem;
   }
+  .watchlist-picks small {
+    display: block;
+    color: #7f849c;
+    line-height: 1.25;
+  }
+  .packet-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: .45rem;
+    margin-top: .45rem;
+  }
+  .packet-section {
+    display: grid;
+    gap: .25rem;
+    border: 1px solid #1f2733;
+    background: #0a0f18;
+    border-radius: 4px;
+    padding: .45rem .5rem;
+    min-width: 0;
+  }
+  .blockers {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .35rem;
+  }
+  .blockers span,
+  .badge {
+    border: 1px solid #2a3447;
+    border-radius: 999px;
+    padding: .12rem .42rem;
+    color: #bac2de;
+    font-size: .7rem;
+    white-space: nowrap;
+  }
+  .blockers span {
+    color: #f9e2af;
+    border-color: #5d4d26;
+    background: #171205;
+  }
+  .packet-result {
+    border: 1px solid #2f5d3a;
+    background: #071409;
+    color: #a6e3a1;
+    border-radius: 4px;
+    padding: .45rem .55rem;
+  }
+  summary {
+    cursor: pointer;
+    color: #cdd6f4;
+    font-size: .82rem;
+  }
+  .primary-action,
+  .secondary-action,
   .packet-actions button {
     border: 1px solid #2a3447;
     background: #111827;
     color: #cdd6f4;
     border-radius: 4px;
-    padding: .36rem .5rem;
+    padding: .4rem .55rem;
     font: inherit;
     cursor: pointer;
     display: grid;
     gap: .08rem;
     text-align: left;
-    max-width: 15rem;
+    max-width: 16rem;
   }
-  .packet-actions button:hover {
+  .primary-action {
+    align-self: center;
+    min-width: 10rem;
+    text-align: center;
+    justify-content: center;
+  }
+  .tone-primary {
+    border-color: #3a6b45;
+    background: #102416;
+    color: #d8f6d5;
+  }
+  .tone-danger {
+    border-color: #6d3042;
+    background: #241018;
+    color: #ffd6df;
+  }
+  .primary-action:hover:not(:disabled),
+  .secondary-action:hover:not(:disabled),
+  .packet-actions button:hover:not(:disabled) {
     border-color: #45567a;
     background: #162033;
+  }
+  .tone-primary:hover:not(:disabled) {
+    border-color: #5a9c66;
+    background: #17331e;
+  }
+  .tone-danger:hover:not(:disabled) {
+    border-color: #a6425e;
+    background: #321522;
+  }
+  button:disabled {
+    opacity: .55;
+    cursor: not-allowed;
   }
   .packet-actions small {
     color: #7f849c;
     font-size: .68rem;
     line-height: 1.2;
-  }
-  .badge {
-    border: 1px solid #2a3447;
-    border-radius: 999px;
-    padding: .1rem .4rem;
-    color: #bac2de;
-    font-size: .7rem;
-    white-space: nowrap;
   }
   .muted {
     color: #7f849c;

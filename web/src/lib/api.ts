@@ -493,6 +493,7 @@ export interface BrainJournalMemoSymbol {
 
 export interface BrainJournalDecisionItem {
   symbol: string;
+  tier?: number | null;
   score: number;
   stance: "consider" | "wait" | "avoid" | "research" | string;
   thesis_id?: string | null;
@@ -1010,8 +1011,49 @@ export interface ReviewPacketAction {
   detail: string;
 }
 
+export interface ReviewPacketActionPayload {
+  watchlistIds?: string[];
+}
+
+export interface ReviewPacketDecision {
+  intent: string;
+  headline: string;
+  primary_action: ReviewPacketAction;
+  secondary_actions: ReviewPacketAction[];
+  blockers: string[];
+  consequences: string[];
+}
+
+export interface ReviewPacketUniverseStatus {
+  in_universe: boolean;
+  tier?: number | null;
+  added_at?: string | null;
+  open_theses?: number | null;
+}
+
+export interface ReviewPacketCandidate {
+  id: number;
+  symbol: string;
+  signal_name: string;
+  signal_value?: number | null;
+  domain_fit?: number | null;
+  parent_theme_fit?: number | null;
+  parent_themes?: PendingCandidate["parent_themes"];
+  proposed_tier?: number;
+  reasoning?: string | null;
+  proposed_at?: string | null;
+  proposed_lists?: ProposedList[];
+  suggested_new_list?: SuggestedNewList | null;
+  rank_score?: number;
+  rank_bucket?: "highest" | "high" | "medium" | "low";
+  rank_reasons?: string[];
+}
+
 export interface AttentionReviewPacket {
   attention: AttentionItem;
+  decision?: ReviewPacketDecision;
+  universe_status?: ReviewPacketUniverseStatus;
+  candidate?: ReviewPacketCandidate | null;
   sections: ReviewPacketSection[];
   allowed_actions: ReviewPacketAction[];
 }

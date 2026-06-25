@@ -375,6 +375,7 @@ fn journal_trade_desk_item(ticker: &TickerRow, score: i32, stance: &str) -> serd
 
     serde_json::json!({
         "symbol": ticker.symbol.clone(),
+        "tier": ticker.tier,
         "score": score,
         "stance": stance,
         "thesis_id": ticker.latest_thesis_id,

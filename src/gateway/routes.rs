@@ -3655,8 +3655,8 @@ fn review_packet_kind_summary(kind: &str, severity: &str) -> (&'static str, &'st
 fn review_packet_actions(kind: &str) -> serde_json::Value {
     let actions = match kind {
         "candidate_review" => vec![
-            json!({"id": "promote", "label": "Promote", "kind": "candidate_confirm", "detail": "Add to Universe and start context/thesis work."}),
-            json!({"id": "reject", "label": "Reject", "kind": "candidate_reject", "detail": "Reject the nomination and keep the reason in history."}),
+            json!({"id": "promote", "label": "Approve to Universe", "kind": "candidate_confirm", "detail": "Add to Universe and start context/thesis work."}),
+            json!({"id": "reject", "label": "Reject nomination", "kind": "candidate_reject", "detail": "Reject the nomination and keep the reason in history."}),
             json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later without resolving."}),
         ],
         "thesis_actionable" => vec![
@@ -3681,6 +3681,90 @@ fn review_packet_actions(kind: &str) -> serde_json::Value {
         ],
     };
     serde_json::Value::Array(actions)
+}
+
+fn review_packet_decision(
+    kind: &str,
+    symbol: Option<&str>,
+    in_universe: bool,
+) -> serde_json::Value {
+    let sym = symbol.unwrap_or("This item");
+    let (intent, headline, primary_kind, primary_label, primary_detail) = match kind {
+        "candidate_review" => (
+            "promote_to_universe",
+            format!("Approve {sym} to Universe?"),
+            "candidate_confirm",
+            "Approve to Universe",
+            "Promote the symbol and start context/thesis work.",
+        ),
+        "thesis_actionable" | "risk_review" => (
+            "record_trade_decision",
+            format!("Record a decision on {sym}"),
+            "decision",
+            "Record decision",
+            "Open the decision form with risk context.",
+        ),
+        "context_stale" | "thesis_incomplete" => (
+            "resolve_evidence_blocker",
+            format!("Resolve evidence blockers for {sym}"),
+            "open_evidence",
+            "Open evidence blockers",
+            "Inspect missing evidence and source tasks.",
+        ),
+        "thesis_review" => (
+            "review_thesis_change",
+            format!("Review thesis changes for {sym}"),
+            "open_symbol",
+            "Review thesis changes",
+            "Open the thesis tab and inspect version history.",
+        ),
+        _ => (
+            "inspect_symbol",
+            format!("Inspect {sym}"),
+            "open_symbol",
+            "Open symbol",
+            "Inspect context and evidence.",
+        ),
+    };
+
+    let mut blockers = Vec::new();
+    if kind != "candidate_review" && in_universe {
+        blockers.push(
+            "Already in Universe; this packet is about the next workflow action, not promotion.",
+        );
+    }
+    if kind != "candidate_review" && !in_universe {
+        blockers.push("No discovery candidate is attached, so approval to Universe is unavailable from this packet.");
+    }
+
+    json!({
+        "intent": intent,
+        "headline": headline,
+        "primary_action": {
+            "id": "primary",
+            "label": primary_label,
+            "kind": primary_kind,
+            "detail": primary_detail,
+        },
+        "secondary_actions": review_packet_actions(kind),
+        "blockers": blockers,
+        "consequences": match kind {
+            "candidate_review" => vec![
+                "ticker row is created or reactivated",
+                "candidate is marked confirmed",
+                "matching attention item is resolved",
+                "context and thesis refresh work is kicked off",
+            ],
+            "thesis_actionable" | "risk_review" => vec![
+                "human decision is recorded",
+                "risk context remains attached to the thesis",
+            ],
+            _ => vec![
+                "attention state history is preserved",
+                "operator action, deferral, or dismissal is recorded",
+            ],
+        },
+    })
 }
 
 fn review_packet_evidence(source_ref: &serde_json::Value) -> Vec<String> {
@@ -3748,6 +3832,121 @@ fn review_packet_evidence(source_ref: &serde_json::Value) -> Vec<String> {
     evidence
 }
 
+async fn review_packet_universe_status(
+    pool: &sqlx::PgPool,
+    symbol: Option<&str>,
+) -> serde_json::Value {
+    let Some(symbol) = symbol else {
+        return json!({"in_universe": false});
+    };
+    let row = sqlx::query(
+        r#"SELECT t.tier,
+                  t.added_at,
+                  (SELECT count(*)
+                     FROM thesis th
+                    WHERE th.symbol = t.symbol
+                      AND th.state NOT IN ('closed','disqualified')) AS open_theses
+             FROM ticker t
+            WHERE t.symbol = $1
+              AND t.status = 'active'"#,
+    )
+    .bind(symbol)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None);
+    match row {
+        Some(row) => json!({
+            "in_universe": true,
+            "tier": row.try_get::<i32, _>("tier").ok(),
+            "added_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("added_at").ok(),
+            "open_theses": row.try_get::<i64, _>("open_theses").unwrap_or(0),
+        }),
+        None => json!({"in_universe": false}),
+    }
+}
+
+async fn review_packet_candidate(
+    pool: &sqlx::PgPool,
+    candidate_id: Option<i64>,
+) -> serde_json::Value {
+    let Some(candidate_id) = candidate_id else {
+        return serde_json::Value::Null;
+    };
+    let row = sqlx::query(
+        r#"SELECT dc.id, dc.symbol, dc.signal_name, dc.signal_value,
+                  dc.domain_fit, dc.proposed_tier, dc.reasoning, dc.proposed_at,
+                  COALESCE(dcl.proposed_lists, '[]'::jsonb) AS proposed_lists,
+                  dcl.suggested_new_list,
+                  COALESCE(parent.parent_themes, '[]'::jsonb) AS parent_themes,
+                  parent.parent_theme_fit
+             FROM discovery_candidate dc
+        LEFT JOIN discovery_classification dcl ON dcl.candidate_id = dc.id
+        LEFT JOIN LATERAL (
+                  SELECT max(COALESCE(btt.conviction, 50))::double precision AS parent_theme_fit,
+                         jsonb_agg(
+                             jsonb_build_object(
+                                 'key', bt.key,
+                                 'name', bt.name,
+                                 'scope', bt.scope,
+                                 'role', btt.role,
+                                 'conviction', btt.conviction,
+                                 'rationale', btt.rationale
+                             )
+                             ORDER BY COALESCE(btt.conviction, 0) DESC, bt.name
+                         ) AS parent_themes
+                    FROM brain_thesis_ticker btt
+                    JOIN brain_thesis bt ON bt.id = btt.brain_thesis_id
+                   WHERE btt.symbol = dc.symbol
+                     AND bt.active = true
+                     AND bt.scope IN ('sector', 'theme')
+             ) parent ON true
+            WHERE dc.id = $1"#,
+    )
+    .bind(candidate_id)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None);
+
+    let Some(row) = row else {
+        return serde_json::Value::Null;
+    };
+    let signal_value: Option<f64> = row.try_get("signal_value").ok().flatten();
+    let proposed_lists: serde_json::Value =
+        row.try_get("proposed_lists").unwrap_or_else(|_| json!([]));
+    let suggested_new_list: Option<serde_json::Value> =
+        row.try_get("suggested_new_list").unwrap_or(None);
+    let parent_themes: serde_json::Value =
+        row.try_get("parent_themes").unwrap_or_else(|_| json!([]));
+    let parent_theme_fit: Option<f64> = row.try_get("parent_theme_fit").ok().flatten();
+    let rank = crate::discovery::ranking::rank_candidate(
+        &row.try_get::<String, _>("signal_name").unwrap_or_default(),
+        signal_value,
+        row.try_get::<Option<f64>, _>("domain_fit").ok().flatten(),
+        parent_theme_fit,
+        None,
+        row.try_get::<i32, _>("proposed_tier").unwrap_or(2),
+        &proposed_lists,
+        suggested_new_list.is_some(),
+    );
+    json!({
+        "id": row.try_get::<i64, _>("id").unwrap_or(candidate_id),
+        "symbol": row.try_get::<String, _>("symbol").unwrap_or_default(),
+        "signal_name": row.try_get::<String, _>("signal_name").unwrap_or_default(),
+        "signal_value": signal_value,
+        "domain_fit": row.try_get::<Option<f64>, _>("domain_fit").ok().flatten(),
+        "parent_theme_fit": parent_theme_fit,
+        "parent_themes": parent_themes,
+        "proposed_tier": row.try_get::<i32, _>("proposed_tier").unwrap_or(2),
+        "reasoning": row.try_get::<Option<String>, _>("reasoning").ok().flatten(),
+        "proposed_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("proposed_at").ok(),
+        "proposed_lists": proposed_lists,
+        "suggested_new_list": suggested_new_list,
+        "rank_score": rank.score,
+        "rank_bucket": rank.bucket,
+        "rank_reasons": rank.reasons,
+    })
+}
+
 async fn get_attention_review_packet(
     State(gw): State<Arc<Gateway>>,
     Path(id): Path<i64>,
@@ -3773,6 +3972,8 @@ async fn get_attention_review_packet(
     };
 
     let kind: String = row.try_get("kind").unwrap_or_default();
+    let symbol: Option<String> = row.try_get::<Option<String>, _>("symbol").ok().flatten();
+    let candidate_id: Option<i64> = row.try_get::<Option<i64>, _>("candidate_id").ok().flatten();
     let severity: String = row
         .try_get("severity")
         .unwrap_or_else(|_| "review".to_string());
@@ -3789,14 +3990,20 @@ async fn get_attention_review_packet(
         row.try_get("next_retry_at").ok().flatten();
     let resurface_at: Option<chrono::DateTime<chrono::Utc>> =
         row.try_get("resurface_at").ok().flatten();
+    let universe_status = review_packet_universe_status(&gw.store.pool, symbol.as_deref()).await;
+    let in_universe = universe_status
+        .get("in_universe")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let candidate = review_packet_candidate(&gw.store.pool, candidate_id).await;
 
     let packet = json!({
         "attention": {
             "id": row.try_get::<i64, _>("id").unwrap_or(id),
             "kind": kind.clone(),
-            "symbol": row.try_get::<Option<String>, _>("symbol").ok().flatten(),
+            "symbol": symbol,
             "thesis_id": row.try_get::<Option<uuid::Uuid>, _>("thesis_id").ok().flatten(),
-            "candidate_id": row.try_get::<Option<i64>, _>("candidate_id").ok().flatten(),
+            "candidate_id": candidate_id,
             "severity": severity.clone(),
             "status": row.try_get::<String, _>("status").unwrap_or_else(|_| "open".to_string()),
             "fsm_state": row.try_get::<String, _>("fsm_state").ok(),
@@ -3812,6 +4019,9 @@ async fn get_attention_review_packet(
             "resurface_at": resurface_at,
             "state_reason": row.try_get::<Option<String>, _>("state_reason").ok().flatten(),
         },
+        "decision": review_packet_decision(&kind, symbol.as_deref(), in_universe),
+        "universe_status": universe_status,
+        "candidate": candidate,
         "sections": [
             {"key": "what_happened", "title": "What happened", "body": what_happened},
             {"key": "why_it_matters", "title": "Why it matters", "body": why_it_matters},
@@ -5155,6 +5365,38 @@ mod tests {
         );
         assert_eq!(payload["instrument"], "LEAPS");
         assert_eq!(payload["intended_size"]["pct"], 0.04);
+    }
+
+    #[test]
+    fn review_packet_candidate_decision_is_universe_approval() {
+        let decision = review_packet_decision("candidate_review", Some("CRDO"), false);
+
+        assert_eq!(decision["intent"], "promote_to_universe");
+        assert_eq!(decision["headline"], "Approve CRDO to Universe?");
+        assert_eq!(decision["primary_action"]["kind"], "candidate_confirm");
+        assert_eq!(decision["primary_action"]["label"], "Approve to Universe");
+        assert_eq!(decision["blockers"].as_array().unwrap().len(), 0);
+        assert!(
+            decision["consequences"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item == "matching attention item is resolved")
+        );
+    }
+
+    #[test]
+    fn review_packet_existing_thesis_decision_is_not_promotion() {
+        let decision = review_packet_decision("thesis_review", Some("BG"), true);
+
+        assert_eq!(decision["intent"], "review_thesis_change");
+        assert_eq!(decision["primary_action"]["kind"], "open_symbol");
+        assert!(decision["blockers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item
+                == "Already in Universe; this packet is about the next workflow action, not promotion."));
     }
 
     #[test]

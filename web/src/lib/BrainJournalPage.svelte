@@ -153,6 +153,19 @@
     return [pctText || label(item.technical_state), blockers].filter(Boolean).join(" · ");
   }
 
+  function decisionStatus(item: BrainJournalDecisionItem): string {
+    if (item.tier) return `Universe T${item.tier}`;
+    return "Universe";
+  }
+
+  function decisionAction(sectionKey: string, item: BrainJournalDecisionItem): string {
+    if ((item.open_attention ?? 0) > 0) return "Open review packet";
+    if (!item.thesis_id) return "Research first";
+    if (sectionKey === "wait") return "Review thesis";
+    if (sectionKey === "avoid") return "Open symbol";
+    return "Review setup";
+  }
+
   function themeMissing(theme: BrainJournalMemoTheme): string {
     const missing = Array.isArray(theme.missing_evidence) ? theme.missing_evidence : [];
     return missing.length ? missing.slice(0, 3).map(label).join(" · ") : "evidence current enough to read";
@@ -234,10 +247,16 @@
                       <strong>{item.symbol}</strong>
                       <span>{item.score}</span>
                     </span>
+                    <span class="trade-status">
+                      <span>{decisionStatus(item)}</span>
+                      {#if !item.thesis_id}<span>No thesis</span>{/if}
+                      {#if (item.open_attention ?? 0) > 0}<span>Needs review</span>{/if}
+                    </span>
                     <span>{item.why_now}</span>
                     <small>{decisionMeta(item)}</small>
                     <small>{decisionMetric(item)}</small>
                     <em>{item.why_not}</em>
+                    <b>{decisionAction(section.key, item)}</b>
                   </button>
                 {/each}
               </div>
@@ -646,6 +665,19 @@
   .trade-item {
     cursor: pointer;
   }
+  .trade-status {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .25rem;
+  }
+  .trade-status span {
+    border: 1px solid #2a3447;
+    border-radius: 999px;
+    padding: .08rem .36rem;
+    color: #bac2de;
+    font-size: .68rem;
+    line-height: 1.2;
+  }
   .memo-symbol.constructive {
     border-left-color: #a6e3a1;
   }
@@ -685,6 +717,11 @@
     font-size: .72rem;
     font-style: normal;
     line-height: 1.3;
+  }
+  .trade-item b {
+    color: #a6e3a1;
+    font-size: .72rem;
+    font-weight: 700;
   }
   .journal-section-title {
     color: #bac2de;

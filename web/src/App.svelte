@@ -60,6 +60,7 @@
     type PositionRow,
     type ResearchEvidence,
     type ReviewPacketAction,
+    type ReviewPacketActionPayload,
     type StreamEvent,
     type TechnicalState,
     type ThesisDetail,
@@ -159,23 +160,56 @@
       attention = await fetchAttention("open");
     } catch {}
   }
+  function focusReviewPacket() {
+    setTimeout(() => {
+      document.querySelector('[data-testid="review-packet"]')?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+  }
   async function openReviewPacketFor(item: AttentionItem) {
     reviewPacketLoading = true;
     reviewPacketError = null;
+    promotionStatus = null;
     try {
       reviewPacket = await fetchAttentionReviewPacket(item.id);
       if (item.symbol) await selectSymbol(item.symbol);
+      focusReviewPacket();
     } catch (e) {
       reviewPacketError = String(e);
     } finally {
       reviewPacketLoading = false;
     }
   }
-  async function handleReviewPacketAction(action: ReviewPacketAction, packet: AttentionReviewPacket) {
+  async function confirmReviewPacketCandidate(candidateId: number, watchlistIds: string[]) {
+    promotionBusy = true;
+    promotionStatus = null;
+    try {
+      await confirmCandidate(candidateId, watchlistIds);
+      await Promise.all([
+        refreshAttention(),
+        refreshPending(),
+        refreshWatchlists(),
+        refreshSelectedWatchlistMembers(watchlistIds),
+        fetchTickers().then((t) => (tickers = t)),
+      ]);
+      await reloadSelectedSymbolDetails();
+      const destination = watchlistIds.length > 0
+        ? `Universe + ${watchlistIds.length} watchlist${watchlistIds.length === 1 ? "" : "s"}`
+        : "Universe";
+      promotionStatus = `Approved to ${destination}; context and thesis work will refresh.`;
+    } catch (e) {
+      error = String(e);
+    } finally {
+      promotionBusy = false;
+    }
+  }
+  async function handleReviewPacketAction(
+    action: ReviewPacketAction,
+    packet: AttentionReviewPacket,
+    payload: ReviewPacketActionPayload = {},
+  ) {
     const item = packet.attention;
     if (action.kind === "candidate_confirm" && item.candidate_id) {
-      await confirmGroup([item.candidate_id]);
-      reviewPacket = null;
+      await confirmReviewPacketCandidate(item.candidate_id, payload.watchlistIds ?? []);
       return;
     }
     if (action.kind === "candidate_reject" && item.candidate_id) {
@@ -2588,6 +2622,8 @@
         packet={reviewPacket}
         loading={reviewPacketLoading}
         error={reviewPacketError}
+        busy={promotionBusy}
+        status={promotionStatus}
         onAction={handleReviewPacketAction}
       />
     {/if}

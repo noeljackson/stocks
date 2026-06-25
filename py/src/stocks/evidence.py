@@ -263,6 +263,56 @@ def _source_health_last_check(
     )
 
 
+def _symbol_task_marker(
+    requirement_key: str,
+    evidence_counts: dict[str, object] | None,
+    marker: str,
+) -> dt.datetime | None:
+    return _parse_dt((evidence_counts or {}).get(f"source_task_{requirement_key}_{marker}_at"))
+
+
+def _symbol_task_state(
+    requirement_key: str,
+    evidence_counts: dict[str, object] | None,
+) -> str | None:
+    raw = (evidence_counts or {}).get(f"source_task_{requirement_key}_state")
+    return str(raw) if raw is not None else None
+
+
+def _has_symbol_specific_source_attempt(
+    requirement_key: str,
+    evidence_counts: dict[str, object] | None,
+) -> bool:
+    """Whether a symbol-scoped task proves this source actually touched the symbol.
+
+    `source_health` is provider/global. It is useful for rate limits and broad
+    failures, but it cannot prove that a newly added symbol returned no rows.
+    The ingest workers write these source-task markers when they claim,
+    complete, or fail a concrete symbol attempt.
+    """
+    return any(
+        _symbol_task_marker(requirement_key, evidence_counts, marker) is not None
+        for marker in ("claimed", "completed", "failed")
+    )
+
+
+def _source_task_fetching_is_fresh(
+    requirement_key: str,
+    evidence_counts: dict[str, object] | None,
+    *,
+    now: dt.datetime | None = None,
+) -> bool:
+    if _symbol_task_state(requirement_key, evidence_counts) != "fetching":
+        return False
+    updated_at = _symbol_task_marker(requirement_key, evidence_counts, "updated")
+    claimed_at = _symbol_task_marker(requirement_key, evidence_counts, "claimed")
+    started_at = updated_at or claimed_at
+    if started_at is None:
+        return True
+    now = now or dt.datetime.now(dt.UTC)
+    return started_at >= now - SOURCE_RUNNING_STALE_AFTER
+
+
 def source_task_due_at(
     requirement_key: str,
     *,
@@ -521,6 +571,7 @@ def build_satisfied_source_tasks(
 async def load_evidence_counts(pool: asyncpg.Pool, symbol: str) -> dict[str, object]:
     row = await pool.fetchrow(
         """SELECT
+              (SELECT added_at FROM ticker WHERE symbol = $1) AS ticker_added_at,
               (SELECT count(*) FROM price_bar WHERE symbol = $1) AS price_bars,
               (SELECT max(ts) FROM price_bar WHERE symbol = $1) AS price_last_bar_at,
               (SELECT count(*) FROM company_profile
@@ -596,6 +647,28 @@ async def load_evidence_counts(pool: asyncpg.Pool, symbol: str) -> dict[str, obj
             out[key] = _iso(value)
         else:
             out[key] = int(value or 0)
+    task_rows = await pool.fetch(
+        """SELECT requirement_key,
+                  (array_agg(state ORDER BY updated_at DESC))[1] AS state,
+                  max(created_at) AS created_at,
+                  max(updated_at) AS updated_at,
+                  max(NULLIF(source_ref->>'claimed_at', '')::timestamptz) AS claimed_at,
+                  max(NULLIF(source_ref->>'completed_at', '')::timestamptz) AS completed_at,
+                  max(NULLIF(source_ref->>'failed_at', '')::timestamptz) AS failed_at
+             FROM source_task
+            WHERE scope = 'symbol'
+              AND target_id = $1
+              AND requirement_key = ANY($2::text[])
+         GROUP BY requirement_key""",
+        symbol,
+        list(EVIDENCE_REQUIREMENTS.keys()),
+    )
+    for task in task_rows:
+        key = task["requirement_key"]
+        out[f"source_task_{key}_state"] = task["state"]
+        for marker in ("created", "updated", "claimed", "completed", "failed"):
+            column = f"{marker}_at"
+            out[f"source_task_{key}_{column}"] = _iso(task[column])
     return out
 
 
@@ -658,6 +731,14 @@ def _acquisition_state(
             "retry_after_at": None,
             "source_health": [],
         }
+    if _source_task_fetching_is_fresh(requirement_key, evidence_counts):
+        return {
+            "blocking_state": "fetching",
+            "state_reason": "fetching_required_sources",
+            "last_error": None,
+            "retry_after_at": None,
+            "source_health": rows,
+        }
     running_rows = [r for r in rows if r["last_status"] == "running"]
     if any(_source_running_is_fresh(r) for r in running_rows):
         return {
@@ -693,6 +774,18 @@ def _acquisition_state(
             "blocking_state": "missing",
             "state_reason": "source_running_stale",
             "last_error": "source still marked running after reclaim window",
+            "retry_after_at": None,
+            "source_health": rows,
+        }
+    if (
+        evidence_counts is not None
+        and evidence_counts.get("ticker_added_at") is not None
+        and not _has_symbol_specific_source_attempt(requirement_key, evidence_counts)
+    ):
+        return {
+            "blocking_state": "missing",
+            "state_reason": "source_not_seen_for_symbol",
+            "last_error": None,
             "retry_after_at": None,
             "source_health": rows,
         }

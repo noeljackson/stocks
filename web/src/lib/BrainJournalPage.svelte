@@ -2,6 +2,7 @@
   import type {
     BrainJournal,
     BrainJournalCategory,
+    BrainJournalDecisionItem,
     BrainJournalEntry,
     BrainJournalMemoEvidence,
     BrainJournalMemoSymbol,
@@ -64,6 +65,16 @@
   let hasPreviousPage = $derived(journal?.pagination?.has_previous ?? false);
   let hasNextPage = $derived(journal?.pagination?.has_next ?? false);
   let overview = $derived(journal?.overview ?? null);
+  let decisionSections = $derived.by<{ key: string; title: string; tone: string; items: BrainJournalDecisionItem[] }[]>(() => {
+    const brief = overview?.decision_brief;
+    if (!brief) return [];
+    return [
+      { key: "consider", title: "Would Consider", tone: "consider", items: brief.consider ?? [] },
+      { key: "wait", title: "Would Wait", tone: "wait", items: brief.wait ?? [] },
+      { key: "avoid", title: "Would Avoid", tone: "avoid", items: brief.avoid ?? [] },
+      { key: "research", title: "Research First", tone: "research", items: brief.research ?? [] },
+    ];
+  });
 
   function categoryLabel(category: BrainJournalCategory | string): string {
     switch (category) {
@@ -126,6 +137,35 @@
     return "constructive";
   }
 
+  function decisionMeta(item: BrainJournalDecisionItem): string {
+    const parts = [
+      directionLabel(item.thesis_direction),
+      label(item.thesis_state),
+      label(item.entry_stance),
+      label(item.freshness_status),
+    ].filter((part) => part && part !== "unknown");
+    return parts.join(" · ") || "research-only";
+  }
+
+  function decisionMetric(item: BrainJournalDecisionItem): string {
+    const pctText = pct(item.technical_pct_vs_200d);
+    const blockers = item.blockers?.length ? `${item.blockers.length} blocker${item.blockers.length === 1 ? "" : "s"}` : "";
+    return [pctText || label(item.technical_state), blockers].filter(Boolean).join(" · ");
+  }
+
+  function decisionStatus(item: BrainJournalDecisionItem): string {
+    if (item.tier) return `Universe T${item.tier}`;
+    return "Universe";
+  }
+
+  function decisionAction(sectionKey: string, item: BrainJournalDecisionItem): string {
+    if ((item.open_attention ?? 0) > 0) return "Open review packet";
+    if (!item.thesis_id) return "Research first";
+    if (sectionKey === "wait") return "Review thesis";
+    if (sectionKey === "avoid") return "Open symbol";
+    return "Review setup";
+  }
+
   function themeMissing(theme: BrainJournalMemoTheme): string {
     const missing = Array.isArray(theme.missing_evidence) ? theme.missing_evidence : [];
     return missing.length ? missing.slice(0, 3).map(label).join(" · ") : "evidence current enough to read";
@@ -183,6 +223,51 @@
   {/if}
 
   {#if overview}
+    <section class="trade-desk" data-testid="daily-trade-desk">
+      <div class="memo-head">
+        <div>
+          <span class="eyebrow">Daily Trade Desk</span>
+          <h2>What the system would review today</h2>
+        </div>
+        <span class="memo-chip">{overview.market.label}</span>
+      </div>
+
+      <div class="trade-desk-grid">
+        {#each decisionSections as section (section.key)}
+          <article class={`trade-section ${section.tone}`}>
+            <div class="memo-panel-title">
+              <strong>{section.title}</strong>
+              <span>{section.items.length}</span>
+            </div>
+            {#if section.items.length}
+              <div class="trade-items">
+                {#each section.items as item, i (`${item.symbol}-${i}`)}
+                  <button type="button" class="trade-item" onclick={() => onOpenSymbol(item.symbol)}>
+                    <span class="memo-symbol-top">
+                      <strong>{item.symbol}</strong>
+                      <span>{item.score}</span>
+                    </span>
+                    <span class="trade-status">
+                      <span>{decisionStatus(item)}</span>
+                      {#if !item.thesis_id}<span>No thesis</span>{/if}
+                      {#if (item.open_attention ?? 0) > 0}<span>Needs review</span>{/if}
+                    </span>
+                    <span>{item.why_now}</span>
+                    <small>{decisionMeta(item)}</small>
+                    <small>{decisionMetric(item)}</small>
+                    <em>{item.why_not}</em>
+                    <b>{decisionAction(section.key, item)}</b>
+                  </button>
+                {/each}
+              </div>
+            {:else}
+              <p class="muted">No symbols in this bucket.</p>
+            {/if}
+          </article>
+        {/each}
+      </div>
+    </section>
+
     <section class="journal-memo" data-testid="brain-journal-memo">
       <div class="memo-head">
         <div>
@@ -215,7 +300,7 @@
           </div>
           {#if overview.top_candidates.length}
             <div class="memo-symbols">
-              {#each overview.top_candidates as item (item.symbol)}
+              {#each overview.top_candidates as item, i (`${item.symbol}-${i}`)}
                 <button type="button" class={`memo-symbol ${symbolTone(item)}`} onclick={() => onOpenSymbol(item.symbol)}>
                   <span class="memo-symbol-top">
                     <strong>{item.symbol}</strong>
@@ -238,7 +323,7 @@
           </div>
           {#if overview.wait_for_setup.length}
             <div class="memo-symbols">
-              {#each overview.wait_for_setup as item (item.symbol)}
+              {#each overview.wait_for_setup as item, i (`${item.symbol}-${i}`)}
                 <button type="button" class="memo-symbol wait" onclick={() => onOpenSymbol(item.symbol)}>
                   <span class="memo-symbol-top">
                     <strong>{item.symbol}</strong>
@@ -261,7 +346,7 @@
           </div>
           {#if overview.themes.length}
             <div class="memo-list">
-              {#each overview.themes.slice(0, 4) as theme (theme.name)}
+              {#each overview.themes.slice(0, 4) as theme, i (`${theme.name}-${i}`)}
                 <div class="memo-line">
                   <strong>{theme.name}</strong>
                   <span>{label(theme.direction)} · {label(theme.state)} · {theme.linked_tickers} tickers</span>
@@ -301,7 +386,7 @@
           </div>
           {#if overview.research_focus.length}
             <div class="memo-list">
-              {#each overview.research_focus.slice(0, 5) as item, i (`${item.source_kind ?? "focus"}-${item.source_id ?? i}`)}
+              {#each overview.research_focus.slice(0, 5) as item, i (`${item.source_kind ?? "focus"}-${item.source_id ?? "none"}-${i}`)}
                 <div class={`memo-line focus-${item.category ?? "curious"}`}>
                   <strong>{evidenceTitle(item)}</strong>
                   <span>{item.summary}</span>
@@ -334,7 +419,7 @@
             <span class="badge">{group.entries.length}/{group.total}</span>
           </div>
           <div class="journal-entries">
-            {#each group.entries as entry (entry.event_key)}
+            {#each group.entries as entry, i (`${entry.event_key}-${i}`)}
               {#if entry.symbol}
                 <button type="button" class="journal-entry" onclick={() => onOpenEntry(entry)}>
                   <span class="journal-entry-title">
@@ -389,6 +474,7 @@
   .journal-hero,
   .journal-summary,
   .journal-synthesis,
+  .trade-desk,
   .journal-memo,
   .journal-pager {
     border: 1px solid #1f2733;
@@ -454,6 +540,10 @@
     display: grid;
     gap: .65rem;
   }
+  .trade-desk {
+    display: grid;
+    gap: .65rem;
+  }
   .memo-head,
   .memo-panel-title,
   .memo-symbol-top,
@@ -487,6 +577,11 @@
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     gap: .55rem;
   }
+  .trade-desk-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(220px, 1fr));
+    gap: .55rem;
+  }
   .memo-panel {
     display: grid;
     gap: .45rem;
@@ -500,6 +595,21 @@
   .memo-market {
     border-left: 3px solid #89b4fa;
   }
+  .trade-section {
+    display: grid;
+    align-content: start;
+    gap: .45rem;
+    min-width: 0;
+    border: 1px solid #1f2733;
+    background: #0c1019;
+    border-radius: 4px;
+    padding: .55rem;
+    border-left: 3px solid #45567a;
+  }
+  .trade-section.consider { border-left-color: #a6e3a1; }
+  .trade-section.wait { border-left-color: #f9e2af; }
+  .trade-section.avoid { border-left-color: #f38ba8; }
+  .trade-section.research { border-left-color: #89b4fa; }
   .memo-panel-title {
     color: #bac2de;
     font-size: .78rem;
@@ -523,11 +633,13 @@
     font-size: .7rem;
   }
   .memo-symbols,
-  .memo-list {
+  .memo-list,
+  .trade-items {
     display: grid;
     gap: .35rem;
   }
   .memo-symbol,
+  .trade-item,
   .memo-line {
     display: grid;
     gap: .15rem;
@@ -545,9 +657,26 @@
   button.memo-symbol {
     cursor: pointer;
   }
-  button.memo-symbol:hover {
+  button.memo-symbol:hover,
+  button.trade-item:hover {
     border-color: #45567a;
     background: #101723;
+  }
+  .trade-item {
+    cursor: pointer;
+  }
+  .trade-status {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .25rem;
+  }
+  .trade-status span {
+    border: 1px solid #2a3447;
+    border-radius: 999px;
+    padding: .08rem .36rem;
+    color: #bac2de;
+    font-size: .68rem;
+    line-height: 1.2;
   }
   .memo-symbol.constructive {
     border-left-color: #a6e3a1;
@@ -561,22 +690,38 @@
     border-left-color: #f38ba8;
   }
   .memo-symbol span,
+  .trade-item span,
+  .trade-item em,
   .memo-line span,
   .memo-line small,
+  .trade-item small,
   .memo-symbol small {
     overflow-wrap: anywhere;
   }
   .memo-symbol > span:not(.memo-symbol-top),
+  .trade-item > span:not(.memo-symbol-top),
   .memo-line span {
     color: #a6adc8;
     font-size: .78rem;
     line-height: 1.35;
   }
   .memo-symbol small,
+  .trade-item small,
   .memo-line small {
     color: #7f849c;
     font-size: .7rem;
     line-height: 1.25;
+  }
+  .trade-item em {
+    color: #9399b2;
+    font-size: .72rem;
+    font-style: normal;
+    line-height: 1.3;
+  }
+  .trade-item b {
+    color: #a6e3a1;
+    font-size: .72rem;
+    font-weight: 700;
   }
   .journal-section-title {
     color: #bac2de;
@@ -681,6 +826,9 @@
       grid-template-columns: 1fr;
     }
     .memo-grid {
+      grid-template-columns: 1fr;
+    }
+    .trade-desk-grid {
       grid-template-columns: 1fr;
     }
     .memo-head,

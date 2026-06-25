@@ -15,6 +15,7 @@
     fetchBrainStatus,
     fetchCalibration,
     fetchAttention,
+    fetchAttentionReviewPacket,
     dismissAttention,
     fetchDecisions,
     fetchDiscoveryPool,
@@ -40,6 +41,7 @@
     transitionAttention,
     type Alert,
     type AttentionItem,
+    type AttentionReviewPacket,
     type BrainJournal,
     type BrainJournalEntry,
     type BrainOverview,
@@ -57,6 +59,8 @@
     type PoolMember,
     type PositionRow,
     type ResearchEvidence,
+    type ReviewPacketAction,
+    type ReviewPacketActionPayload,
     type StreamEvent,
     type TechnicalState,
     type ThesisDetail,
@@ -70,6 +74,7 @@
   import AnalystPanel from "./lib/AnalystPanel.svelte";
   import ContextPanel from "./lib/ContextPanel.svelte";
   import BrainJournalPage from "./lib/BrainJournalPage.svelte";
+  import ReviewPacket from "./lib/ReviewPacket.svelte";
   import TechnicalStatePanel from "./lib/TechnicalStatePanel.svelte";
   import ThesisDetails from "./lib/ThesisDetails.svelte";
   import ChartPanel from "./lib/ChartPanel.svelte";
@@ -144,6 +149,9 @@
   let pool = $state<PoolMember[]>([]);
   let attention = $state<AttentionItem[]>([]);
   let attentionFilter = $state<string>("all");
+  let reviewPacket = $state<AttentionReviewPacket | null>(null);
+  let reviewPacketLoading = $state(false);
+  let reviewPacketError = $state<string | null>(null);
   let promotionBusy = $state(false);
   let promotionStatus = $state<string | null>(null);
 
@@ -151,6 +159,88 @@
     try {
       attention = await fetchAttention("open");
     } catch {}
+  }
+  function focusReviewPacket() {
+    setTimeout(() => {
+      document.querySelector('[data-testid="review-packet"]')?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+  }
+  async function openReviewPacketFor(item: AttentionItem) {
+    reviewPacketLoading = true;
+    reviewPacketError = null;
+    promotionStatus = null;
+    try {
+      reviewPacket = await fetchAttentionReviewPacket(item.id);
+      if (item.symbol) await selectSymbol(item.symbol);
+      focusReviewPacket();
+    } catch (e) {
+      reviewPacketError = String(e);
+    } finally {
+      reviewPacketLoading = false;
+    }
+  }
+  async function confirmReviewPacketCandidate(candidateId: number, watchlistIds: string[]) {
+    promotionBusy = true;
+    promotionStatus = null;
+    try {
+      await confirmCandidate(candidateId, watchlistIds);
+      await Promise.all([
+        refreshAttention(),
+        refreshPending(),
+        refreshWatchlists(),
+        refreshSelectedWatchlistMembers(watchlistIds),
+        fetchTickers().then((t) => (tickers = t)),
+      ]);
+      await reloadSelectedSymbolDetails();
+      const destination = watchlistIds.length > 0
+        ? `Universe + ${watchlistIds.length} watchlist${watchlistIds.length === 1 ? "" : "s"}`
+        : "Universe";
+      promotionStatus = `Approved to ${destination}; context and thesis work will refresh.`;
+    } catch (e) {
+      error = String(e);
+    } finally {
+      promotionBusy = false;
+    }
+  }
+  async function handleReviewPacketAction(
+    action: ReviewPacketAction,
+    packet: AttentionReviewPacket,
+    payload: ReviewPacketActionPayload = {},
+  ) {
+    const item = packet.attention;
+    if (action.kind === "candidate_confirm" && item.candidate_id) {
+      await confirmReviewPacketCandidate(item.candidate_id, payload.watchlistIds ?? []);
+      return;
+    }
+    if (action.kind === "candidate_reject" && item.candidate_id) {
+      await rejectGroup([item.candidate_id], "not_my_edge");
+      reviewPacket = null;
+      return;
+    }
+    if (action.kind === "attention_defer") {
+      await deferOne(item.id);
+      reviewPacket = null;
+      return;
+    }
+    if (action.kind === "attention_dismiss") {
+      await dismissOne(item.id, "review_packet");
+      reviewPacket = null;
+      return;
+    }
+    if (item.symbol) await selectSymbol(item.symbol);
+    if (action.kind === "decision") {
+      openDecisionDrawer("enter");
+      return;
+    }
+    if (action.kind === "decision_skip") {
+      openDecisionDrawer("skip");
+      return;
+    }
+    if (action.kind === "open_evidence") {
+      rightTab = "evidence";
+      return;
+    }
+    rightTab = item.thesis_id ? "theses" : "overview";
   }
   async function dismissOne(id: number, reason?: string) {
     try {
@@ -474,7 +564,12 @@
   async function openJournalSymbol(symbol: string) {
     routePage = "workspace";
     await selectSymbol(symbol);
-    rightTab = "overview";
+    const item = attention.find((a) => a.symbol === symbol);
+    if (item) {
+      await openReviewPacketFor(item);
+    } else {
+      rightTab = "overview";
+    }
   }
 
   function brainThingText(value: unknown): string {
@@ -1274,8 +1369,17 @@
   function workflowDecisionText(): string {
     if (symbolDecisions === undefined || symbolPositions === undefined) return "loading decisions";
     if (openSymbolPositions.length > 0) return `${openSymbolPositions.length} open position`;
+    const pendingFill = pendingManualFillDecision();
+    if (pendingFill) return "manual fill needed";
     if ((symbolDecisions ?? []).length > 0) return `${symbolDecisions?.length ?? 0} decision`;
     return "no decision";
+  }
+
+  function pendingManualFillDecision(): DecisionRow | null {
+    if (openSymbolPositions.length > 0) return null;
+    return (symbolDecisions ?? []).find((d) =>
+      ["enter", "resize"].includes(d.action) && d.user_choice === "confirmed"
+    ) ?? null;
   }
 
   function workflowAttentionText(): string {
@@ -1384,6 +1488,20 @@
         reason: "A position is open; conditions and exits matter now.",
         primary: "Track position",
         action: "tracking",
+        status: statusText,
+        attention: attentionText,
+        evidence: evidenceText,
+        thesis: thesisText,
+        decision: decisionText,
+      };
+    }
+    if (pendingManualFillDecision()) {
+      return {
+        state: "Fill needed",
+        tone: "actionable",
+        reason: "A confirmed decision exists, but no open position is recorded yet.",
+        primary: "Record fill",
+        action: "decision",
         status: statusText,
         attention: attentionText,
         evidence: evidenceText,
@@ -2498,6 +2616,17 @@
         </div>
       </section>
     {/if}
+
+    {#if reviewPacket || reviewPacketLoading || reviewPacketError}
+      <ReviewPacket
+        packet={reviewPacket}
+        loading={reviewPacketLoading}
+        error={reviewPacketError}
+        busy={promotionBusy}
+        status={promotionStatus}
+        onAction={handleReviewPacketAction}
+      />
+    {/if}
   </section>
 
   <!-- Body: left column (chart + bottom drawer stacked) + vertical splitter + right panel (full height) -->
@@ -2854,6 +2983,7 @@
                   {/if}
 
                   <div class="att-actions">
+                    <button class="confirm" onclick={() => openReviewPacketFor(g.items[0])}>Review packet</button>
                     {#if g.kind === "candidate_review"}
                       <button class="confirm" disabled={promotionBusy} onclick={() => confirmGroup(g.candidateIds)}>Promote</button>
                       <button class="reject" onclick={() => (rejectOpenFor = rejectOpenFor === g.key ? null : g.key)}>

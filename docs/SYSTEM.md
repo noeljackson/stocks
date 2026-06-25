@@ -74,17 +74,19 @@ history.
    Keep every decision and outcome so calibration can improve
 ```
 
-The durable mental model:
+The operator-facing mental model:
 
 ```text
-Discovery pool = broad radar
-Watchlists     = focused radar
-Context        = memory per symbol
-Thesis         = active hypothesis
-Attention      = "look here now"
-Decision       = what the human chose
-Outcome        = whether it was right
+Symbol    = what we monitor
+Context   = what we know
+Thesis    = what we believe might happen
+Decision  = what the human chose
+Outcome   = what actually happened
 ```
+
+Watchlists, Candidates, Attention, Risk, Consensus, and Reflection are
+supporting workflow concepts. They should clarify the five-noun loop rather
+than become separate operator destinations.
 
 The canonical object lifecycle and attention-kind map lives in
 [`docs/LIFECYCLE.md`](LIFECYCLE.md). When changing discovery, attention,
@@ -200,11 +202,12 @@ must carry a real `thesis_id`.
 
 ## Core objects
 
-### Ticker
+### Symbol (`ticker` row)
 
-A persistent monitoring object. Tickers have a cluster, tier, tradeability
-metadata, and watchlist membership. A ticker can be lightly monitored before it
-has any thesis.
+The operator sees a Symbol. The backing table is still named `ticker`: a
+persistent monitoring object with cluster, tier, tradeability metadata, and
+watchlist membership. A symbol can be lightly monitored before it has any
+thesis.
 
 ```text
 ticker
@@ -219,7 +222,7 @@ ticker
 
 The operator-facing way to browse the universe. Watchlists are not just manual
 folders; discovery can propose adding symbols to them. The UI should treat
-`Universe` / `All Tickers` as the replacement for a separate Tickers page.
+`Universe` / `All Symbols` as the replacement for a separate Symbols page.
 
 ```text
 watchlist
@@ -228,7 +231,7 @@ watchlist
   -> discovery assignment target
 ```
 
-### Ticker context
+### Symbol context
 
 The system's memory for a symbol. It is versioned and append-only.
 

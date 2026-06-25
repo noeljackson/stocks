@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Workspace shell (#57 PR1). Single-symbol model: pick a ticker on the
+  // Workspace shell (#57 PR1). Single-symbol model: pick a symbol on the
   // right, see everything about it in the right detail panel; workflows
   // (events, discovery, decisions, calibration) live in the bottom drawer.
   // Chart in the main area is a placeholder — PR2 wires a real chart.
@@ -489,7 +489,7 @@
     if (trigger === "open_thesis_update_loop") return "thesis refresh";
     if (trigger === "evidence_state_bootstrap") return "evidence bootstrap";
     if (trigger === "maintenance_sweep") return "maintenance";
-    if (trigger === "discovery.confirmed") return "confirmed ticker";
+    if (trigger === "discovery.confirmed") return "confirmed symbol";
     return trigger ? trigger.replace(/_/g, " ") : "scheduled";
   }
 
@@ -1166,13 +1166,13 @@
   let decThesisDirection = $derived(forecastDirectionFrom(decThesis?.forecast));
   let decNeedsDisagreement = $derived(decAction === "skip" || decChoice === "rejected");
 
-  // Synthetic "Universe" pseudo-list — all active tickers. Computed on the
+  // Synthetic "Universe" pseudo-list — all active symbols. Computed on the
   // fly from /api/tickers so we don't need a DB-side system list.
   const UNIVERSE_ID = "__universe__";
   let universeList = $derived<Watchlist>({
     id: UNIVERSE_ID,
     name: "Universe",
-    description: "All active tickers",
+    description: "All active symbols",
     color: "#9aa3b8",
     is_system: true,
     created_at: "",
@@ -1561,7 +1561,7 @@
     const defaultWorkflow: SymbolWorkflow = {
       state: "No symbol",
       tone: "missing",
-      reason: "Pick a ticker to inspect.",
+      reason: "Pick a symbol to inspect.",
       primary: "Overview",
       action: "overview",
       status: "not selected",
@@ -1612,7 +1612,7 @@
     }
     if (workflowLoading()) {
       return {
-        state: "Loading ticker",
+        state: "Loading symbol",
         tone: "monitoring",
         reason: "Loading context, evidence, thesis, and decision state.",
         primary: "Overview",
@@ -1865,7 +1865,7 @@
         short: "not selected",
         tone: "missing",
         location: "None",
-        detail: "Pick a ticker to inspect.",
+        detail: "Pick a symbol to inspect.",
       };
     }
     if (selectedTicker) {
@@ -1874,7 +1874,7 @@
         short: `Universe T${selectedTicker.tier}`,
         tone: "active",
         location: "Active Universe",
-        detail: "The scheduled brain loop may refresh context, evidence, thesis, and decisions for this ticker.",
+        detail: "The scheduled brain loop may refresh context, evidence, thesis, and decisions for this symbol.",
       };
     }
     if (selectedCandidateReview) {
@@ -1883,7 +1883,7 @@
         short: "nomination",
         tone: "candidate",
         location: "Attention queue",
-        detail: "Discovery queued this ticker for promotion review. It is not monitored until promotion adds it to the active Universe.",
+        detail: "Discovery queued this symbol for promotion review. It is not monitored until promotion adds it to the active Universe.",
       };
     }
     if (selectedPoolMember) {
@@ -1892,7 +1892,7 @@
         short: "pool only",
         tone: "pool",
         location: "Discovery pool",
-        detail: "This ticker is known to discovery, but the scheduled context/thesis loop will not run until it is promoted.",
+        detail: "This symbol is known to discovery, but the scheduled context/thesis loop will not run until it is promoted.",
       };
     }
     if (selectedWatchlistPlacements.length > 0) {
@@ -1901,7 +1901,7 @@
         short: "watchlist only",
         tone: "pool",
         location: "Watchlist",
-        detail: "This ticker is in a watchlist, but it is not in the active Universe, so the scheduled context/thesis loop will not run until it is promoted.",
+        detail: "This symbol is in a watchlist, but it is not in the active Universe, so the scheduled context/thesis loop will not run until it is promoted.",
       };
     }
     return {
@@ -1909,7 +1909,7 @@
       short: "not tracked",
       tone: "unknown",
       location: "Outside current system",
-      detail: "The chart may load if price data exists, but this ticker is not in the active Universe, discovery pool, or watchlists.",
+      detail: "The chart may load if price data exists, but this symbol is not in the active Universe, discovery pool, or watchlists.",
     };
   }
 
@@ -2839,7 +2839,7 @@
       <p class="workflow-status">{researchKickoffStatus}</p>
     {/if}
 
-    <div class="workflow-rail" aria-label="Selected ticker workflow">
+    <div class="workflow-rail" aria-label="Selected symbol workflow">
       <button type="button" class="workflow-step" onclick={() => runWorkflowAction("overview")}>
         <span>Status</span>
         <strong>{selectedWorkflow.status}</strong>
@@ -4152,7 +4152,7 @@
                   <dt>Open theses</dt><dd>{selectedTicker.open_theses}</dd>
                 </dl>
               {:else}
-                <p class="muted">Ticker metadata not loaded yet.</p>
+                <p class="muted">Symbol metadata not loaded yet.</p>
               {/if}
               {#if symbolBrain === undefined}
                 <p class="muted">Loading brain status…</p>
@@ -4416,7 +4416,7 @@
                     <strong>Not active yet</strong>
                   </div>
                   <p>{selectedPlacement.detail}</p>
-                  <p class="muted">Start research to add this ticker to the active Universe before expecting context synthesis, thesis drafting, or thesis updates.</p>
+                  <p class="muted">Start research to add this symbol to the active Universe before expecting context synthesis, thesis drafting, or thesis updates.</p>
                   <div class="att-actions">
                     <button
                       class="confirm"

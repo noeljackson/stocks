@@ -375,7 +375,7 @@ async function mockApi(
         primary_action: primary,
         secondary_actions: secondaryActions,
         blockers: [],
-        consequences: isCandidate ? ["ticker promoted into Universe", "context and thesis work starts"] : [],
+        consequences: isCandidate ? ["symbol promoted into Universe", "context and thesis work starts"] : [],
       },
       universe_status: {
         in_universe: ["MSFT", "NVDA", "OKTA"].includes(symbol ?? ""),
@@ -652,7 +652,7 @@ async function mockApi(
           name: "AI Compute Infrastructure",
           state: "forming",
           direction: "mixed",
-          summary: "AI capex remains the parent theme, but ticker selection must separate leaders from challengers.",
+          summary: "AI capex remains the parent theme, but symbol selection must separate leaders from challengers.",
           core_claim: "The edge is finding where adoption evidence diffuses slower than price consensus.",
           why_now: "Product/customer adoption evidence is still arriving.",
           evidence: [],
@@ -841,7 +841,7 @@ async function mockApi(
             scope: "theme",
             state: "forming",
             direction: "mixed",
-            summary: "AI capex remains the parent theme, but ticker quality differs.",
+            summary: "AI capex remains the parent theme, but symbol quality differs.",
             missing_evidence: ["customer_adoption_research"],
             freshness: "missing",
             linked_tickers: 2,
@@ -1365,7 +1365,7 @@ async function mockApi(
           role: "candidate",
           conviction: 50,
           rationale: "Identity security expression of AI infrastructure budget priority.",
-          summary: "AI capex remains the parent theme, but ticker selection must separate leaders from challengers.",
+          summary: "AI capex remains the parent theme, but symbol selection must separate leaders from challengers.",
         }],
         state: "forming",
         edge_rationale: "Identity platform consolidation can improve growth durability.",
@@ -1871,7 +1871,7 @@ test("pool-only symbol context does not imply active synthesis", async ({ page }
   await expect(context).toContainText("Context");
   await expect(context).toContainText("not running");
   await expect(context).toContainText("not in the active Universe");
-  await expect(context).toContainText("Promote the ticker first");
+  await expect(context).toContainText("Promote the symbol first");
   await expect(page.getByText("synthesizing…")).toHaveCount(0);
   await expect.poll(() => calls.refreshContextSymbols).toEqual([]);
   await expect(page).toHaveURL(/\/symbol\/SNDK\?p=context$/);
@@ -1962,7 +1962,7 @@ test("placement card directly promotes pool-only symbols", async ({ page }) => {
   });
 });
 
-test("workflow rail shows selected ticker state and routes to thesis review", async ({ page }) => {
+test("workflow rail shows selected symbol state and routes to thesis review", async ({ page }) => {
   await mockApi(page);
   await page.goto("/");
 
@@ -1973,13 +1973,14 @@ test("workflow rail shows selected ticker state and routes to thesis review", as
   await expect(strip).toContainText("1 open evidence");
   await expect(strip).toContainText("declined attempt");
   await expect(page.getByTestId("workflow-primary")).toHaveText("Review decline");
+  await expect(page.locator('[aria-label="Selected symbol workflow"]')).toBeVisible();
 
   await page.getByTestId("workflow-primary").click();
 
   await expect(page.locator(".tabs button.active")).toHaveText("theses");
 });
 
-test("theses tab shows nominated state for unpromoted tickers", async ({ page }) => {
+test("theses tab shows nominated state for unpromoted symbols", async ({ page }) => {
   const calls = await mockApi(page, {
     attentionItems: [{
       id: 8801,
@@ -2193,7 +2194,7 @@ test("thesis review packet submits the decision inline", async ({ page }) => {
   });
 });
 
-test("brain tab shows macro and theme theses with linked tickers", async ({ page }) => {
+test("brain tab shows macro and theme theses with linked symbols", async ({ page }) => {
   await mockApi(page);
   await page.goto("/");
 
@@ -2222,7 +2223,7 @@ test("brain tab shows macro and theme theses with linked tickers", async ({ page
   await expect(theme.getByRole("button", { name: /OKTA/ })).toContainText("forming");
 });
 
-test("journal page shows daily history and routes ticker entries", async ({ page }) => {
+test("journal page shows daily history and routes symbol entries", async ({ page }) => {
   const calls = await mockApi(page);
   await page.goto("/journal/2026-06-01");
 
@@ -2315,7 +2316,7 @@ test("calibration tab shows parent theme expression results", async ({ page }) =
   await expect(calibration).toContainText("brier 0.180");
 });
 
-test("overview shows selected ticker parent brain context", async ({ page }) => {
+test("overview shows selected symbol parent brain context", async ({ page }) => {
   await mockApi(page);
   await page.goto("/symbol/OKTA");
 
@@ -2329,7 +2330,7 @@ test("overview shows selected ticker parent brain context", async ({ page }) => 
   await expect(page.getByRole("button", { name: "brain", exact: true })).toHaveClass(/active/);
 });
 
-test("symbol routes deep-link selected ticker and keep navigation state", async ({ page }) => {
+test("symbol routes deep-link selected symbol and keep navigation state", async ({ page }) => {
   await mockApi(page);
   await page.goto("/symbol/2454.TW?p=context");
 
@@ -2450,7 +2451,7 @@ test("attention Promote posts selected watchlist memberships", async ({ page }) 
   await expect(page.getByText("No open attention. The system is quiet.")).toBeVisible();
 });
 
-test("attention thesis review opens selected ticker thesis panel", async ({ page }) => {
+test("attention thesis review opens selected symbol thesis panel", async ({ page }) => {
   await mockApi(page, {
     attentionItems: [{
       id: 7002,
@@ -2495,7 +2496,7 @@ test("attention thesis review opens selected ticker thesis panel", async ({ page
   await expect(placement).toContainText("Core");
 });
 
-test("watchlist add form posts ticker and refreshes members", async ({ page }) => {
+test("watchlist add form posts symbol and refreshes members", async ({ page }) => {
   const calls = await mockApi(page);
   await page.goto("/");
 

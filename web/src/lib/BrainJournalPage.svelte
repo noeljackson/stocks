@@ -385,7 +385,7 @@
               {#each overview.themes.slice(0, 4) as theme, i (`${theme.name}-${i}`)}
                 <div class="memo-line">
                   <strong>{theme.name}</strong>
-                  <span>{label(theme.direction)} · {label(theme.state)} · {theme.linked_tickers} tickers</span>
+                  <span>{label(theme.direction)} · {label(theme.state)} · {theme.linked_tickers} symbols</span>
                   <small>{themeMissing(theme)}</small>
                 </div>
               {/each}

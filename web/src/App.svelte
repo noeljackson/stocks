@@ -3424,6 +3424,7 @@
             {@const disc = sysStatus.discovery as { last_pass_at: string|null; open_candidates: number; by_signal: { signal: string; count: number }[]; pool_size: number }}
             {@const cog = sysStatus.cognition as { contexts_24h: number; contexts_total_symbols: number; thesis_by_state: { state: string; count: number }[]; runs_24h?: number; runs_by_status?: { status: string; count: number }[]; latest_runs?: CognitionRun[] }}
             {@const ev = sysStatus.evidence as { open_requirements: number; source_tasks_due?: number; source_tasks_stale_fetching?: number; by_state: { state: string; count: number }[]; by_reason?: { reason: string; count: number }[]; source_tasks_by_state?: { state: string; count: number }[]; source_tasks_by_action?: { provider: string; action: string; state: string; count: number; due_count?: number; stale_fetching_count?: number; next_due_at?: string|null; last_updated_at?: string|null; sample_targets?: string[] }[] }}
+            {@const der = (sysStatus.derived_refresh ?? {}) as { due_count?: number; queued_count?: number; scheduled_count?: number; next_due_at?: string|null; stale_running?: number; by_state?: { state: string; count: number }[]; by_target?: { target_kind: string; state: string; count: number }[]; recent?: { id: number; target_kind: string; target_id: string; symbol?: string|null; reason: string; dependency_kind: string; priority: string; state: string; attempts: number; due_at: string; updated_at: string; last_error?: string|null }[] }}
             {@const att = sysStatus.attention as { open_items: number; deferred_items?: number; by_kind: { kind: string; count: number }[]; by_state?: { state: string; count: number }[]; by_owner?: { owner: string; count: number }[] }}
             {@const llm = sysStatus.llm as { calls_24h: number; avg_latency_ms: number|null; by_prompt: { prompt: string; count: number; avg_ms: number|null; last_at: string|null }[] }}
             {@const health = (sysStatus.source_health ?? []) as { source: string; last_status: string; effective_status?: string; stale_running?: boolean; running_age_minutes?: number|null; last_started_at: string|null; last_success_at: string|null; last_failure_at: string|null; last_failure_kind?: string|null; last_error?: string|null; retry_after_at?: string|null; rows_seen: number; rows_inserted: number; symbols_attempted: number; symbols_failed: number }[]}
@@ -3572,6 +3573,48 @@
                           <td>{task.due_count ?? 0}{#if task.stale_fetching_count} / {task.stale_fetching_count} stale{/if}</td>
                           <td class="muted">{task.next_due_at ? relativeTime(task.next_due_at) : "—"}</td>
                           <td class="muted">{task.sample_targets?.slice(0, 4).join(", ") || "—"}</td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                {/if}
+              </section>
+
+              <section class="diag">
+                <h5>Derived refresh</h5>
+                <dl class="meta-list inline">
+                  <dt>due now</dt><dd>{der.due_count ?? 0}</dd>
+                  <dt>scheduled</dt><dd>{der.scheduled_count ?? 0}</dd>
+                  <dt>queued</dt><dd>{der.queued_count ?? 0}</dd>
+                  <dt>stale running</dt><dd>{der.stale_running ?? 0}</dd>
+                  {#if der.next_due_at}
+                    <dt>next</dt><dd>{relativeTime(der.next_due_at)}</dd>
+                  {/if}
+                </dl>
+                {#if der.by_state?.length}
+                  <ul class="chips">
+                    {#each der.by_state as s (s.state)}
+                      <li class="chip">derived {s.state}: <strong>{s.count}</strong></li>
+                    {/each}
+                  </ul>
+                {/if}
+                {#if der.by_target?.length}
+                  <ul class="chips">
+                    {#each der.by_target as t (`${t.target_kind}:${t.state}`)}
+                      <li class="chip">{t.target_kind.replace(/_/g, " ")} {t.state}: <strong>{t.count}</strong></li>
+                    {/each}
+                  </ul>
+                {/if}
+                {#if der.recent?.length}
+                  <table class="diag-tbl compact-run-table">
+                    <thead><tr><th>target</th><th>state</th><th>why</th><th>due</th></tr></thead>
+                    <tbody>
+                      {#each der.recent.slice(0, 8) as task (task.id)}
+                        <tr title={task.last_error ?? `${task.dependency_kind} changed`}>
+                          <td><strong>{task.target_kind.replace(/_/g, " ")}</strong><br><span class="muted">{task.symbol ?? task.target_id}</span></td>
+                          <td><span class={`badge tiny task-${task.state}`}>{task.state.replace(/_/g, " ")}</span></td>
+                          <td class="muted">{task.reason.replace(/_/g, " ")}</td>
+                          <td class="muted">{task.due_at ? relativeTime(task.due_at) : "—"}</td>
                         </tr>
                       {/each}
                     </tbody>

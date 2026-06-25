@@ -8,10 +8,10 @@
 mod routes;
 mod sse;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::ingest::fmp_intraday::FmpIntradayAdapter;
 use crate::llm::{Provider, prompts};
@@ -88,6 +88,35 @@ impl Gateway {
             )
             .await?;
         Ok(vec![thesis, risk])
+    }
+
+    pub fn start_derived_refresh_worker(&self) -> tokio::task::JoinHandle<()> {
+        let store = self.store.clone();
+        let interval_secs = std::env::var("DERIVED_REFRESH_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(15)
+            .max(1);
+        let batch_size = std::env::var("DERIVED_REFRESH_BATCH_SIZE")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(25)
+            .clamp(1, 100);
+        tokio::spawn(async move {
+            let interval = Duration::from_secs(interval_secs);
+            loop {
+                match store.process_due_derived_refresh_tasks(batch_size).await {
+                    Ok(processed) if processed > 0 => {
+                        info!(processed, "processed derived refresh tasks");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(%error, "derived refresh worker failed");
+                    }
+                }
+                tokio::time::sleep(interval).await;
+            }
+        })
     }
 
     async fn bind_consumer(

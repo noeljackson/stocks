@@ -88,6 +88,10 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         )
         .route("/api/discovery-pool", get(list_discovery_pool))
         .route("/api/system-status", get(get_system_status))
+        .route(
+            "/api/derived-refresh",
+            get(get_derived_refresh).post(run_derived_refresh),
+        )
         .route("/api/brain", get(get_brain_overview))
         .route("/api/brain-journal", get(get_brain_journal))
         .route("/api/brain-status", get(get_brain_status))
@@ -2658,6 +2662,17 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
         })
     };
 
+    let derived_refresh = gw.store.derived_refresh_status().await.unwrap_or_else(|e| {
+        json!({
+            "error": e.to_string(),
+            "due_count": 0,
+            "stale_running": 0,
+            "by_state": [],
+            "by_target": [],
+            "recent": [],
+        })
+    });
+
     let body = json!({
         "as_of": chrono::Utc::now(),
         "ingest": serde_json::Value::Object(ingest),
@@ -2666,10 +2681,51 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
         "discovery": discovery,
         "cognition": cognition,
         "evidence": evidence,
+        "derived_refresh": derived_refresh,
         "attention": attention,
         "llm": llm,
     });
     (StatusCode::OK, Json(body)).into_response()
+}
+
+async fn get_derived_refresh(State(gw): State<Arc<Gateway>>) -> impl IntoResponse {
+    match gw.store.derived_refresh_status().await {
+        Ok(status) => (StatusCode::OK, Json(status)).into_response(),
+        Err(e) => {
+            warn!(error = %e, "get_derived_refresh failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn run_derived_refresh(State(gw): State<Arc<Gateway>>) -> impl IntoResponse {
+    match gw.store.process_due_derived_refresh_tasks(50).await {
+        Ok(processed) => match gw.store.derived_refresh_status().await {
+            Ok(status) => (
+                StatusCode::OK,
+                Json(json!({
+                    "processed": processed,
+                    "status": status,
+                })),
+            )
+                .into_response(),
+            Err(e) => {
+                warn!(error = %e, "derived_refresh status after run failed");
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "processed": processed,
+                        "status_error": e.to_string(),
+                    })),
+                )
+                    .into_response()
+            }
+        },
+        Err(e) => {
+            warn!(error = %e, "run_derived_refresh failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
 }
 
 async fn get_brain_overview(State(gw): State<Arc<Gateway>>) -> impl IntoResponse {

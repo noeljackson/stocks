@@ -43,6 +43,7 @@ async fn main() -> Result<()> {
     ));
 
     let _consumers = gw.start_subscriptions().await?;
+    let _derived_refresh = gw.start_derived_refresh_worker();
     let app = gw.clone().router();
 
     let addr = cfg.gateway_addr.trim_start_matches(':');

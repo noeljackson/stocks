@@ -67,6 +67,18 @@ struct BrainJournalDraft {
     source_ref: serde_json::Value,
 }
 
+#[derive(Debug, Clone)]
+struct DerivedRefreshTask {
+    id: i64,
+    generation: i32,
+    target_kind: String,
+    target_id: String,
+    symbol: Option<String>,
+    reason: String,
+    dependency_kind: String,
+    dependency_id: Option<String>,
+}
+
 fn age_component(
     name: &str,
     now: DateTime<Utc>,
@@ -407,6 +419,11 @@ fn journal_event_key(
     at: DateTime<Utc>,
 ) -> String {
     format!("{source_kind}:{source_id}:{}", at.timestamp_millis())
+}
+
+fn parse_derived_refresh_day(target_id: &str) -> Result<NaiveDate> {
+    NaiveDate::parse_from_str(target_id, "%Y-%m-%d")
+        .with_context(|| format!("invalid derived refresh day {target_id}"))
 }
 
 impl Store {
@@ -1677,6 +1694,415 @@ impl Store {
                 }))
             })
             .collect()
+    }
+
+    pub async fn derived_refresh_status(&self) -> Result<serde_json::Value> {
+        let by_state_rows = sqlx::query(
+            r#"SELECT state, count(*) AS n
+                 FROM derived_refresh_task
+             GROUP BY state
+             ORDER BY state"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("derived_refresh_status by_state")?;
+        let by_state = by_state_rows
+            .into_iter()
+            .map(|r| {
+                Ok(serde_json::json!({
+                    "state": r.try_get::<String, _>("state")?,
+                    "count": r.try_get::<i64, _>("n")?,
+                }))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let by_target_rows = sqlx::query(
+            r#"SELECT target_kind, state, count(*) AS n
+                 FROM derived_refresh_task
+             GROUP BY target_kind, state
+             ORDER BY target_kind, state"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("derived_refresh_status by_target")?;
+        let by_target = by_target_rows
+            .into_iter()
+            .map(|r| {
+                Ok(serde_json::json!({
+                    "target_kind": r.try_get::<String, _>("target_kind")?,
+                    "state": r.try_get::<String, _>("state")?,
+                    "count": r.try_get::<i64, _>("n")?,
+                }))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let due_count: i64 = sqlx::query_scalar(
+            r#"SELECT count(*)
+                 FROM derived_refresh_task
+                WHERE state IN ('queued', 'failed')
+                  AND due_at <= now()"#,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .context("derived_refresh_status due_count")?;
+        let queue_window = sqlx::query(
+            r#"SELECT count(*) FILTER (WHERE state IN ('queued', 'failed')) AS queued_count,
+                      count(*) FILTER (
+                          WHERE state IN ('queued', 'failed')
+                            AND due_at > now()
+                      ) AS scheduled_count,
+                      min(due_at) FILTER (WHERE state IN ('queued', 'failed')) AS next_due_at
+                 FROM derived_refresh_task"#,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .context("derived_refresh_status queue_window")?;
+        let queued_count: i64 = queue_window.try_get("queued_count")?;
+        let scheduled_count: i64 = queue_window.try_get("scheduled_count")?;
+        let next_due_at: Option<DateTime<Utc>> = queue_window.try_get("next_due_at")?;
+        let stale_running: i64 = sqlx::query_scalar(
+            r#"SELECT count(*)
+                 FROM derived_refresh_task
+                WHERE state = 'running'
+                  AND started_at < now() - interval '5 minutes'"#,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .context("derived_refresh_status stale_running")?;
+
+        let recent_rows = sqlx::query(
+            r#"SELECT id, target_kind, target_id, symbol, reason, dependency_kind,
+                      dependency_id, priority, state, generation, due_at, attempts,
+                      last_error, started_at, completed_at, updated_at
+                 FROM derived_refresh_task
+             ORDER BY updated_at DESC, id DESC
+                LIMIT 20"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("derived_refresh_status recent")?;
+        let recent = recent_rows
+            .into_iter()
+            .map(|r| {
+                Ok(serde_json::json!({
+                    "id": r.try_get::<i64, _>("id")?,
+                    "target_kind": r.try_get::<String, _>("target_kind")?,
+                    "target_id": r.try_get::<String, _>("target_id")?,
+                    "symbol": r.try_get::<Option<String>, _>("symbol")?,
+                    "reason": r.try_get::<String, _>("reason")?,
+                    "dependency_kind": r.try_get::<String, _>("dependency_kind")?,
+                    "dependency_id": r.try_get::<Option<String>, _>("dependency_id")?,
+                    "priority": r.try_get::<String, _>("priority")?,
+                    "state": r.try_get::<String, _>("state")?,
+                    "generation": r.try_get::<i32, _>("generation")?,
+                    "due_at": r.try_get::<DateTime<Utc>, _>("due_at")?,
+                    "attempts": r.try_get::<i32, _>("attempts")?,
+                    "last_error": r.try_get::<Option<String>, _>("last_error")?,
+                    "started_at": r.try_get::<Option<DateTime<Utc>>, _>("started_at")?,
+                    "completed_at": r.try_get::<Option<DateTime<Utc>>, _>("completed_at")?,
+                    "updated_at": r.try_get::<DateTime<Utc>, _>("updated_at")?,
+                }))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(serde_json::json!({
+            "due_count": due_count,
+            "queued_count": queued_count,
+            "scheduled_count": scheduled_count,
+            "next_due_at": next_due_at,
+            "stale_running": stale_running,
+            "by_state": by_state,
+            "by_target": by_target,
+            "recent": recent,
+        }))
+    }
+
+    pub async fn process_due_derived_refresh_tasks(&self, limit: i64) -> Result<u64> {
+        let tasks = self
+            .claim_derived_refresh_tasks(limit.clamp(1, 100))
+            .await?;
+        let mut processed = 0;
+        for task in tasks {
+            let result = self.run_derived_refresh_task(&task).await;
+            match result {
+                Ok(source_ref) => {
+                    self.complete_derived_refresh_task(task.id, task.generation, &source_ref)
+                        .await?;
+                }
+                Err(err) => {
+                    self.fail_derived_refresh_task(task.id, task.generation, &err.to_string())
+                        .await?;
+                }
+            }
+            processed += 1;
+        }
+        Ok(processed)
+    }
+
+    async fn claim_derived_refresh_tasks(&self, limit: i64) -> Result<Vec<DerivedRefreshTask>> {
+        let rows = sqlx::query(
+            r#"WITH candidates AS (
+                   SELECT id
+                     FROM derived_refresh_task
+                    WHERE state IN ('queued', 'failed')
+                      AND due_at <= now()
+                 ORDER BY CASE priority
+                            WHEN 'blocking' THEN 0
+                            WHEN 'high' THEN 1
+                            WHEN 'medium' THEN 2
+                            ELSE 3
+                          END,
+                          updated_at ASC,
+                          id ASC
+                    LIMIT $1
+                    FOR UPDATE SKIP LOCKED
+               )
+               UPDATE derived_refresh_task t
+                  SET state = 'running',
+                      attempts = attempts + 1,
+                      started_at = now(),
+                      updated_at = now(),
+                      last_error = NULL
+                 FROM candidates c
+                WHERE t.id = c.id
+            RETURNING t.id, t.generation, t.target_kind, t.target_id, t.symbol,
+                      t.reason, t.dependency_kind, t.dependency_id"#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("claim_derived_refresh_tasks")?;
+
+        rows.into_iter()
+            .map(|r| {
+                Ok(DerivedRefreshTask {
+                    id: r.try_get("id")?,
+                    generation: r.try_get("generation")?,
+                    target_kind: r.try_get("target_kind")?,
+                    target_id: r.try_get("target_id")?,
+                    symbol: r.try_get("symbol")?,
+                    reason: r.try_get("reason")?,
+                    dependency_kind: r.try_get("dependency_kind")?,
+                    dependency_id: r.try_get("dependency_id")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn run_derived_refresh_task(
+        &self,
+        task: &DerivedRefreshTask,
+    ) -> Result<serde_json::Value> {
+        match task.target_kind.as_str() {
+            "brain_journal" => {
+                let day = parse_derived_refresh_day(&task.target_id)?;
+                let inserted = self.refresh_brain_journal_entries(day).await?;
+                Ok(serde_json::json!({
+                    "processed": "brain_journal_refresh",
+                    "journal_date": day.format("%Y-%m-%d").to_string(),
+                    "inserted": inserted,
+                    "reason": &task.reason,
+                    "dependency_kind": &task.dependency_kind,
+                    "dependency_id": &task.dependency_id,
+                }))
+            }
+            "trade_desk" => {
+                let day = parse_derived_refresh_day(&task.target_id)?;
+                Ok(serde_json::json!({
+                    "processed": "trade_desk_live_projection",
+                    "journal_date": day.format("%Y-%m-%d").to_string(),
+                    "note": "daily trade desk is derived from active_tickers at read time",
+                    "reason": &task.reason,
+                    "dependency_kind": &task.dependency_kind,
+                    "dependency_id": &task.dependency_id,
+                }))
+            }
+            "brain_link" => {
+                let symbol = task.symbol.as_deref().unwrap_or(&task.target_id);
+                let snapshot = self.derived_symbol_snapshot(symbol).await?;
+                Ok(serde_json::json!({
+                    "processed": "brain_link_live_projection",
+                    "symbol": symbol,
+                    "snapshot": snapshot,
+                    "reason": &task.reason,
+                    "dependency_kind": &task.dependency_kind,
+                    "dependency_id": &task.dependency_id,
+                }))
+            }
+            "review_packet" => {
+                let symbol = task.symbol.as_deref().unwrap_or(&task.target_id);
+                let snapshot = self.derived_symbol_snapshot(symbol).await?;
+                Ok(serde_json::json!({
+                    "processed": "review_packet_live_projection",
+                    "symbol": symbol,
+                    "snapshot": snapshot,
+                    "reason": &task.reason,
+                    "dependency_kind": &task.dependency_kind,
+                    "dependency_id": &task.dependency_id,
+                }))
+            }
+            other => Err(anyhow::anyhow!(
+                "unknown derived refresh target_kind {other}"
+            )),
+        }
+    }
+
+    async fn derived_symbol_snapshot(&self, symbol: &str) -> Result<serde_json::Value> {
+        let row = sqlx::query(
+            r#"SELECT
+                  (SELECT thesis_id
+                     FROM thesis
+                    WHERE symbol = $1
+                      AND state NOT IN ('closed', 'disqualified')
+                 ORDER BY updated_at DESC, created_at DESC
+                    LIMIT 1) AS thesis_id,
+                  (SELECT state
+                     FROM thesis
+                    WHERE symbol = $1
+                      AND state NOT IN ('closed', 'disqualified')
+                 ORDER BY updated_at DESC, created_at DESC
+                    LIMIT 1) AS thesis_state,
+                  (SELECT forecast->>'direction'
+                     FROM thesis
+                    WHERE symbol = $1
+                      AND state NOT IN ('closed', 'disqualified')
+                 ORDER BY updated_at DESC, created_at DESC
+                    LIMIT 1) AS thesis_direction,
+                  (SELECT conviction_tier
+                     FROM thesis
+                    WHERE symbol = $1
+                      AND state NOT IN ('closed', 'disqualified')
+                 ORDER BY updated_at DESC, created_at DESC
+                    LIMIT 1) AS conviction_tier,
+                  (SELECT system_confidence
+                     FROM thesis
+                    WHERE symbol = $1
+                      AND state NOT IN ('closed', 'disqualified')
+                 ORDER BY updated_at DESC, created_at DESC
+                    LIMIT 1) AS system_confidence,
+                  (SELECT created_at
+                     FROM ticker_context
+                    WHERE symbol = $1
+                 ORDER BY version DESC
+                    LIMIT 1) AS context_at,
+                  (SELECT max(updated_at)
+                     FROM evidence_item
+                    WHERE symbol = $1) AS evidence_at,
+                  (SELECT count(*)
+                     FROM attention_item
+                    WHERE symbol = $1
+                      AND status = 'open'
+                      AND (
+                        fsm_state <> 'operator_deferred'
+                        OR (resurface_at IS NOT NULL AND resurface_at <= now())
+                      )) AS open_attention,
+                  COALESCE((
+                    SELECT jsonb_agg(
+                               jsonb_build_object(
+                                 'key', bt.key,
+                                 'name', bt.name,
+                                 'scope', bt.scope,
+                                 'role', btt.role,
+                                 'mapping_conviction', btt.conviction,
+                                 'live_conviction', brain_ticker_live_conviction(
+                                     btt.conviction,
+                                     latest.conviction_tier,
+                                     latest.system_confidence,
+                                     latest.forecast
+                                 )
+                               )
+                               ORDER BY brain_ticker_live_conviction(
+                                   btt.conviction,
+                                   latest.conviction_tier,
+                                   latest.system_confidence,
+                                   latest.forecast
+                               ) DESC,
+                               bt.name
+                           )
+                      FROM brain_thesis_ticker btt
+                      JOIN brain_thesis bt ON bt.id = btt.brain_thesis_id
+                 LEFT JOIN LATERAL (
+                           SELECT th.forecast, th.conviction_tier, th.system_confidence
+                             FROM thesis th
+                            WHERE th.symbol = btt.symbol
+                              AND th.state NOT IN ('closed', 'disqualified')
+                         ORDER BY th.updated_at DESC, th.created_at DESC
+                            LIMIT 1
+                      ) latest ON TRUE
+                     WHERE btt.symbol = $1
+                       AND bt.active = true
+                  ), '[]'::jsonb) AS parent_themes"#,
+        )
+        .bind(symbol)
+        .fetch_one(&self.pool)
+        .await
+        .context("derived_symbol_snapshot")?;
+        Ok(serde_json::json!({
+            "symbol": symbol,
+            "thesis_id": row.try_get::<Option<uuid::Uuid>, _>("thesis_id")?,
+            "thesis_state": row.try_get::<Option<String>, _>("thesis_state")?,
+            "thesis_direction": row.try_get::<Option<String>, _>("thesis_direction")?,
+            "conviction_tier": row.try_get::<Option<String>, _>("conviction_tier")?,
+            "system_confidence": row.try_get::<Option<String>, _>("system_confidence")?,
+            "context_at": row.try_get::<Option<DateTime<Utc>>, _>("context_at")?,
+            "evidence_at": row.try_get::<Option<DateTime<Utc>>, _>("evidence_at")?,
+            "open_attention": row.try_get::<i64, _>("open_attention").unwrap_or(0),
+            "parent_themes": row.try_get::<serde_json::Value, _>("parent_themes")?,
+        }))
+    }
+
+    async fn complete_derived_refresh_task(
+        &self,
+        id: i64,
+        generation: i32,
+        result: &serde_json::Value,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"UPDATE derived_refresh_task
+                  SET state = CASE WHEN generation = $2 THEN 'satisfied' ELSE 'queued' END,
+                      completed_at = CASE WHEN generation = $2 THEN now() ELSE completed_at END,
+                      source_ref = source_ref || jsonb_build_object(
+                          'last_result', $3::jsonb,
+                          'last_processed_at', now()
+                      ),
+                      updated_at = now(),
+                      last_error = NULL
+                WHERE id = $1"#,
+        )
+        .bind(id)
+        .bind(generation)
+        .bind(result)
+        .execute(&self.pool)
+        .await
+        .context("complete_derived_refresh_task")?;
+        Ok(())
+    }
+
+    async fn fail_derived_refresh_task(&self, id: i64, generation: i32, error: &str) -> Result<()> {
+        sqlx::query(
+            r#"UPDATE derived_refresh_task
+                  SET state = CASE WHEN generation = $2 THEN 'failed' ELSE 'queued' END,
+                      due_at = CASE
+                          WHEN generation = $2
+                          THEN now() + (
+                              LEAST(3600, GREATEST(30, attempts * 60))::text || ' seconds'
+                          )::interval
+                          ELSE due_at
+                      END,
+                      last_error = CASE WHEN generation = $2 THEN $3 ELSE last_error END,
+                      source_ref = source_ref || jsonb_build_object(
+                          'last_failure_at', now()
+                      ),
+                      updated_at = now()
+                WHERE id = $1"#,
+        )
+        .bind(id)
+        .bind(generation)
+        .bind(error)
+        .execute(&self.pool)
+        .await
+        .context("fail_derived_refresh_task")?;
+        Ok(())
     }
 
     pub async fn refresh_brain_journal_entries(&self, day: NaiveDate) -> Result<u64> {

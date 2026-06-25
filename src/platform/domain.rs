@@ -110,6 +110,7 @@ pub struct TickerRow {
     pub technical_pct_vs_200d: Option<f64>,
     pub freshness_status: String,
     pub open_attention: i64,
+    pub review_packet_attention_id: Option<i64>,
     pub attention_states: serde_json::Value,
     pub attention_owners: serde_json::Value,
     pub open_evidence: i64,

@@ -12,6 +12,8 @@ Cargo.lock.bak
 /web/dist/*.css
 /web/test-results/
 /web/playwright-report/
+/web/.cache/
+/.runtime/
 
 # Python
 __pycache__/

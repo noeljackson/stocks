@@ -1609,7 +1609,22 @@ async function mockApi(
     }
     if (path === "/api/system-status") {
       await json(route, {
+        database: {
+          status: "ok",
+          reachable: true,
+          database: "stocks",
+          checked_at: "2026-06-01T12:00:00Z",
+          latency_ms: 3,
+          reason: null,
+        },
         ingest: {},
+        price_freshness: {
+          expected_latest_session: "2026-06-01",
+          actual_latest_session: "2026-06-01",
+          symbols_total: 3,
+          symbols_fresh: 3,
+          status: "ok",
+        },
         discovery: { last_pass_at: null, open_candidates: 1, by_signal: [], pool_size: 0 },
         cognition: { contexts_24h: 1, contexts_total_symbols: 3, thesis_by_state: [] },
         evidence: {
@@ -2182,6 +2197,9 @@ test("diagnostics tab shows source task backlog state", async ({ page }) => {
 
   await page.getByRole("button", { name: "diagnostics" }).click();
 
+  const database = page.locator(".diag").filter({ hasText: "Database" });
+  await expect(database).toContainText("reachable");
+  await expect(database).toContainText("stocks");
   const evidence = page.locator(".diag").filter({ hasText: "Evidence" });
   await expect(evidence).toContainText("open requirements");
   await expect(evidence).toContainText("source tasks due");

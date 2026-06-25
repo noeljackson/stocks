@@ -449,6 +449,12 @@
     return status;
   }
 
+  function databaseStatusLabel(status?: string | null): string {
+    if (status === "ok") return "reachable";
+    if (status === "unreachable") return "unreachable";
+    return "unknown";
+  }
+
   function brainStatusLabel(status: string): string {
     return status.replace(/_/g, " ");
   }
@@ -3499,7 +3505,20 @@
             {@const llm = sysStatus.llm as { calls_24h: number; avg_latency_ms: number|null; by_prompt: { prompt: string; count: number; avg_ms: number|null; last_at: string|null }[] }}
             {@const health = (sysStatus.source_health ?? []) as { source: string; last_status: string; effective_status?: string; stale_running?: boolean; running_age_minutes?: number|null; last_started_at: string|null; last_success_at: string|null; last_failure_at: string|null; last_failure_kind?: string|null; last_error?: string|null; retry_after_at?: string|null; rows_seen: number; rows_inserted: number; symbols_attempted: number; symbols_failed: number }[]}
             {@const priceFresh = sysStatus.price_freshness as { expected_latest_session?: string|null; actual_latest_session?: string|null; symbols_total?: number; symbols_fresh?: number; status?: string }}
+            {@const db = (sysStatus.database ?? {}) as { status?: string|null; reachable?: boolean; database?: string|null; checked_at?: string|null; latency_ms?: number|null; reason?: string|null }}
             <div class="diag-grid">
+              <section class={`diag ${db.reachable === false ? "diag-alert" : ""}`}>
+                <h5>Database <span class={`badge tiny db-${db.status ?? "unknown"}`}>{databaseStatusLabel(db.status)}</span></h5>
+                <dl class="meta-list inline">
+                  <dt>name</dt><dd>{db.database ?? "—"}</dd>
+                  <dt>checked</dt><dd>{db.checked_at ? relativeTime(db.checked_at) : "—"}</dd>
+                  <dt>latency</dt><dd>{db.latency_ms ?? "—"}ms</dd>
+                </dl>
+                {#if db.reason}
+                  <p class="diag-reason">{db.reason}</p>
+                {/if}
+              </section>
+
               <section class="diag">
                 <h5>Stored events <span class="muted">— new rows / 24h</span></h5>
                 <table class="diag-tbl">
@@ -5840,6 +5859,9 @@
   .badge.health-stale_running { background: rgba(250,179,135,.18); color: rgb(250,179,135); }
   .badge.health-failed { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
   .badge.health-rate_limited { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
+  .badge.db-ok { background: rgba(166,227,161,.18); color: rgb(166,227,161); }
+  .badge.db-unreachable { background: rgba(243,139,168,.18); color: rgb(243,139,168); }
+  .badge.db-unknown { background: rgba(108,112,134,.2); color: #9aa3b8; }
   .badge.brain-fresh,
   .badge.brain-source-fresh { background: rgba(166,227,161,.18); color: rgb(166,227,161); }
   .badge.brain-not_monitored { background: rgba(137,180,250,.16); color: rgb(137,180,250); }
@@ -6127,7 +6149,9 @@
     background: #11161f; border: 1px solid #1f2733; border-radius: 4px;
     padding: 0.5rem 0.75rem;
   }
+  .diag-alert { border-color: rgba(243,139,168,.45); background: rgba(243,139,168,.06); }
   .diag h5 { margin: 0 0 0.5rem 0; font-size: 0.8rem; color: #bac2de; font-weight: 600; }
+  .diag-reason { margin: 0.4rem 0 0; color: #f38ba8; font-size: 0.78rem; overflow-wrap: anywhere; }
   .diag-tbl { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
   .diag-tbl th { text-align: left; color: #6c7086; font-weight: 400; padding: 0.2rem 0.4rem 0.2rem 0; }
   .diag-tbl td { padding: 0.15rem 0.4rem 0.15rem 0; }

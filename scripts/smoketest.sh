@@ -29,11 +29,14 @@
 #      (catches the reflection regression).
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PSQL_URL="${PSQL_URL:-postgres://stocks:stocks_dev_only@localhost:5432/stocks?sslmode=disable}"
 PSQL=(psql "$PSQL_URL" -tA -v ON_ERROR_STOP=1)
 RUN=(infisical run --env=dev --)
 SYMBOL="${SMOKETEST_SYMBOL:-MU}"
 BIN="./target/release"
+SMOKETEST_DIR="${STOCKS_SMOKETEST_DIR:-$REPO_ROOT/.runtime/smoketest}"
+mkdir -p "$SMOKETEST_DIR"
 
 step()  { printf "\n\033[1;36m=== %s ===\033[0m\n" "$*"; }
 ok()    { printf "  \033[32m✓\033[0m %s\n" "$*"; }
@@ -54,7 +57,7 @@ trap cleanup EXIT
 
 start_bg() {
     local bin="$1"; shift
-    local logfile="/tmp/smoketest-${bin}.log"
+    local logfile="$SMOKETEST_DIR/${bin}.log"
     "${RUN[@]}" "$BIN/$bin" "$@" >"$logfile" 2>&1 &
     PIDS+=("$!")
     echo "$logfile"
@@ -72,20 +75,20 @@ ok "$SYMBOL has $bars bars + $facts XBRL facts"
 step "stage 1: refresh ticker_context"
 prev_ver=$("${PSQL[@]}" -c "SELECT COALESCE(MAX(version),0) FROM ticker_context WHERE symbol='$SYMBOL'")
 "${RUN[@]}" cd py 2>/dev/null || true  # noop — infisical doesn't cd
-(cd py && "${RUN[@]}" .venv/bin/python -m stocks.context_maintainer "$SYMBOL" >/tmp/smoketest-context.log 2>&1) \
-    || fail "context_maintainer failed; see /tmp/smoketest-context.log"
+(cd py && "${RUN[@]}" .venv/bin/python -m stocks.context_maintainer "$SYMBOL" >"$SMOKETEST_DIR/context.log" 2>&1) \
+    || fail "context_maintainer failed; see $SMOKETEST_DIR/context.log"
 new_ver=$("${PSQL[@]}" -c "SELECT MAX(version) FROM ticker_context WHERE symbol='$SYMBOL'")
 [[ "$new_ver" -gt "$prev_ver" ]] || fail "no new context version (was $prev_ver, still $new_ver)"
 ok "ticker_context advanced from v$prev_ver → v$new_ver"
 
 # ---------- stage 2: draft thesis ----------
 step "stage 2: draft + sharpen + challenge"
-(cd py && "${RUN[@]}" .venv/bin/python -m stocks.thesis_engine "$SYMBOL" >/tmp/smoketest-draft.log 2>&1) \
-    || fail "thesis_engine crashed; see /tmp/smoketest-draft.log"
+(cd py && "${RUN[@]}" .venv/bin/python -m stocks.thesis_engine "$SYMBOL" >"$SMOKETEST_DIR/draft.log" 2>&1) \
+    || fail "thesis_engine crashed; see $SMOKETEST_DIR/draft.log"
 
 thesis_id=$("${PSQL[@]}" -c "SELECT thesis_id::text FROM thesis WHERE symbol='$SYMBOL' ORDER BY created_at DESC LIMIT 1")
 if [[ -z "$thesis_id" ]]; then
-    if grep -q '"edge_present": false' /tmp/smoketest-draft.log; then
+    if grep -q '"edge_present": false' "$SMOKETEST_DIR/draft.log"; then
         warn "LLM honestly declined to draft a thesis for $SYMBOL — this is correct behavior, but no thesis to test further stages with"
         warn "skipping stages 3-7 (set SMOKETEST_SYMBOL to a different ticker to retry)"
         exit 0
@@ -95,10 +98,10 @@ fi
 ok "drafted thesis $thesis_id"
 
 # Sharpen + challenge are best-effort: surface errors but don't gate the smoketest.
-(cd py && "${RUN[@]}" .venv/bin/python -m stocks.sharpen "$thesis_id"  >/tmp/smoketest-sharpen.log  2>&1) \
-    && ok "sharpen ran cleanly" || warn "sharpen failed (see /tmp/smoketest-sharpen.log)"
-(cd py && "${RUN[@]}" .venv/bin/python -m stocks.challenge "$thesis_id" >/tmp/smoketest-challenge.log 2>&1) \
-    && ok "challenge ran cleanly" || warn "challenge failed (see /tmp/smoketest-challenge.log)"
+(cd py && "${RUN[@]}" .venv/bin/python -m stocks.sharpen "$thesis_id" >"$SMOKETEST_DIR/sharpen.log" 2>&1) \
+    && ok "sharpen ran cleanly" || warn "sharpen failed (see $SMOKETEST_DIR/sharpen.log)"
+(cd py && "${RUN[@]}" .venv/bin/python -m stocks.challenge "$thesis_id" >"$SMOKETEST_DIR/challenge.log" 2>&1) \
+    && ok "challenge ran cleanly" || warn "challenge failed (see $SMOKETEST_DIR/challenge.log)"
 
 # ---------- stage 3: walk lifecycle ----------
 step "stage 3: walk state machine forming → actionable"
@@ -108,11 +111,11 @@ for _ in $(seq 1 20); do curl -sf http://localhost:8080/healthz >/dev/null && br
 curl -sf http://localhost:8080/healthz >/dev/null || fail "gateway never came up; see $gw_log"
 
 for to in building_conviction armed actionable; do
-    code=$(curl -s -o /tmp/smoketest-transition.json -w '%{http_code}' \
+    code=$(curl -s -o "$SMOKETEST_DIR/transition.json" -w '%{http_code}' \
                 -X POST -H 'content-type: application/json' \
                 -d "{\"to\":\"$to\",\"rationale\":\"smoketest\"}" \
                 "http://localhost:8080/api/theses/$thesis_id/transition")
-    [[ "$code" == "200" ]] || fail "transition → $to failed (HTTP $code): $(cat /tmp/smoketest-transition.json)"
+    [[ "$code" == "200" ]] || fail "transition → $to failed (HTTP $code): $(cat "$SMOKETEST_DIR/transition.json")"
 done
 state=$("${PSQL[@]}" -c "SELECT state FROM thesis WHERE thesis_id='$thesis_id'")
 [[ "$state" == "actionable" ]] || fail "thesis state expected 'actionable', got '$state'"
@@ -129,18 +132,18 @@ UPDATE thesis SET conviction_conditions = conviction_conditions || jsonb_build_a
     'evidence_source','market:$SYMBOL'
   )
 ) WHERE thesis_id='$thesis_id'" >/dev/null
-EVAL_INTERVAL_SECS=1 "${RUN[@]}" "$BIN/evaluator" >/tmp/smoketest-eval.log 2>&1 &
+EVAL_INTERVAL_SECS=1 "${RUN[@]}" "$BIN/evaluator" >"$SMOKETEST_DIR/eval.log" 2>&1 &
 ev_pid=$!
 sleep 3
 kill "$ev_pid" 2>/dev/null || true
 wait "$ev_pid" 2>/dev/null || true
 satisfied=$("${PSQL[@]}" -c "SELECT count(*) FROM v_condition WHERE thesis_id='$thesis_id' AND status='satisfied'")
-[[ "$satisfied" -ge 1 ]] || fail "evaluator did not flip any condition to 'satisfied' (got $satisfied) — see /tmp/smoketest-eval.log"
+[[ "$satisfied" -ge 1 ]] || fail "evaluator did not flip any condition to 'satisfied' (got $satisfied) — see $SMOKETEST_DIR/eval.log"
 ok "evaluator flipped $satisfied condition(s) to satisfied"
 
 # ---------- stage 5: consensus ----------
 step "stage 5: consensus score for $SYMBOL"
-"${RUN[@]}" "$BIN/consensus" >/tmp/smoketest-consensus.log 2>&1 &
+"${RUN[@]}" "$BIN/consensus" >"$SMOKETEST_DIR/consensus.log" 2>&1 &
 cs_pid=$!
 sleep 5
 kill "$cs_pid" 2>/dev/null || true
@@ -151,7 +154,7 @@ ok "consensus produced $rows fresh row(s) for $SYMBOL"
 
 # ---------- stage 6: discovery + classify ----------
 step "stage 6: discovery + classify round-trip"
-"${RUN[@]}" "$BIN/discovery" >/tmp/smoketest-discovery.log 2>&1 &
+"${RUN[@]}" "$BIN/discovery" >"$SMOKETEST_DIR/discovery.log" 2>&1 &
 ds_pid=$!
 sleep 4
 kill "$ds_pid" 2>/dev/null || true
@@ -166,8 +169,8 @@ WITH ins AS (
   RETURNING id
 ) SELECT id FROM ins" || true)
 [[ -n "$cand_id" ]] || fail "could not seed synthetic candidate"
-(cd py && "${RUN[@]}" .venv/bin/python -m stocks.classify --candidate-id "$cand_id" >/tmp/smoketest-classify.log 2>&1) \
-    || fail "classify crashed; see /tmp/smoketest-classify.log"
+(cd py && "${RUN[@]}" .venv/bin/python -m stocks.classify --candidate-id "$cand_id" >"$SMOKETEST_DIR/classify.log" 2>&1) \
+    || fail "classify crashed; see $SMOKETEST_DIR/classify.log"
 proposed=$("${PSQL[@]}" -c "SELECT jsonb_array_length(proposed_lists) FROM discovery_classification WHERE candidate_id=$cand_id")
 [[ "$proposed" -ge 1 ]] || fail "classifier proposed 0 lists for candidate $cand_id"
 ok "classifier proposed $proposed list(s) for synthetic candidate"
@@ -217,7 +220,7 @@ UPDATE thesis SET conviction_conditions = conviction_conditions || jsonb_build_a
     'evidence_source','edgar:10-Q:$SYMBOL'
   )
 ) WHERE thesis_id='$thesis_id'" >/dev/null
-EVAL_INTERVAL_SECS=1 "${RUN[@]}" "$BIN/evaluator" >/tmp/smoketest-eval2.log 2>&1 &
+EVAL_INTERVAL_SECS=1 "${RUN[@]}" "$BIN/evaluator" >"$SMOKETEST_DIR/eval2.log" 2>&1 &
 ev2=$!; sleep 3; kill "$ev2" 2>/dev/null || true; wait "$ev2" 2>/dev/null || true
 period_status=$("${PSQL[@]}" -c "SELECT status FROM v_condition WHERE thesis_id='$thesis_id' AND name='smoketest_period_q3_fy2018'")
 [[ "$period_status" == "satisfied" ]] || fail "period-qualified metric expected satisfied, got '$period_status'"

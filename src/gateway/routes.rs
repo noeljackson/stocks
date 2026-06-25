@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result as AnyResult};
 use axum::{
@@ -2132,6 +2132,19 @@ async fn add_ticker(
 async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse {
     use sqlx::Row;
     let pool = &gw.store.pool;
+    let database = database_status(pool).await;
+
+    if !database
+        .get("reachable")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return (
+            StatusCode::OK,
+            Json(system_status_database_unavailable(database)),
+        )
+            .into_response();
+    }
 
     // ---- ingest sources ----
     let mut ingest = serde_json::Map::new();
@@ -2692,6 +2705,7 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
 
     let body = json!({
         "as_of": chrono::Utc::now(),
+        "database": database,
         "ingest": serde_json::Value::Object(ingest),
         "source_health": source_health,
         "price_freshness": price_freshness,
@@ -2703,6 +2717,105 @@ async fn get_system_status(State(gw): State<Arc<Gateway>>) -> impl IntoResponse 
         "llm": llm,
     });
     (StatusCode::OK, Json(body)).into_response()
+}
+
+async fn database_status(pool: &sqlx::PgPool) -> serde_json::Value {
+    let started = Instant::now();
+    match sqlx::query("SELECT current_database() AS database, now() AS checked_at")
+        .fetch_one(pool)
+        .await
+    {
+        Ok(row) => {
+            let checked_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("checked_at").ok();
+            json!({
+                "status": "ok",
+                "reachable": true,
+                "database": row.try_get::<String, _>("database").unwrap_or_default(),
+                "checked_at": checked_at.unwrap_or_else(chrono::Utc::now),
+                "latency_ms": started.elapsed().as_millis() as i64,
+                "reason": null,
+            })
+        }
+        Err(e) => json!({
+            "status": "unreachable",
+            "reachable": false,
+            "database": null,
+            "checked_at": chrono::Utc::now(),
+            "latency_ms": started.elapsed().as_millis() as i64,
+            "reason": database_error_reason(&e),
+        }),
+    }
+}
+
+fn database_error_reason(error: &sqlx::Error) -> String {
+    match error {
+        sqlx::Error::PoolTimedOut => "database connection pool timed out".to_string(),
+        sqlx::Error::PoolClosed => "database connection pool is closed".to_string(),
+        sqlx::Error::Io(e) => format!("database I/O error: {e}"),
+        sqlx::Error::Database(e) => format!("database returned error: {}", e.message()),
+        other => other.to_string(),
+    }
+}
+
+fn system_status_database_unavailable(database: serde_json::Value) -> serde_json::Value {
+    json!({
+        "as_of": chrono::Utc::now(),
+        "degraded": true,
+        "database": database,
+        "ingest": {},
+        "source_health": [],
+        "price_freshness": {
+            "expected_latest_session": null,
+            "actual_latest_session": null,
+            "symbols_total": 0,
+            "symbols_fresh": 0,
+            "status": "unknown",
+        },
+        "discovery": {
+            "last_pass_at": null,
+            "open_candidates": 0,
+            "by_signal": [],
+            "pool_size": 0,
+        },
+        "cognition": {
+            "contexts_24h": 0,
+            "contexts_total_symbols": 0,
+            "thesis_by_state": [],
+            "runs_24h": 0,
+            "runs_by_status": [],
+            "latest_runs": [],
+        },
+        "evidence": {
+            "open_requirements": 0,
+            "source_tasks_due": 0,
+            "source_tasks_stale_fetching": 0,
+            "by_state": [],
+            "by_reason": [],
+            "source_tasks_by_state": [],
+            "source_tasks_by_action": [],
+        },
+        "derived_refresh": {
+            "due_count": 0,
+            "queued_count": 0,
+            "scheduled_count": 0,
+            "stale_running": 0,
+            "by_state": [],
+            "by_target": [],
+            "recent": [],
+        },
+        "attention": {
+            "open_items": 0,
+            "deferred_items": 0,
+            "by_kind": [],
+            "by_state": [],
+            "by_owner": [],
+        },
+        "llm": {
+            "calls_24h": 0,
+            "avg_latency_ms": null,
+            "by_prompt": [],
+        },
+    })
 }
 
 async fn get_derived_refresh(State(gw): State<Arc<Gateway>>) -> impl IntoResponse {
@@ -6160,5 +6273,20 @@ mod tests {
         let oldest = NaiveDate::from_ymd_opt(2025, 12, 15).unwrap();
 
         assert!(intraday_history_windows(target, oldest, 45, 4).is_empty());
+    }
+
+    #[tokio::test]
+    async fn database_status_marks_unreachable_pool() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_millis(100))
+            .connect_lazy("postgres://stocks:stocks_dev_only@127.0.0.1:1/stocks")
+            .expect("lazy pool");
+
+        let status = database_status(&pool).await;
+
+        assert_eq!(status["status"], "unreachable");
+        assert_eq!(status["reachable"], false);
+        assert!(status["reason"].as_str().unwrap_or_default().len() > 0);
     }
 }

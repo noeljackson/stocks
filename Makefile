@@ -10,6 +10,9 @@ COMPOSE_DEV := docker compose \
     -f deploy/local/docker-compose.dev.yml
 COMPOSE_FIRECRAWL := $(COMPOSE_DEV) -f deploy/local/docker-compose.firecrawl.yml
 PSQL_URL ?= postgres://stocks:stocks_dev_only@localhost:5432/stocks?sslmode=disable
+PLAYWRIGHT_WORKDIR ?= $(CURDIR)/web/.cache/playwright-work
+BUN_INSTALL_CACHE_DIR ?= $(CURDIR)/web/.cache/bun-install
+STOCKS_RUNTIME_DIR ?= $(CURDIR)/.runtime
 
 # Secrets injector: when `infisical` is on PATH, wrap commands so the binaries
 # get vars from your Infisical project (env defaults to `dev`; override with
@@ -23,7 +26,7 @@ help: ## List targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
 # ---- local infra ----
-.PHONY: up down logs migrate psql nuke
+.PHONY: up down logs migrate psql nuke doctor
 up: ## Start local Postgres+NATS (docker compose)
 	$(COMPOSE) up -d
 	@echo "Postgres :5432  NATS :4222 (mon :8222)"
@@ -42,6 +45,9 @@ migrate: ## Apply db/migrations/*.sql in order (idempotent re-run)
 
 psql: ## Open psql against local db
 	psql "$(PSQL_URL)"
+
+doctor: ## Check local disk, Docker, Postgres, and gateway database reachability
+	PSQL_URL="$(PSQL_URL)" PLAYWRIGHT_WORKDIR="$(PLAYWRIGHT_WORKDIR)" BUN_INSTALL_CACHE_DIR="$(BUN_INSTALL_CACHE_DIR)" STOCKS_RUNTIME_DIR="$(STOCKS_RUNTIME_DIR)" ./scripts/doctor.sh
 
 # ---- all-in-docker dev environment (#36) ----
 # Brings up postgres + nats + ALL rust services + vite SPA dev server, each
@@ -135,7 +141,7 @@ clippy: ## cargo clippy on all targets, deny warnings
 # ---- Frontend (supply-chain hardened) ----
 .PHONY: web-install web-audit web-scan web-build web-dev web-e2e
 web-install: ## Install pinned deps with NO lifecycle scripts (from lockfile)
-	./scripts/web-preflight.sh
+	BUN_INSTALL_CACHE_DIR="$(BUN_INSTALL_CACHE_DIR)" ./scripts/web-preflight.sh
 
 web-audit: ## Vulnerability audit
 	cd web && bun audit --audit-level=moderate
@@ -150,9 +156,9 @@ web-dev: ## Vite dev server
 	cd web && bun run dev
 
 web-e2e: ## Playwright UI workflow tests (mocked API, no DB mutation)
-	@mkdir -p "$${TMPDIR:-$${HOME}/.cache/tmp}"
-	cd web && TMPDIR="$${TMPDIR:-$${HOME}/.cache/tmp}" ./node_modules/.bin/playwright install chromium-headless-shell
-	cd web && TMPDIR="$${TMPDIR:-$${HOME}/.cache/tmp}" bun run test:e2e
+	@mkdir -p "$(PLAYWRIGHT_WORKDIR)"
+	cd web && TMPDIR="$(PLAYWRIGHT_WORKDIR)" ./node_modules/.bin/playwright install chromium-headless-shell
+	cd web && TMPDIR="$(PLAYWRIGHT_WORKDIR)" bun run test:e2e
 
 # ---- run (local dev; build once with `make build`, then ./target/release/<bin>) ----
 # $(RUN) injects infisical when installed (see top of file). Override with

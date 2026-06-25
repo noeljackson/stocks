@@ -9,7 +9,7 @@ stamp="$web_dir/node_modules/.stocks-bun-install-inputs.sha256"
 mapfile -t inputs < <(
     find "$repo_root" \
         \( -path "$repo_root/.git" -o -path "$repo_root/target" -o -path "$repo_root/web/node_modules" \) -prune \
-        -o \( -name package.json -o -name bun.lock -o -name bun.lockb \) -type f -print \
+        -o \( -name package.json -o -name bun.lock -o -name bun.lockb -o -name bunfig.toml \) -type f -print \
         | sort
 )
 

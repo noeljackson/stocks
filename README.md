@@ -171,12 +171,39 @@ make run-goalpost       # thesis.updated → integrity check, weakens_invalidati
 make py-setup && make run-context
 
 # frontend (dev, with API proxy to :8080)
-make web-install        # npm ci --ignore-scripts (from lockfile)
+make web-install        # bun install from lockfile with lifecycle scripts disabled
 make web-dev            # vite dev server
 make web-e2e            # Playwright workflow tests with mocked API
 
 # or build the SPA into the gateway binary:
 make web-build && make run-gateway   # SPA served at :8080
+```
+
+### Dev-stack health and recovery
+
+Run `make doctor` when the UI starts returning broad 500s, Docker restarts
+services unexpectedly, or Postgres refuses connections. It checks root and repo
+filesystem free space, Docker disk usage, local Postgres reachability, and the
+gateway diagnostics endpoint's database status.
+
+The frontend tooling uses repo-local ignored paths by default:
+
+```bash
+web/.cache/bun-install
+web/.cache/playwright-work
+.runtime/
+```
+
+Recommended recovery flow:
+
+```bash
+make doctor
+docker system df
+docker builder prune
+docker image prune
+docker compose -f deploy/local/docker-compose.yml restart postgres
+make web-install
+make web-e2e
 ```
 
 ## Build & verify

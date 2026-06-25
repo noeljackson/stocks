@@ -454,6 +454,7 @@ fn journal_trade_desk_item(ticker: &TickerRow, score: i32, stance: &str) -> serd
         "technical_pct_vs_200d": ticker.technical_pct_vs_200d,
         "freshness_status": ticker.freshness_status.clone(),
         "open_attention": ticker.open_attention,
+        "review_packet_attention_id": ticker.review_packet_attention_id,
         "open_evidence": ticker.open_evidence,
         "blocking_evidence": ticker.blocking_evidence,
         "due_source_tasks": ticker.due_source_tasks,
@@ -2886,6 +2887,7 @@ impl Store {
                 "technical_pct_vs_200d": ticker.technical_pct_vs_200d,
                 "freshness_status": ticker.freshness_status.clone(),
                 "open_attention": ticker.open_attention,
+                "review_packet_attention_id": ticker.review_packet_attention_id,
                 "open_evidence": ticker.open_evidence,
                 "blocking_evidence": ticker.blocking_evidence,
                 "due_source_tasks": ticker.due_source_tasks,
@@ -4134,6 +4136,7 @@ impl Store {
                       tech.pct_vs_200d                  AS technical_pct_vs_200d,
                       freshness.status                  AS freshness_status,
                       COALESCE(attention.open_count, 0) AS open_attention,
+                      attention.review_packet_attention_id,
                       COALESCE(attention.states, '[]'::jsonb) AS attention_states,
                       COALESCE(attention.owners, '[]'::jsonb) AS attention_owners,
                       COALESCE(evidence.open_count, 0) AS open_evidence,
@@ -4258,6 +4261,20 @@ impl Store {
                         AND ai.status = 'open'
                         AND (ai.fsm_state <> 'operator_deferred'
                              OR (ai.resurface_at IS NOT NULL AND ai.resurface_at <= now()))) AS open_count,
+                    (SELECT ai.id
+                       FROM attention_item ai
+                      WHERE ai.symbol = t.symbol
+                        AND ai.status = 'open'
+                        AND (ai.fsm_state <> 'operator_deferred'
+                             OR (ai.resurface_at IS NOT NULL AND ai.resurface_at <= now()))
+                   ORDER BY CASE ai.severity
+                              WHEN 'blocked' THEN 0
+                              WHEN 'decision' THEN 1
+                              WHEN 'review' THEN 2
+                              ELSE 3
+                            END,
+                            ai.created_at DESC
+                      LIMIT 1) AS review_packet_attention_id,
                     COALESCE((
                         SELECT jsonb_agg(jsonb_build_object('state', s.fsm_state, 'count', s.n)
                                          ORDER BY s.n DESC, s.fsm_state)
@@ -4350,6 +4367,7 @@ impl Store {
                         .try_get("freshness_status")
                         .unwrap_or_else(|_| "missing".to_string()),
                     open_attention: row.try_get::<i64, _>("open_attention").unwrap_or(0),
+                    review_packet_attention_id: row.try_get("review_packet_attention_id").ok(),
                     attention_states: row
                         .try_get("attention_states")
                         .unwrap_or_else(|_| serde_json::json!([])),
@@ -6129,5 +6147,41 @@ mod tests {
         ));
         assert!(journal_direction_is_bullish(Some("up")));
         assert!(journal_direction_is_bearish(Some("down")));
+    }
+
+    #[test]
+    fn journal_trade_desk_item_links_to_review_packet() {
+        let ticker = TickerRow {
+            symbol: "CRDO".to_string(),
+            cluster_id: "ai".to_string(),
+            cluster_name: Some("AI infrastructure".to_string()),
+            tier: 1,
+            options_eligible: true,
+            domain_fit: Some(84.0),
+            added_at: Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap(),
+            open_theses: 1,
+            latest_thesis_id: Some(
+                uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000111").unwrap(),
+            ),
+            thesis_state: Some("actionable".to_string()),
+            thesis_direction: Some("up".to_string()),
+            technical_state: Some("constructive".to_string()),
+            entry_stance: Some("constructive".to_string()),
+            technical_pct_vs_200d: Some(3.2),
+            freshness_status: "fresh".to_string(),
+            open_attention: 1,
+            review_packet_attention_id: Some(9102),
+            attention_states: serde_json::json!([]),
+            attention_owners: serde_json::json!([]),
+            open_evidence: 0,
+            blocking_evidence: 0,
+            due_source_tasks: 0,
+            parent_themes: serde_json::json!([]),
+        };
+
+        let item = journal_trade_desk_item(&ticker, 76, "consider");
+
+        assert_eq!(item["review_packet_attention_id"], serde_json::json!(9102));
+        assert_eq!(item["open_attention"], serde_json::json!(1));
     }
 }

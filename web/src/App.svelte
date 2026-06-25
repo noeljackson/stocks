@@ -2644,6 +2644,7 @@
       onPageChange={changeJournalPage}
       onOpenEntry={openJournalEntry}
       onOpenSymbol={openJournalSymbol}
+      onOpenReviewPacket={(id, symbol) => openReviewPacketById(id, symbol)}
       onStartResearch={(symbol) => startResearchForSymbol(symbol, { refreshJournal: true })}
       researchBusySymbol={researchKickoffSymbol}
       researchStatus={researchKickoffStatus}

@@ -276,6 +276,26 @@ async function mockApi(
         next_retry_at: null,
         resurface_at: null,
         state_reason: "thesis_review",
+      } : id === 9102 ? {
+        id,
+        kind: "thesis_actionable",
+        symbol: "CRDO",
+        thesis_id: "22ceaea3-9df3-416a-bfe5-107d3233dd59",
+        candidate_id: null,
+        severity: "decision",
+        status: "open",
+        fsm_state: "ready_for_review",
+        owner: "operator",
+        title: "CRDO thesis actionable",
+        reason: "Actionable up thesis with constructive setup.",
+        source: "thesis",
+        source_ref: {},
+        created_at: "2026-06-01T00:00:00Z",
+        resolved_at: null,
+        resolution_kind: null,
+        next_retry_at: null,
+        resurface_at: null,
+        state_reason: "thesis_actionable",
       } : null);
     if (!item) return null;
     const symbol = typeof item.symbol === "string" ? item.symbol : null;
@@ -619,6 +639,7 @@ async function mockApi(
             technical_pct_vs_200d: 3.2,
             freshness_status: "fresh",
             open_attention: 1,
+            review_packet_attention_id: 9102,
             open_evidence: 3,
             blocking_evidence: 0,
             due_source_tasks: 0,
@@ -655,6 +676,7 @@ async function mockApi(
               technical_pct_vs_200d: 3.2,
               freshness_status: "fresh",
               open_attention: 1,
+              review_packet_attention_id: 9102,
               open_evidence: 3,
               blocking_evidence: 0,
               due_source_tasks: 0,
@@ -676,6 +698,7 @@ async function mockApi(
               technical_pct_vs_200d: 26.5,
               freshness_status: "stale",
               open_attention: 1,
+              review_packet_attention_id: 7601,
               open_evidence: 1,
               blocking_evidence: 0,
               due_source_tasks: 1,
@@ -697,6 +720,7 @@ async function mockApi(
               technical_pct_vs_200d: 41.2,
               freshness_status: "blocked",
               open_attention: 2,
+              review_packet_attention_id: null,
               open_evidence: 1,
               blocking_evidence: 2,
               due_source_tasks: 3,
@@ -718,6 +742,7 @@ async function mockApi(
               technical_pct_vs_200d: 8.4,
               freshness_status: "missing",
               open_attention: 1,
+              review_packet_attention_id: 7001,
               open_evidence: 0,
               blocking_evidence: 0,
               due_source_tasks: 1,
@@ -2076,6 +2101,18 @@ test("journal page shows daily history and routes ticker entries", async ({ page
   await expect(page).toHaveURL(/\/symbol\/OKTA/);
   await expect(page.locator(".symbol-box input")).toHaveValue("OKTA");
   await expect(page.locator(".right .tabs button.active")).toHaveText("theses");
+});
+
+test("journal daily trade desk opens the matching review packet", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/journal/2026-06-01");
+
+  const tradeDesk = page.locator("[data-testid='daily-trade-desk']");
+  await tradeDesk.locator(".trade-section.consider").getByRole("button", { name: "Open review packet" }).click();
+
+  await expect(page).toHaveURL(/\/symbol\/CRDO/);
+  await expect(page.getByTestId("review-packet")).toContainText("CRDO review");
+  await expect(page.getByTestId("review-packet")).toContainText("Actionable up thesis with constructive setup.");
 });
 
 test("brain tab links to journal without embedding it", async ({ page }) => {

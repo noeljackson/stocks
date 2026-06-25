@@ -546,6 +546,7 @@ export interface BrainJournalMemoSymbol {
   technical_pct_vs_200d?: number | null;
   freshness_status?: string | null;
   open_attention?: number;
+  review_packet_attention_id?: number | null;
   open_evidence?: number;
   blocking_evidence?: number;
   due_source_tasks?: number;
@@ -566,6 +567,7 @@ export interface BrainJournalDecisionItem {
   technical_pct_vs_200d?: number | null;
   freshness_status?: string | null;
   open_attention?: number;
+  review_packet_attention_id?: number | null;
   open_evidence?: number;
   blocking_evidence?: number;
   due_source_tasks?: number;

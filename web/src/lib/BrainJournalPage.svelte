@@ -19,6 +19,7 @@
     onPageChange?: (page: number) => void;
     onOpenEntry?: (entry: BrainJournalEntry) => void;
     onOpenSymbol?: (symbol: string) => void;
+    onOpenReviewPacket?: (id: number, symbol?: string) => void | Promise<void>;
     onStartResearch?: (symbol: string) => void | Promise<void>;
     researchBusySymbol?: string | null;
     researchStatus?: string | null;
@@ -35,6 +36,7 @@
     onPageChange = (_page: number) => {},
     onOpenEntry = (_entry: BrainJournalEntry) => {},
     onOpenSymbol = (_symbol: string) => {},
+    onOpenReviewPacket = (_id: number, _symbol?: string) => {},
     onStartResearch = (_symbol: string) => {},
     researchBusySymbol = null as string | null,
     researchStatus = null as string | null,
@@ -165,11 +167,20 @@
   }
 
   function decisionAction(sectionKey: string, item: BrainJournalDecisionItem): string {
-    if ((item.open_attention ?? 0) > 0) return "Open review packet";
+    if (item.review_packet_attention_id) return "Open review packet";
+    if ((item.open_attention ?? 0) > 0) return "Open symbol";
     if (!item.thesis_id) return "Research first";
     if (sectionKey === "wait") return "Review thesis";
     if (sectionKey === "avoid") return "Open symbol";
     return "Review setup";
+  }
+
+  function openDecisionItem(item: BrainJournalDecisionItem) {
+    if (item.review_packet_attention_id) {
+      onOpenReviewPacket(item.review_packet_attention_id, item.symbol);
+      return;
+    }
+    onOpenSymbol(item.symbol);
   }
 
   function researchButtonLabel(symbol: string): string {
@@ -268,7 +279,7 @@
                     <small>{decisionMetric(item)}</small>
                     <em>{item.why_not}</em>
                     <div class="trade-actions">
-                      <button type="button" onclick={() => onOpenSymbol(item.symbol)}>
+                      <button type="button" onclick={() => openDecisionItem(item)}>
                         {decisionAction(section.key, item)}
                       </button>
                       {#if section.key === "research"}

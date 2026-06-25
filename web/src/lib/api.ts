@@ -371,9 +371,15 @@ export interface BrainLinkedTicker {
   symbol: string;
   role: string;
   rationale?: string | null;
+  mapping_conviction?: number | null;
   conviction?: number | null;
   thesis_state?: string | null;
   thesis_direction?: string | null;
+  thesis_conviction_tier?: string | null;
+  thesis_system_confidence?: string | null;
+  thesis_updated_at?: string | null;
+  link_created_at?: string | null;
+  link_stale?: boolean | null;
   open_theses?: number;
 }
 
@@ -828,11 +834,19 @@ export interface WatchlistParentTheme {
   state: string;
   direction: string;
   role: string;
+  mapping_conviction?: number | null;
   conviction?: number | null;
   rationale?: string | null;
   summary?: string | null;
   core_claim?: string | null;
   why_now?: string | null;
+  thesis_state?: string | null;
+  thesis_direction?: string | null;
+  thesis_conviction_tier?: string | null;
+  thesis_system_confidence?: string | null;
+  thesis_updated_at?: string | null;
+  link_created_at?: string | null;
+  link_stale?: boolean | null;
 }
 
 export interface WatchlistMember {

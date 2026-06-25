@@ -45,6 +45,7 @@
     type AttentionReviewPacket,
     type BrainJournal,
     type BrainJournalEntry,
+    type BrainLinkedTicker,
     type BrainOverview,
     type CognitionRun,
     type BrainSourceStatus,
@@ -599,6 +600,24 @@
     if (direction === "risk_on") return "risk on";
     if (direction === "risk_off") return "risk off";
     return direction.replace(/_/g, " ");
+  }
+
+  function brainTickerConvictionLabel(ticker: BrainLinkedTicker): string | null {
+    const thesisConviction = ticker.thesis_conviction_tier ?? ticker.thesis_system_confidence;
+    if (thesisConviction) return thesisConviction.replace(/_/g, " ");
+    if (typeof ticker.conviction === "number") return `${Math.round(ticker.conviction)}`;
+    return null;
+  }
+
+  function brainTickerTitle(ticker: BrainLinkedTicker): string {
+    const parts = [`${ticker.symbol} · ${ticker.role.replace(/_/g, " ")}`];
+    const conviction = brainTickerConvictionLabel(ticker);
+    if (conviction) parts.push(`live conviction ${conviction}`);
+    if (typeof ticker.mapping_conviction === "number") {
+      parts.push(`mapping ${Math.round(ticker.mapping_conviction)}`);
+    }
+    if (ticker.link_stale) parts.push("parent link predates latest thesis");
+    return parts.join(" · ");
   }
 
   async function openJournalEntry(entry: BrainJournalEntry) {
@@ -2889,14 +2908,29 @@
                     {#if thesis.tickers.length}
                       <div class="brain-tickers">
                         {#each thesis.tickers.slice(0, 12) as t (`${thesis.id}-${t.symbol}`)}
-                          <button type="button" class="brain-ticker" onclick={() => selectSymbol(t.symbol)}>
+                          {@const liveConviction = brainTickerConvictionLabel(t)}
+                          <button
+                            type="button"
+                            class:stale-link={Boolean(t.link_stale)}
+                            class="brain-ticker"
+                            title={brainTickerTitle(t)}
+                            onclick={() => selectSymbol(t.symbol)}
+                          >
                             <strong>{t.symbol}</strong>
-                            <span>{t.role}</span>
-                            {#if t.thesis_state}
-                              <span class="wl-thesis-state">{thesisStatusLabel(t.thesis_state)}</span>
-                            {/if}
-                            <span class={`badge tiny ${thesisDirectionClass(t.thesis_direction)}`}>
-                              {thesisDirectionLabel(t.thesis_direction)}
+                            <span class="brain-ticker-role">{t.role.replace(/_/g, " ")}</span>
+                            <span class="brain-ticker-badges">
+                              {#if t.thesis_state}
+                                <span class="wl-thesis-state">{thesisStatusLabel(t.thesis_state)}</span>
+                              {/if}
+                              <span class={`badge tiny ${thesisDirectionClass(t.thesis_direction)}`}>
+                                {thesisDirectionLabel(t.thesis_direction)}
+                              </span>
+                              {#if liveConviction}
+                                <span class="badge tiny brain-conviction">{liveConviction}</span>
+                              {/if}
+                              {#if t.link_stale}
+                                <span class="badge tiny warning">link stale</span>
+                              {/if}
                             </span>
                           </button>
                         {/each}
@@ -5233,7 +5267,7 @@
   }
   .brain-ticker {
     display: grid;
-    grid-template-columns: auto 1fr auto auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
     gap: .35rem;
     min-width: 0;
@@ -5247,10 +5281,27 @@
     font-size: .76rem;
     text-align: left;
   }
+  .brain-ticker.stale-link {
+    border-color: rgba(249, 226, 175, .4);
+  }
   .brain-ticker span {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .brain-ticker-role {
+    color: #8b95ad;
+  }
+  .brain-ticker .brain-ticker-badges {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: .25rem;
+    overflow: visible;
+  }
+  .brain-ticker .brain-ticker-badges > span {
+    overflow: visible;
     white-space: nowrap;
   }
   .brain-gaps {
@@ -5633,6 +5684,7 @@
   .badge.brain-not_monitored { background: rgba(137,180,250,.16); color: rgb(137,180,250); }
   .badge.brain-fresh-fresh,
   .badge.brain-dir-risk_on,
+  .badge.brain-conviction,
   .badge.brain-dir-bullish { background: rgba(166,227,161,.18); color: rgb(166,227,161); }
   .badge.brain-due,
   .badge.brain-stale,

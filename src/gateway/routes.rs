@@ -1324,11 +1324,34 @@ async fn relevant_brain_theses(
                   bt.summary, bt.core_claim, bt.why_now, bt.evidence,
                   bt.invalidation_conditions, bt.open_questions, bt.missing_evidence,
                   bt.last_evaluated_at, bt.version, btt.symbol AS linked_symbol,
-                  btt.role, btt.rationale, btt.conviction
+                  btt.role, btt.rationale,
+                  btt.conviction AS mapping_conviction,
+                  CASE WHEN btt.symbol IS NULL THEN NULL ELSE brain_ticker_live_conviction(
+                      btt.conviction,
+                      latest.conviction_tier,
+                      latest.system_confidence,
+                      latest.forecast
+                  )::double precision END AS conviction,
+                  latest.state AS thesis_state,
+                  latest.direction AS thesis_direction,
+                  latest.conviction_tier AS thesis_conviction_tier,
+                  latest.system_confidence AS thesis_system_confidence,
+                  latest.updated_at AS thesis_updated_at,
+                  btt.created_at AS link_created_at
              FROM brain_thesis bt
         LEFT JOIN brain_thesis_ticker btt
                ON btt.brain_thesis_id = bt.id
               AND btt.symbol = $1
+        LEFT JOIN LATERAL (
+                  SELECT th.state, th.forecast,
+                         th.forecast->>'direction' AS direction,
+                         th.conviction_tier, th.system_confidence, th.updated_at
+                    FROM thesis th
+                   WHERE th.symbol = btt.symbol
+                     AND th.state NOT IN ('closed', 'disqualified')
+                ORDER BY th.updated_at DESC, th.created_at DESC
+                   LIMIT 1
+             ) latest ON TRUE
             WHERE bt.active = true
               AND (bt.scope = 'macro' OR ($1::text IS NOT NULL AND btt.symbol = $1))
          ORDER BY CASE bt.scope WHEN 'macro' THEN 0 WHEN 'sector' THEN 1 ELSE 2 END,
@@ -1363,7 +1386,14 @@ async fn relevant_brain_theses(
                 "linked_symbol": r.try_get::<Option<String>, _>("linked_symbol")?,
                 "role": r.try_get::<Option<String>, _>("role")?,
                 "rationale": r.try_get::<Option<String>, _>("rationale")?,
+                "mapping_conviction": r.try_get::<Option<i32>, _>("mapping_conviction")?,
                 "conviction": r.try_get::<Option<f64>, _>("conviction")?,
+                "thesis_state": r.try_get::<Option<String>, _>("thesis_state")?,
+                "thesis_direction": r.try_get::<Option<String>, _>("thesis_direction")?,
+                "thesis_conviction_tier": r.try_get::<Option<String>, _>("thesis_conviction_tier")?,
+                "thesis_system_confidence": r.try_get::<Option<String>, _>("thesis_system_confidence")?,
+                "thesis_updated_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("thesis_updated_at")?,
+                "link_created_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("link_created_at")?,
             }))
         })
         .collect::<Result<_, _>>()
@@ -2668,18 +2698,40 @@ async fn get_brain_overview(State(gw): State<Arc<Gateway>>) -> impl IntoResponse
                         'symbol', btt.symbol,
                         'role', btt.role,
                         'rationale', btt.rationale,
-                        'conviction', btt.conviction,
+                        'mapping_conviction', btt.conviction,
+                        'conviction', brain_ticker_live_conviction(
+                            btt.conviction,
+                            latest.conviction_tier,
+                            latest.system_confidence,
+                            latest.forecast
+                        ),
                         'thesis_state', latest.state,
                         'thesis_direction', latest.direction,
+                        'thesis_conviction_tier', latest.conviction_tier,
+                        'thesis_system_confidence', latest.system_confidence,
+                        'thesis_updated_at', latest.updated_at,
+                        'link_created_at', btt.created_at,
+                        'link_stale', latest.updated_at IS NOT NULL
+                            AND btt.created_at IS NOT NULL
+                            AND latest.updated_at > btt.created_at,
                         'open_theses', COALESCE(open_count.n, 0)
-                    ) ORDER BY COALESCE(btt.conviction, 0) DESC, btt.symbol) AS tickers
+                    ) ORDER BY brain_ticker_live_conviction(
+                            btt.conviction,
+                            latest.conviction_tier,
+                            latest.system_confidence,
+                            latest.forecast
+                        ) DESC,
+                        latest.updated_at DESC NULLS LAST,
+                        btt.symbol) AS tickers
                FROM brain_thesis_ticker btt
           LEFT JOIN LATERAL (
-                    SELECT th.state, th.forecast->>'direction' AS direction
+                    SELECT th.state, th.forecast,
+                           th.forecast->>'direction' AS direction,
+                           th.conviction_tier, th.system_confidence, th.updated_at
                       FROM thesis th
                      WHERE th.symbol = btt.symbol
                        AND th.state NOT IN ('closed', 'disqualified')
-                  ORDER BY th.updated_at DESC
+                  ORDER BY th.updated_at DESC, th.created_at DESC
                      LIMIT 1
                 ) latest ON TRUE
           LEFT JOIN LATERAL (
@@ -3896,20 +3948,56 @@ async fn review_packet_candidate(
              FROM discovery_candidate dc
         LEFT JOIN discovery_classification dcl ON dcl.candidate_id = dc.id
         LEFT JOIN LATERAL (
-                  SELECT max(COALESCE(btt.conviction, 50))::double precision AS parent_theme_fit,
+                  SELECT max(brain_ticker_live_conviction(
+                             btt.conviction,
+                             latest.conviction_tier,
+                             latest.system_confidence,
+                             latest.forecast
+                         ))::double precision AS parent_theme_fit,
                          jsonb_agg(
                              jsonb_build_object(
                                  'key', bt.key,
                                  'name', bt.name,
                                  'scope', bt.scope,
                                  'role', btt.role,
-                                 'conviction', btt.conviction,
-                                 'rationale', btt.rationale
+                                 'mapping_conviction', btt.conviction,
+                                 'conviction', brain_ticker_live_conviction(
+                                     btt.conviction,
+                                     latest.conviction_tier,
+                                     latest.system_confidence,
+                                     latest.forecast
+                                 ),
+                                 'rationale', btt.rationale,
+                                 'thesis_state', latest.state,
+                                 'thesis_direction', latest.direction,
+                                 'thesis_conviction_tier', latest.conviction_tier,
+                                 'thesis_system_confidence', latest.system_confidence,
+                                 'thesis_updated_at', latest.updated_at,
+                                 'link_created_at', btt.created_at,
+                                 'link_stale', latest.updated_at IS NOT NULL
+                                     AND btt.created_at IS NOT NULL
+                                     AND latest.updated_at > btt.created_at
                              )
-                             ORDER BY COALESCE(btt.conviction, 0) DESC, bt.name
+                             ORDER BY brain_ticker_live_conviction(
+                                     btt.conviction,
+                                     latest.conviction_tier,
+                                     latest.system_confidence,
+                                     latest.forecast
+                                 ) DESC,
+                                 bt.name
                          ) AS parent_themes
                     FROM brain_thesis_ticker btt
                     JOIN brain_thesis bt ON bt.id = btt.brain_thesis_id
+               LEFT JOIN LATERAL (
+                         SELECT th.state, th.forecast,
+                                th.forecast->>'direction' AS direction,
+                                th.conviction_tier, th.system_confidence, th.updated_at
+                           FROM thesis th
+                          WHERE th.symbol = btt.symbol
+                            AND th.state NOT IN ('closed', 'disqualified')
+                       ORDER BY th.updated_at DESC, th.created_at DESC
+                          LIMIT 1
+                    ) latest ON TRUE
                    WHERE btt.symbol = dc.symbol
                      AND bt.active = true
                      AND bt.scope IN ('sector', 'theme')

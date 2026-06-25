@@ -3128,11 +3128,13 @@ impl Store {
             LEFT JOIN cluster c ON c.id = t.cluster_id
             LEFT JOIN LATERAL (
                 SELECT th.thesis_id, th.state, th.forecast->>'direction' AS direction,
+                       th.forecast, th.conviction_tier, th.system_confidence,
+                       th.updated_at,
                        COALESCE(th.last_evaluated_at, th.updated_at) AS evaluated_at
                   FROM thesis th
                  WHERE th.symbol = t.symbol
                    AND th.state NOT IN ('closed','disqualified')
-              ORDER BY th.updated_at DESC
+              ORDER BY th.updated_at DESC, th.created_at DESC
                  LIMIT 1
             ) latest ON TRUE
             LEFT JOIN LATERAL (
@@ -3273,9 +3275,29 @@ impl Store {
                            'state', bt.state,
                            'direction', bt.direction,
                            'role', btt.role,
-                           'conviction', btt.conviction
+                           'mapping_conviction', btt.conviction,
+                           'conviction', brain_ticker_live_conviction(
+                               btt.conviction,
+                               latest.conviction_tier,
+                               latest.system_confidence,
+                               latest.forecast
+                           ),
+                           'thesis_state', latest.state,
+                           'thesis_direction', latest.direction,
+                           'thesis_conviction_tier', latest.conviction_tier,
+                           'thesis_system_confidence', latest.system_confidence,
+                           'thesis_updated_at', latest.updated_at,
+                           'link_created_at', btt.created_at,
+                           'link_stale', latest.updated_at IS NOT NULL
+                               AND btt.created_at IS NOT NULL
+                               AND latest.updated_at > btt.created_at
                          )
-                         ORDER BY COALESCE(btt.conviction, 0) DESC, bt.name
+                         ORDER BY brain_ticker_live_conviction(
+                               btt.conviction,
+                               latest.conviction_tier,
+                               latest.system_confidence,
+                               latest.forecast
+                           ) DESC, bt.name
                        ), '[]'::jsonb) AS parent_themes
                   FROM brain_thesis_ticker btt
                   JOIN brain_thesis bt ON bt.id = btt.brain_thesis_id
@@ -3651,22 +3673,52 @@ impl Store {
                            'state', bt.state,
                            'direction', bt.direction,
                            'role', btt.role,
-                           'conviction', btt.conviction,
+                           'mapping_conviction', btt.conviction,
+                           'conviction', brain_ticker_live_conviction(
+                               btt.conviction,
+                               latest.conviction_tier,
+                               latest.system_confidence,
+                               latest.forecast
+                           ),
                            'rationale', btt.rationale,
                            'summary', bt.summary,
                            'core_claim', bt.core_claim,
-                           'why_now', bt.why_now
+                           'why_now', bt.why_now,
+                           'thesis_state', latest.state,
+                           'thesis_direction', latest.direction,
+                           'thesis_conviction_tier', latest.conviction_tier,
+                           'thesis_system_confidence', latest.system_confidence,
+                           'thesis_updated_at', latest.updated_at,
+                           'link_created_at', btt.created_at,
+                           'link_stale', latest.updated_at IS NOT NULL
+                               AND btt.created_at IS NOT NULL
+                               AND latest.updated_at > btt.created_at
                          )
                          ORDER BY CASE bt.scope
                                     WHEN 'macro' THEN 0
                                     WHEN 'sector' THEN 1
                                     ELSE 2
                                   END,
-                                  COALESCE(btt.conviction, 0) DESC,
+                                  brain_ticker_live_conviction(
+                                      btt.conviction,
+                                      latest.conviction_tier,
+                                      latest.system_confidence,
+                                      latest.forecast
+                                  ) DESC,
                                   bt.name
                        ), '[]'::jsonb) AS parent_themes
                   FROM brain_thesis_ticker btt
                   JOIN brain_thesis bt ON bt.id = btt.brain_thesis_id
+             LEFT JOIN LATERAL (
+                       SELECT th.state, th.forecast,
+                              th.forecast->>'direction' AS direction,
+                              th.conviction_tier, th.system_confidence, th.updated_at
+                         FROM thesis th
+                        WHERE th.symbol = btt.symbol
+                          AND th.state NOT IN ('closed', 'disqualified')
+                     ORDER BY th.updated_at DESC, th.created_at DESC
+                        LIMIT 1
+                  ) latest ON TRUE
                  WHERE btt.symbol = $1
                    AND bt.active = true"#,
         )
@@ -3859,7 +3911,12 @@ impl Store {
                            ON dp.symbol = dc.symbol
                           AND dp.dropped_at IS NULL
                     LEFT JOIN LATERAL (
-                        SELECT max(COALESCE(btt.conviction, 50))::double precision
+                        SELECT max(brain_ticker_live_conviction(
+                                   btt.conviction,
+                                   latest.conviction_tier,
+                                   latest.system_confidence,
+                                   latest.forecast
+                               ))::double precision
                                   AS parent_theme_fit,
                                jsonb_agg(
                                    jsonb_build_object(
@@ -3867,13 +3924,44 @@ impl Store {
                                        'name', bt.name,
                                        'scope', bt.scope,
                                        'role', btt.role,
-                                       'conviction', btt.conviction,
-                                       'rationale', btt.rationale
+                                       'mapping_conviction', btt.conviction,
+                                       'conviction', brain_ticker_live_conviction(
+                                           btt.conviction,
+                                           latest.conviction_tier,
+                                           latest.system_confidence,
+                                           latest.forecast
+                                       ),
+                                       'rationale', btt.rationale,
+                                       'thesis_state', latest.state,
+                                       'thesis_direction', latest.direction,
+                                       'thesis_conviction_tier', latest.conviction_tier,
+                                       'thesis_system_confidence', latest.system_confidence,
+                                       'thesis_updated_at', latest.updated_at,
+                                       'link_created_at', btt.created_at,
+                                       'link_stale', latest.updated_at IS NOT NULL
+                                           AND btt.created_at IS NOT NULL
+                                           AND latest.updated_at > btt.created_at
                                    )
-                                   ORDER BY COALESCE(btt.conviction, 0) DESC, bt.name
+                                   ORDER BY brain_ticker_live_conviction(
+                                           btt.conviction,
+                                           latest.conviction_tier,
+                                           latest.system_confidence,
+                                           latest.forecast
+                                       ) DESC,
+                                       bt.name
                                ) AS parent_themes
                           FROM brain_thesis_ticker btt
                           JOIN brain_thesis bt ON bt.id = btt.brain_thesis_id
+                     LEFT JOIN LATERAL (
+                               SELECT th.state, th.forecast,
+                                      th.forecast->>'direction' AS direction,
+                                      th.conviction_tier, th.system_confidence, th.updated_at
+                                 FROM thesis th
+                                WHERE th.symbol = btt.symbol
+                                  AND th.state NOT IN ('closed', 'disqualified')
+                             ORDER BY th.updated_at DESC, th.created_at DESC
+                                LIMIT 1
+                          ) latest ON TRUE
                          WHERE btt.symbol = dc.symbol
                            AND bt.active = true
                            AND bt.scope IN ('sector', 'theme')
@@ -4181,11 +4269,13 @@ impl Store {
                  FROM watchlist_member wm
             LEFT JOIN LATERAL (
                 SELECT th.thesis_id, th.state, th.forecast->>'direction' AS direction,
+                       th.forecast, th.conviction_tier, th.system_confidence,
+                       th.updated_at,
                        COALESCE(th.last_evaluated_at, th.updated_at) AS evaluated_at
                   FROM thesis th
                  WHERE th.symbol = wm.symbol
                    AND th.state NOT IN ('closed','disqualified')
-              ORDER BY th.updated_at DESC
+              ORDER BY th.updated_at DESC, th.created_at DESC
                  LIMIT 1
             ) latest ON TRUE
             LEFT JOIN LATERAL (
@@ -4326,9 +4416,29 @@ impl Store {
                            'state', bt.state,
                            'direction', bt.direction,
                            'role', btt.role,
-                           'conviction', btt.conviction
+                           'mapping_conviction', btt.conviction,
+                           'conviction', brain_ticker_live_conviction(
+                               btt.conviction,
+                               latest.conviction_tier,
+                               latest.system_confidence,
+                               latest.forecast
+                           ),
+                           'thesis_state', latest.state,
+                           'thesis_direction', latest.direction,
+                           'thesis_conviction_tier', latest.conviction_tier,
+                           'thesis_system_confidence', latest.system_confidence,
+                           'thesis_updated_at', latest.updated_at,
+                           'link_created_at', btt.created_at,
+                           'link_stale', latest.updated_at IS NOT NULL
+                               AND btt.created_at IS NOT NULL
+                               AND latest.updated_at > btt.created_at
                          )
-                         ORDER BY COALESCE(btt.conviction, 0) DESC, bt.name
+                         ORDER BY brain_ticker_live_conviction(
+                               btt.conviction,
+                               latest.conviction_tier,
+                               latest.system_confidence,
+                               latest.forecast
+                           ) DESC, bt.name
                        ), '[]'::jsonb) AS parent_themes
                   FROM brain_thesis_ticker btt
                   JOIN brain_thesis bt ON bt.id = btt.brain_thesis_id

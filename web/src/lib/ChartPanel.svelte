@@ -6,6 +6,7 @@
   import {
     createChart,
     CandlestickSeries,
+    CrosshairMode,
     HistogramSeries,
     LineSeries,
     LineStyle,
@@ -55,6 +56,13 @@
   };
   let interval = $state<Interval>("1D");
   let range = $state<Range>("ALL");
+  let crosshairMode = $state<"magnet" | "free" | "hidden">("magnet");
+  let indicatorsOpen = $state(false);
+  let showVolume = $state(true);
+  let showRsi = $state(true);
+  let showPso = $state(true);
+  let showPso32 = $state(true);
+  let visibleSma = $state<Record<number, boolean>>({ 20: true, 50: true, 100: true, 200: true });
 
   let container: HTMLDivElement | null = null;
   let chart: IChartApi | null = null;
@@ -215,6 +223,53 @@
     range = next;
   }
 
+  function setCrosshairMode(next: "magnet" | "free" | "hidden") {
+    crosshairMode = next;
+    chart?.applyOptions({ crosshair: { mode: crosshairModeValue() } });
+  }
+
+  function crosshairModeValue() {
+    if (crosshairMode === "free") return CrosshairMode.Normal;
+    if (crosshairMode === "hidden") return CrosshairMode.Hidden;
+    return CrosshairMode.Magnet;
+  }
+
+  function fitVisibleRange() {
+    chart?.timeScale().fitContent();
+  }
+
+  function toggleSma(window: number) {
+    visibleSma = { ...visibleSma, [window]: !visibleSma[window] };
+    render();
+  }
+
+  function resetIndicators() {
+    visibleSma = { 20: true, 50: true, 100: true, 200: true };
+    showVolume = true;
+    showRsi = true;
+    showPso = true;
+    showPso32 = true;
+    render();
+  }
+
+  function activeIndicatorCount() {
+    return SMA_WINDOWS.filter((window) => visibleSma[window]).length
+      + (showVolume ? 1 : 0)
+      + (showRsi ? 1 : 0)
+      + (showPso ? 1 : 0)
+      + (showPso32 ? 1 : 0);
+  }
+
+  function lastChange() {
+    if (!candles || candles.length < 2) return null;
+    const last = candles[candles.length - 1];
+    const prev = candles[candles.length - 2];
+    if (prev.close === 0) return null;
+    const diff = last.close - prev.close;
+    const pct = (diff / prev.close) * 100;
+    return { diff, pct, up: diff >= 0 };
+  }
+
   function smaLabel(window: number) {
     return `SMA ${window}D`;
   }
@@ -346,7 +401,7 @@
   }
 
   function hasSma(window: number) {
-    return smaData(window).length > 0;
+    return visibleSma[window] && smaData(window).length > 0;
   }
 
   function hasAnySma() {
@@ -422,7 +477,7 @@
       grid: { vertLines: { color: "#1f2733" }, horzLines: { color: "#1f2733" } },
       timeScale: { borderColor: "#2a3548", timeVisible: isIntraday(interval), rightOffset: 4 },
       rightPriceScale: { borderColor: "#2a3548" },
-      crosshair: { mode: 0 }, // Normal
+      crosshair: { mode: crosshairModeValue() },
     });
     priceSeries = chart.addSeries(CandlestickSeries, {
       upColor: "#a6e3a1", downColor: "#f38ba8",
@@ -562,18 +617,22 @@
       color: c.close >= c.open ? "rgba(166, 227, 161, 0.4)" : "rgba(243, 139, 168, 0.4)",
     }));
     priceSeries.setData(cs);
-    volSeries.setData(vs);
-    rsiSeries?.setData(rsiData(14));
-    psoSeries?.setData(psoData());
-    pso32Series?.setData(psoData(32, 5));
+    volSeries.setData(showVolume ? vs : []);
+    rsiSeries?.setData(showRsi ? rsiData(14) : []);
+    psoSeries?.setData(showPso ? psoData() : []);
+    pso32Series?.setData(showPso32 ? psoData(32, 5) : []);
     chart.timeScale().applyOptions({ timeVisible: isIntraday(interval), secondsVisible: false });
     for (const window of SMA_WINDOWS) {
       smaSeries.get(window)?.applyOptions({ title: smaLabel(window) });
-      smaSeries.get(window)?.setData(smaData(window));
+      smaSeries.get(window)?.setData(visibleSma[window] ? smaData(window) : []);
     }
     applyMarkers();
     if (cs.length > 0) chart.timeScale().fitContent();
   }
+
+  $effect(() => {
+    chart?.applyOptions({ crosshair: { mode: crosshairModeValue() } });
+  });
 
   $effect(() => {
     onStateChange({ interval, range });
@@ -610,61 +669,24 @@
 </script>
 
 <div class="chart-wrap">
-  <div class="toolbar">
-    <strong class="symbol-label">{symbol ?? "—"}</strong>
-    {#if candles && candles.length > 0}
-      {@const last = candles[candles.length - 1]}
-      <span class="meta">
-        <span class="muted">close</span>
-        <strong data-testid="chart-last-close">{last.close.toFixed(2)}</strong>
-      </span>
-      <span class="meta">
-        <span class="muted">{candles.length} bars</span>
-      </span>
-    {/if}
-    {#if coverage?.start && coverage?.end}
-      <span class="meta coverage" title={coverage.fetchError ?? ""}>
-        <span class="muted">coverage</span>
-        <strong>{coverage.start.slice(0, 10)} to {coverage.end.slice(0, 10)}</strong>
-        {#if coverage.fetchAttempts > 0}
-          <span class="muted">{coverage.fetchAttempts} fetches</span>
-        {/if}
-        {#if coverage.fetchError}
-          <span class="err">partial</span>
-        {/if}
-      </span>
-    {/if}
-    <span class="meta" data-testid="chart-interval-status">
-      <span class="muted">interval</span>
-      <strong>{interval}</strong>
-      <span class="muted">{range}</span>
-    </span>
-    <span class="meta" data-testid="chart-live-status">
-      <span class="muted">market data</span>
-      <strong>{liveStatusLabel()}</strong>
-    </span>
-    {#if events.length > 0}
-      <span class="meta"><span class="muted">{events.length} events</span></span>
-    {/if}
-    {#if hasAnySma()}
-      <span class="sma-legend" aria-label="SMA ribbon">
-        {#each SMA_WINDOWS as window}
-          {#if hasSma(window)}
-            <span class="sma-key" style={`--sma-color: ${SMA_COLORS[window]}`}>{smaLabel(window)}</span>
+  <div class="chart-topbar" data-testid="chart-topbar">
+    <div class="symbol-cluster">
+      <strong class="symbol-label">{symbol ?? "-"}</strong>
+      <span class="chart-kind">Candles</span>
+      {#if candles && candles.length > 0}
+        {@const last = candles[candles.length - 1]}
+        {@const move = lastChange()}
+        <span class="quote-line" class:up={move?.up} class:down={!!move && !move.up}>
+          <strong data-testid="chart-last-close">{last.close.toFixed(2)}</strong>
+          {#if move}
+            <span>{move.diff >= 0 ? "+" : ""}{move.diff.toFixed(2)}</span>
+            <span>{move.pct >= 0 ? "+" : ""}{move.pct.toFixed(2)}%</span>
           {/if}
-        {/each}
-      </span>
-    {/if}
-    {#if candles && candles.length > 14}
-      <span class="rsi-key" data-testid="rsi-legend">RSI 14</span>
-    {/if}
-    {#if candles && candles.length > 25}
-      <span class="pso-key" data-testid="pso-legend">PSO 8/25</span>
-    {/if}
-    {#if candles && candles.length > 32}
-      <span class="pso32-key" data-testid="pso32-legend">PSO 32</span>
-    {/if}
-    <span class="interval-picker" aria-label="Chart interval">
+        </span>
+      {/if}
+    </div>
+
+    <div class="interval-picker" aria-label="Chart interval">
       {#each INTERVALS as intv}
         <button
           class:active={interval === intv}
@@ -672,8 +694,144 @@
           onclick={() => chooseInterval(intv)}
         >{intv}</button>
       {/each}
+    </div>
+
+    <div class="top-actions">
+      <button
+        type="button"
+        class="toolbar-button"
+        class:active={indicatorsOpen}
+        data-testid="chart-indicators-button"
+        aria-expanded={indicatorsOpen}
+        aria-controls="chart-indicator-menu"
+        onclick={() => (indicatorsOpen = !indicatorsOpen)}
+      >
+        Indicators <span>{activeIndicatorCount()}</span>
+      </button>
+      <button type="button" class="toolbar-button" onclick={fitVisibleRange}>Fit</button>
+    </div>
+
+    <span class="meta sr-status" data-testid="chart-interval-status">
+      <span class="muted">interval</span>
+      <strong>{interval}</strong>
+      <span class="muted">{range}</span>
     </span>
-    <span class="range-picker" aria-label="Chart range">
+    <span class="meta" data-testid="chart-live-status">
+      <span class="status-dot status-{liveStatus}"></span>
+      <strong>{liveStatusLabel()}</strong>
+    </span>
+  </div>
+
+  {#if indicatorsOpen}
+    <div class="indicator-menu" id="chart-indicator-menu" data-testid="chart-indicator-menu">
+      {#each SMA_WINDOWS as window}
+        <label>
+          <input type="checkbox" checked={visibleSma[window]} onchange={() => toggleSma(window)} />
+          <span class="sma-key" style={`--sma-color: ${SMA_COLORS[window]}`}>{smaLabel(window)}</span>
+        </label>
+      {/each}
+      <label>
+        <input type="checkbox" checked={showVolume} onchange={() => { showVolume = !showVolume; render(); }} />
+        Volume
+      </label>
+      <label>
+        <input type="checkbox" checked={showRsi} onchange={() => { showRsi = !showRsi; render(); }} />
+        RSI 14
+      </label>
+      <label>
+        <input type="checkbox" checked={showPso} onchange={() => { showPso = !showPso; render(); }} />
+        PSO 8/25
+      </label>
+      <label>
+        <input type="checkbox" checked={showPso32} onchange={() => { showPso32 = !showPso32; render(); }} />
+        PSO 32
+      </label>
+      <button type="button" onclick={resetIndicators}>Reset</button>
+    </div>
+  {/if}
+
+  <div class="chart-stage">
+    <aside class="tool-rail" data-testid="chart-left-tools" aria-label="Chart tools">
+      <button
+        type="button"
+        class:active={crosshairMode === "magnet"}
+        title="Magnet crosshair"
+        aria-label="Magnet crosshair"
+        onclick={() => setCrosshairMode("magnet")}
+      ><span class="tool-icon icon-magnet"></span></button>
+      <button
+        type="button"
+        class:active={crosshairMode === "free"}
+        title="Free crosshair"
+        aria-label="Free crosshair"
+        onclick={() => setCrosshairMode("free")}
+      ><span class="tool-icon icon-crosshair"></span></button>
+      <button
+        type="button"
+        class:active={crosshairMode === "hidden"}
+        title="Hide crosshair"
+        aria-label="Hide crosshair"
+        onclick={() => setCrosshairMode("hidden")}
+      ><span class="tool-icon icon-pointer"></span></button>
+      <button type="button" title="Fit content" aria-label="Fit content" onclick={fitVisibleRange}>
+        <span class="tool-icon icon-fit"></span>
+      </button>
+    </aside>
+
+    <section class="chart-shell">
+      <div class="chart-overlay">
+        <div class="legend-stack">
+          {#if candles && candles.length > 0}
+            <span>{candles.length} bars</span>
+          {/if}
+          {#if coverage?.start && coverage?.end}
+            <span class="coverage" title={coverage.fetchError ?? ""}>
+              {coverage.start.slice(0, 10)} - {coverage.end.slice(0, 10)}
+              {#if coverage.fetchAttempts > 0} · {coverage.fetchAttempts} fetches{/if}
+              {#if coverage.fetchError} · partial{/if}
+            </span>
+          {/if}
+          {#if events.length > 0}
+            <span>{events.length} events</span>
+          {/if}
+        </div>
+        <div class="study-legend">
+          {#if hasAnySma()}
+            <span class="sma-legend" aria-label="SMA ribbon">
+              {#each SMA_WINDOWS as window}
+                {#if hasSma(window)}
+                  <span class="sma-key" style={`--sma-color: ${SMA_COLORS[window]}`}>{smaLabel(window)}</span>
+                {/if}
+              {/each}
+            </span>
+          {/if}
+          {#if candles && candles.length > 14 && showRsi}
+            <span class="rsi-key" data-testid="rsi-legend">RSI 14</span>
+          {/if}
+          {#if candles && candles.length > 25 && showPso}
+            <span class="pso-key" data-testid="pso-legend">PSO 8/25</span>
+          {/if}
+          {#if candles && candles.length > 32 && showPso32}
+            <span class="pso32-key" data-testid="pso32-legend">PSO 32</span>
+          {/if}
+        </div>
+      </div>
+
+      <div class="chart" bind:this={container}>
+        {#if !symbol}
+          <div class="empty muted">Select a symbol on the right.</div>
+        {:else if candles && candles.length === 0 && !loading}
+          <div class="empty muted">
+            No price bars for {symbol} at {interval} in this range.
+            Run <code>make run-ingest</code> to backfill.
+          </div>
+        {/if}
+      </div>
+    </section>
+  </div>
+
+  <div class="chart-bottombar">
+    <div class="range-picker" aria-label="Chart range">
       {#each RANGES as r}
         <button
           class:active={range === r}
@@ -681,88 +839,428 @@
           onclick={() => chooseRange(r)}
         >{r}</button>
       {/each}
-    </span>
-    {#if loading}<span class="muted">loading…</span>{/if}
-    {#if error}<span class="err">{error}</span>{/if}
-  </div>
-
-  <div class="chart" bind:this={container}>
-    {#if !symbol}
-      <div class="empty muted">Select a symbol on the right.</div>
-    {:else if candles && candles.length === 0 && !loading}
-      <div class="empty muted">
-        No price bars for {symbol} at {interval} in this range.
-        Run <code>make run-ingest</code> to backfill.
-      </div>
-    {/if}
+    </div>
+    <div class="bottom-status">
+      {#if loading}<span class="muted">loading...</span>{/if}
+      {#if error}<span class="err">{error}</span>{/if}
+    </div>
   </div>
 </div>
 
 <style>
   .chart-wrap {
-    display: flex; flex-direction: column;
-    height: 100%; min-height: 0;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
     background: #0b0e14;
+    color: #cdd6f4;
   }
-  .toolbar {
-    display: flex; gap: .75rem; align-items: baseline;
-    padding: .35rem .75rem;
+
+  .chart-topbar,
+  .chart-bottombar {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    min-height: 38px;
+    padding: .25rem .55rem;
     border-bottom: 1px solid #1f2733;
-    font-size: .85rem;
     flex-shrink: 0;
+    font-size: .78rem;
+    min-width: 0;
   }
-  .symbol-label { font-size: .95rem; }
-  .meta { display: flex; gap: .3rem; align-items: baseline; }
-  .sma-legend {
-    display: flex; gap: .45rem; align-items: baseline; flex-wrap: wrap;
+
+  .chart-bottombar {
+    border-top: 1px solid #1f2733;
+    border-bottom: none;
+    justify-content: space-between;
+  }
+
+  .symbol-cluster,
+  .top-actions,
+  .bottom-status,
+  .meta {
+    display: flex;
+    align-items: center;
+    gap: .35rem;
+    min-width: 0;
+  }
+
+  .symbol-cluster {
+    flex: 0 1 auto;
+  }
+
+  .symbol-label {
+    font-size: .98rem;
+    letter-spacing: 0;
+    white-space: nowrap;
+  }
+
+  .chart-kind {
+    border-left: 1px solid #263143;
+    padding-left: .45rem;
+    color: #9aa3b8;
+    white-space: nowrap;
+  }
+
+  .quote-line {
+    display: flex;
+    align-items: baseline;
+    gap: .28rem;
+    color: #9aa3b8;
+    white-space: nowrap;
+  }
+
+  .quote-line.up {
+    color: #a6e3a1;
+  }
+
+  .quote-line.down {
+    color: #f38ba8;
+  }
+
+  .interval-picker,
+  .range-picker {
+    display: flex;
+    gap: .12rem;
+    align-items: center;
+    flex-wrap: nowrap;
+    min-width: 0;
+  }
+
+  .interval-picker {
+    flex: 1 1 auto;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  .range-picker {
+    flex: 0 1 auto;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  .interval-picker button,
+  .range-picker button,
+  .toolbar-button,
+  .indicator-menu button {
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: #9aa3b8;
+    cursor: pointer;
+    font: inherit;
+    min-height: 28px;
+    padding: .18rem .45rem;
+    white-space: nowrap;
+  }
+
+  .toolbar-button {
+    border-color: #263143;
+    background: #0f141d;
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+  }
+
+  .toolbar-button span {
+    color: #cdd6f4;
+  }
+
+  .interval-picker button:hover,
+  .range-picker button:hover,
+  .toolbar-button:hover,
+  .indicator-menu button:hover {
+    color: #cdd6f4;
+    background: #151c28;
+    border-color: #344159;
+  }
+
+  .interval-picker button.active,
+  .range-picker button.active,
+  .toolbar-button.active {
+    background: #263143;
+    color: #f5f7fb;
+    border-color: #465873;
+  }
+
+  .indicator-menu {
+    display: flex;
+    align-items: center;
+    gap: .65rem;
+    flex-wrap: wrap;
+    padding: .38rem .55rem;
+    border-bottom: 1px solid #1f2733;
+    background: #0f141d;
+    font-size: .76rem;
+  }
+
+  .indicator-menu label {
+    display: inline-flex;
+    align-items: center;
+    gap: .3rem;
+    color: #bac2de;
+    white-space: nowrap;
+  }
+
+  .indicator-menu input {
+    accent-color: #89b4fa;
+  }
+
+  .chart-stage {
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr);
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .tool-rail {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: .25rem;
+    padding: .45rem .28rem;
+    border-right: 1px solid #1f2733;
+    background: #090d13;
+  }
+
+  .tool-rail button {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: #9aa3b8;
+    cursor: pointer;
+  }
+
+  .tool-rail button:hover,
+  .tool-rail button.active {
+    color: #f5f7fb;
+    background: #151c28;
+    border-color: #344159;
+  }
+
+  .tool-icon {
+    width: 16px;
+    height: 16px;
+    position: relative;
+    display: inline-block;
+  }
+
+  .icon-crosshair::before,
+  .icon-crosshair::after,
+  .icon-magnet::before,
+  .icon-magnet::after,
+  .icon-pointer::before,
+  .icon-fit::before,
+  .icon-fit::after {
+    content: "";
+    position: absolute;
+    background: currentColor;
+  }
+
+  .icon-crosshair::before {
+    width: 16px;
+    height: 1px;
+    top: 7px;
+    left: 0;
+  }
+
+  .icon-crosshair::after {
+    width: 1px;
+    height: 16px;
+    top: 0;
+    left: 7px;
+  }
+
+  .icon-magnet {
+    border: 2px solid currentColor;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    width: 14px;
+    height: 13px;
+  }
+
+  .icon-magnet::before,
+  .icon-magnet::after {
+    width: 4px;
+    height: 2px;
+    top: 0;
+  }
+
+  .icon-magnet::before {
+    left: -2px;
+  }
+
+  .icon-magnet::after {
+    right: -2px;
+  }
+
+  .icon-pointer::before {
+    width: 12px;
+    height: 12px;
+    clip-path: polygon(0 0, 12px 8px, 7px 10px, 5px 16px, 3px 15px, 5px 9px, 0 12px);
+    left: 2px;
+    top: 0;
+  }
+
+  .icon-fit::before {
+    inset: 2px;
+    border: 1px solid currentColor;
+    background: transparent;
+  }
+
+  .icon-fit::after {
+    width: 8px;
+    height: 1px;
+    top: 7px;
+    left: 4px;
+  }
+
+  .chart-shell {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+  }
+
+  .chart-overlay {
+    position: absolute;
+    top: .42rem;
+    left: .55rem;
+    right: 5.4rem;
+    z-index: 2;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: .75rem;
+    pointer-events: none;
+  }
+
+  .legend-stack,
+  .study-legend {
+    display: flex;
+    align-items: center;
+    gap: .45rem;
+    flex-wrap: wrap;
+    min-width: 0;
+    color: #9aa3b8;
     font-size: .72rem;
   }
+
+  .study-legend {
+    justify-content: flex-end;
+  }
+
+  .sma-legend {
+    display: flex;
+    gap: .45rem;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
   .sma-key {
     color: #bac2de;
-    display: inline-flex; gap: .25rem; align-items: center;
+    display: inline-flex;
+    gap: .25rem;
+    align-items: center;
+    white-space: nowrap;
   }
+
   .sma-key::before {
-    content: ""; width: .9rem; height: 2px; background: var(--sma-color);
-    display: inline-block; border-radius: 2px;
+    content: "";
+    width: .9rem;
+    height: 2px;
+    background: var(--sma-color);
+    display: inline-block;
+    border-radius: 2px;
   }
-  .rsi-key {
-    color: #fab387;
-    font-size: .72rem;
-    white-space: nowrap;
+
+  .rsi-key { color: #fab387; white-space: nowrap; }
+  .pso-key { color: #94e2d5; white-space: nowrap; }
+  .pso32-key { color: #cba6f7; white-space: nowrap; }
+
+  .status-dot {
+    width: .5rem;
+    height: .5rem;
+    border-radius: 999px;
+    background: #6c7693;
+    display: inline-block;
   }
-  .pso-key {
-    color: #94e2d5;
-    font-size: .72rem;
-    white-space: nowrap;
+
+  .status-live {
+    background: #a6e3a1;
   }
-  .pso32-key {
-    color: #cba6f7;
-    font-size: .72rem;
-    white-space: nowrap;
+
+  .status-delayed,
+  .status-market_closed,
+  .status-rate_limited {
+    background: #f9e2af;
   }
-  .interval-picker { margin-left: auto; }
-  .interval-picker,
-  .range-picker { display: flex; gap: .15rem; flex-wrap: wrap; justify-content: flex-end; }
-  .interval-picker button,
-  .range-picker button {
-    background: #11161f; color: #6c7693; border: 1px solid #1f2733;
-    border-radius: 3px; padding: .15rem .5rem; cursor: pointer; font: inherit;
-    font-size: .75rem;
+
+  .status-entitlement_blocked,
+  .status-disconnected {
+    background: #f38ba8;
   }
-  .interval-picker button:hover,
-  .range-picker button:hover { color: #cdd6f4; border-color: #2a3548; }
-  .interval-picker button.active,
-  .range-picker button.active {
-    background: #2a3548; color: #cdd6f4; border-color: #45567a;
+
+  .muted {
+    color: #6c7693;
   }
-  .err { color: #f38ba8; font-size: .8rem; }
+
+  .err {
+    color: #f38ba8;
+    font-size: .8rem;
+  }
+
   .chart {
-    flex: 1 1 auto; min-height: 0;
+    flex: 1 1 auto;
+    min-height: 0;
     position: relative;
   }
+
   .empty {
-    position: absolute; inset: 0;
-    display: flex; align-items: center; justify-content: center;
-    padding: 1rem; text-align: center;
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    text-align: center;
+  }
+
+  @media (max-width: 900px) {
+    .chart-topbar {
+      flex-wrap: wrap;
+      align-items: stretch;
+    }
+
+    .symbol-cluster,
+    .top-actions,
+    .meta {
+      min-height: 28px;
+    }
+
+    .interval-picker {
+      order: 3;
+      flex-basis: 100%;
+    }
+
+    .chart-stage {
+      grid-template-columns: 36px minmax(0, 1fr);
+    }
+
+    .tool-rail button {
+      width: 28px;
+      height: 28px;
+    }
+
+    .chart-overlay {
+      align-items: flex-start;
+      flex-direction: column;
+      right: 4.5rem;
+    }
   }
 </style>

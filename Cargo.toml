@@ -62,6 +62,10 @@ name = "discovery"
 path = "src/bin/discovery.rs"
 
 [[bin]]
+name = "price-alerts"
+path = "src/bin/price_alerts.rs"
+
+[[bin]]
 name = "llmsmoke"
 path = "src/bin/llmsmoke.rs"
 

@@ -171,7 +171,7 @@ web-e2e: ## Playwright UI workflow tests (mocked API, no DB mutation)
 # ---- run (local dev; build once with `make build`, then ./target/release/<bin>) ----
 # $(RUN) injects infisical when installed (see top of file). Override with
 # `make RUN= run-gateway` to bypass.
-.PHONY: run-gateway run-ingest run-regime run-router run-risk run-goalpost llmsmoke
+.PHONY: run-gateway run-ingest run-regime run-router run-risk run-goalpost run-price-alerts llmsmoke
 run-gateway: ## Run the gateway
 	$(RUN) cargo run --release --bin gateway
 
@@ -204,6 +204,9 @@ run-discovery: ## Run the discovery scanner (cheap-wide signals → discovery_ca
 
 run-reflection: ## Run the reflection service (predictions → outcomes → calibration)
 	$(RUN) cargo run --release --bin reflection
+
+run-price-alerts: ## Run the price alert evaluator (manual + AI price levels)
+	$(RUN) cargo run --release --bin price-alerts
 
 llmsmoke: ## One-shot LLM round-trip — picks transport from env (mock if no key)
 	$(RUN) cargo run --release --bin llmsmoke -- "$(MSG)"

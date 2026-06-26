@@ -2,7 +2,15 @@
   // ChartPanel — TradingView-style interval controls over lightweight-charts.
   // Renders OHLC + volume in the workspace chart pane.
   import { onMount } from "svelte";
-  import type { StreamEvent } from "./api";
+  import {
+    createPriceAlert,
+    disablePriceAlert,
+    fetchPriceAlertEvents,
+    fetchPriceAlerts,
+    type PriceAlertEvent,
+    type PriceAlertRule,
+    type StreamEvent,
+  } from "./api";
   import {
     createChart,
     CandlestickSeries,
@@ -12,6 +20,7 @@
     LineStyle,
     createSeriesMarkers,
     type IChartApi,
+    type IPriceLine,
     type ISeriesApi,
     type ISeriesMarkersPluginApi,
     type CandlestickData,
@@ -63,6 +72,13 @@
   let showPso = $state(true);
   let showPso32 = $state(true);
   let visibleSma = $state<Record<number, boolean>>({ 20: true, 50: true, 100: true, 200: true });
+  let alertMenuOpen = $state(false);
+  let alertDirection = $state<"above" | "below">("above");
+  let alertIntent = $state<"watch" | "entry" | "invalidation" | "exit">("watch");
+  let alertTarget = $state("");
+  let alertLabel = $state("");
+  let alertSaving = $state(false);
+  let alertError = $state<string | null>(null);
 
   let container: HTMLDivElement | null = null;
   let chart: IChartApi | null = null;
@@ -73,9 +89,12 @@
   let pso32Series: ISeriesApi<"Line"> | null = null;
   const smaSeries = new Map<number, ISeriesApi<"Line">>();
   let markersApi: ISeriesMarkersPluginApi<Time> | null = null;
+  let priceAlertLines: IPriceLine[] = [];
   let candles = $state<Candle[] | null>(null);
   let smaCandles = $state<Candle[] | null>(null);
   let events = $state<SymbolEvent[]>([]);
+  let priceAlerts = $state<PriceAlertRule[]>([]);
+  let priceAlertEvents = $state<PriceAlertEvent[]>([]);
   let coverage = $state<ChartCoverage | null>(null);
   let error = $state<string | null>(null);
   let loading = $state(false);
@@ -223,6 +242,20 @@
     range = next;
   }
 
+  function lastClose() {
+    return candles && candles.length > 0 ? candles[candles.length - 1].close : null;
+  }
+
+  function openAlertMenu() {
+    const close = lastClose();
+    alertTarget = close === null ? "" : close.toFixed(2);
+    alertLabel = symbol ? `${symbol} price watch` : "price watch";
+    alertDirection = "above";
+    alertIntent = "watch";
+    alertError = null;
+    alertMenuOpen = !alertMenuOpen;
+  }
+
   function setCrosshairMode(next: "magnet" | "free" | "hidden") {
     crosshairMode = next;
     chart?.applyOptions({ crosshair: { mode: crosshairModeValue() } });
@@ -250,6 +283,56 @@
     showPso = true;
     showPso32 = true;
     render();
+  }
+
+  async function refreshPriceAlerts(sym: string) {
+    const [rules, triggered] = await Promise.all([
+      fetchPriceAlerts({ symbol: sym }).catch(() => []),
+      fetchPriceAlertEvents({ symbol: sym }).catch(() => []),
+    ]);
+    priceAlerts = rules;
+    priceAlertEvents = triggered;
+    render();
+  }
+
+  async function saveManualAlert() {
+    if (!symbol) return;
+    const target = Number(alertTarget);
+    if (!Number.isFinite(target) || target <= 0) {
+      alertError = "Enter a positive target price.";
+      return;
+    }
+    alertSaving = true;
+    alertError = null;
+    try {
+      const created = await createPriceAlert({
+        symbol,
+        origin: "manual",
+        intent: alertIntent,
+        direction: alertDirection,
+        target_price: target,
+        label: alertLabel.trim() || `${symbol} ${alertDirection} ${target.toFixed(2)}`,
+        rationale: "Manual chart alert",
+        source_ref: { surface: "chart" },
+      });
+      priceAlerts = [created, ...priceAlerts.filter((rule) => rule.id !== created.id)];
+      alertMenuOpen = false;
+      render();
+    } catch (e) {
+      alertError = e instanceof Error ? e.message : String(e);
+    } finally {
+      alertSaving = false;
+    }
+  }
+
+  async function disableRule(rule: PriceAlertRule) {
+    try {
+      const updated = await disablePriceAlert(rule.id);
+      priceAlerts = priceAlerts.map((row) => row.id === updated.id ? updated : row);
+      render();
+    } catch (e) {
+      alertError = e instanceof Error ? e.message : String(e);
+    }
   }
 
   function activeIndicatorCount() {
@@ -281,15 +364,19 @@
     candles = [];
     smaCandles = [];
     events = [];
+    priceAlerts = [];
+    priceAlertEvents = [];
     coverage = null;
     clearSeries();
     try {
-      const [cRes, eRes, sRes] = await Promise.all([
+      const [cRes, eRes, sRes, nextPriceAlerts, nextPriceAlertEvents] = await Promise.all([
         fetch(`/api/candles?symbol=${encodeURIComponent(sym)}&range=${rng}&interval=${encodeURIComponent(intv)}`),
         fetch(`/api/symbol-events?symbol=${encodeURIComponent(sym)}&range=${rng}&interval=${encodeURIComponent(intv)}`),
         intv === "1D" && rng === "ALL"
           ? Promise.resolve(null)
           : fetch(`/api/candles?symbol=${encodeURIComponent(sym)}&range=ALL&interval=1D`),
+        fetchPriceAlerts({ symbol: sym }).catch(() => []),
+        fetchPriceAlertEvents({ symbol: sym }).catch(() => []),
       ]);
       if (!cRes.ok) throw new Error(await cRes.text() || `candles ${cRes.status}`);
       const nextCandles = (await cRes.json()) as Candle[];
@@ -306,6 +393,8 @@
       candles = nextCandles;
       smaCandles = nextSmaCandles;
       events = eRes.ok ? ((await eRes.json()) as SymbolEvent[]) : [];
+      priceAlerts = nextPriceAlerts;
+      priceAlertEvents = nextPriceAlertEvents;
       coverage = nextCoverage;
       render();
     } catch (e) {
@@ -314,6 +403,8 @@
       candles = [];
       smaCandles = [];
       events = [];
+      priceAlerts = [];
+      priceAlertEvents = [];
       coverage = null;
       render();
     } finally {
@@ -359,7 +450,42 @@
         dedup.set(k, { time: t, position: sty.position, color: sty.color, shape: sty.shape, text: sty.text });
       }
     }
+    for (const event of priceAlertEvents) {
+      const snapshot = event.rule_snapshot as Partial<PriceAlertRule> | undefined;
+      const label = typeof snapshot?.label === "string" ? snapshot.label : "price alert";
+      dedup.set(`price-alert-${event.id}`, {
+        time: toUtc(event.trigger_ts),
+        position: "aboveBar",
+        color: "#f9e2af",
+        shape: "square",
+        text: label,
+      });
+    }
     markersApi.setMarkers([...dedup.values()].sort((a, b) => (a.time as number) - (b.time as number)));
+  }
+
+  function clearPriceAlertLines() {
+    if (!priceSeries) {
+      priceAlertLines = [];
+      return;
+    }
+    for (const line of priceAlertLines) priceSeries.removePriceLine(line);
+    priceAlertLines = [];
+  }
+
+  function applyPriceAlertLines() {
+    if (!priceSeries) return;
+    clearPriceAlertLines();
+    priceAlertLines = priceAlerts
+      .filter((rule) => rule.status === "active")
+      .map((rule) => priceSeries!.createPriceLine({
+        price: rule.target_price,
+        color: rule.origin === "ai" ? "#89b4fa" : "#f9e2af",
+        lineWidth: 1,
+        lineStyle: rule.direction === "above" ? LineStyle.Dashed : LineStyle.Dotted,
+        axisLabelVisible: true,
+        title: `${rule.origin === "ai" ? "AI" : "Alert"} ${rule.intent}`,
+      }));
   }
 
   function clearSeries() {
@@ -371,6 +497,7 @@
     pso32Series?.setData([]);
     for (const series of smaSeries.values()) series.setData([]);
     markersApi?.setMarkers([]);
+    clearPriceAlertLines();
   }
 
   function smaData(window: number): LineData[] {
@@ -627,6 +754,7 @@
       smaSeries.get(window)?.setData(visibleSma[window] ? smaData(window) : []);
     }
     applyMarkers();
+    applyPriceAlertLines();
     if (cs.length > 0) chart.timeScale().fitContent();
   }
 
@@ -651,6 +779,11 @@
       liveStatus = "listening";
     }
     for (const event of [...liveEvents].reverse()) applyLiveMarketEvent(event);
+    if (symbol && liveEvents.some((event) =>
+      event.kind === "price_alert" && String(event.payload.symbol ?? "").toUpperCase() === symbol.toUpperCase()
+    )) {
+      void refreshPriceAlerts(symbol);
+    }
   });
 
   onMount(() => {
@@ -664,6 +797,7 @@
       pso32Series = null;
       smaSeries.clear();
       markersApi = null;
+      priceAlertLines = [];
     };
   });
 </script>
@@ -708,6 +842,15 @@
       >
         Indicators <span>{activeIndicatorCount()}</span>
       </button>
+      <button
+        type="button"
+        class="toolbar-button"
+        class:active={alertMenuOpen}
+        data-testid="chart-alert-button"
+        onclick={openAlertMenu}
+      >
+        Alert <span>{priceAlerts.filter((rule) => rule.status === "active").length}</span>
+      </button>
       <button type="button" class="toolbar-button" onclick={fitVisibleRange}>Fit</button>
     </div>
 
@@ -747,6 +890,42 @@
         PSO 32
       </label>
       <button type="button" onclick={resetIndicators}>Reset</button>
+    </div>
+  {/if}
+
+  {#if alertMenuOpen}
+    <div class="alert-menu" data-testid="chart-alert-menu">
+      <div class="alert-form">
+        <select bind:value={alertDirection} aria-label="Alert direction">
+          <option value="above">above</option>
+          <option value="below">below</option>
+        </select>
+        <select bind:value={alertIntent} aria-label="Alert intent">
+          <option value="watch">watch</option>
+          <option value="entry">entry</option>
+          <option value="invalidation">invalidation</option>
+          <option value="exit">exit</option>
+        </select>
+        <input inputmode="decimal" bind:value={alertTarget} placeholder="price" aria-label="Alert price" />
+        <input bind:value={alertLabel} placeholder="label" aria-label="Alert label" />
+        <button type="button" disabled={alertSaving || !symbol} onclick={saveManualAlert}>
+          {alertSaving ? "Saving..." : "Create"}
+        </button>
+      </div>
+      {#if alertError}
+        <span class="err">{alertError}</span>
+      {/if}
+      {#if priceAlerts.filter((rule) => rule.status === "active").length > 0}
+        <div class="alert-list">
+          {#each priceAlerts.filter((rule) => rule.status === "active").slice(0, 6) as rule (rule.id)}
+            <span class="alert-chip origin-{rule.origin}">
+              {rule.origin === "ai" ? "AI" : "manual"} {rule.direction} {rule.target_price.toFixed(2)}
+              <em>{rule.intent}</em>
+              <button type="button" title="disable alert" onclick={() => disableRule(rule)}>×</button>
+            </span>
+          {/each}
+        </div>
+      {/if}
     </div>
   {/if}
 
@@ -1005,6 +1184,89 @@
 
   .indicator-menu input {
     accent-color: #89b4fa;
+  }
+
+  .alert-menu {
+    display: grid;
+    gap: .45rem;
+    padding: .42rem .55rem;
+    border-bottom: 1px solid #1f2733;
+    background: #0f141d;
+    font-size: .76rem;
+  }
+
+  .alert-form,
+  .alert-list {
+    display: flex;
+    align-items: center;
+    gap: .35rem;
+    flex-wrap: wrap;
+  }
+
+  .alert-form select,
+  .alert-form input {
+    min-height: 28px;
+    border: 1px solid #263143;
+    border-radius: 4px;
+    background: #0a0d14;
+    color: #cdd6f4;
+    font: inherit;
+    padding: .18rem .4rem;
+  }
+
+  .alert-form input[aria-label="Alert price"] {
+    width: 7rem;
+  }
+
+  .alert-form input[aria-label="Alert label"] {
+    flex: 1 1 12rem;
+    min-width: 12rem;
+  }
+
+  .alert-form button,
+  .alert-chip button {
+    min-height: 28px;
+    border: 1px solid #2a3548;
+    border-radius: 4px;
+    background: #1b2230;
+    color: #cdd6f4;
+    font: inherit;
+    cursor: pointer;
+    padding: .18rem .55rem;
+  }
+
+  .alert-form button:disabled {
+    opacity: .55;
+    cursor: default;
+  }
+
+  .alert-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: .3rem;
+    max-width: 100%;
+    border: 1px solid #2a3548;
+    border-radius: 4px;
+    background: #11161f;
+    color: #bac2de;
+    padding: .12rem .28rem .12rem .42rem;
+    white-space: nowrap;
+  }
+
+  .alert-chip.origin-ai {
+    border-color: #344159;
+    color: #89b4fa;
+  }
+
+  .alert-chip em {
+    color: #6c7693;
+    font-style: normal;
+  }
+
+  .alert-chip button {
+    min-height: 20px;
+    padding: 0 .3rem;
+    line-height: 1;
   }
 
   .chart-stage {

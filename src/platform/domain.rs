@@ -68,6 +68,7 @@ pub enum AlertKind {
     Alignment,
     Consensus,
     Risk,
+    PriceAlert,
 }
 
 impl AlertKind {
@@ -78,6 +79,7 @@ impl AlertKind {
             Self::Alignment => "alignment",
             Self::Consensus => "consensus",
             Self::Risk => "risk",
+            Self::PriceAlert => "price_alert",
         }
     }
 }
@@ -368,6 +370,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&AlertKind::StateTransition).unwrap(),
             "\"state_transition\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AlertKind::PriceAlert).unwrap(),
+            "\"price_alert\""
         );
     }
 

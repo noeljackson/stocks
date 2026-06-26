@@ -2,7 +2,7 @@
 #
 # Single Rust image: builds the Svelte SPA, embeds it (via rust-embed at
 # compile time), then builds ALL Rust binaries (gateway, ingest, regime,
-# router, risk, goalpost, devpub) into one distroless image. Each k8s pod
+# router, risk, goalpost, devpub, etc.) into one distroless image. Each k8s pod
 # picks its own entrypoint with `command:` — one pull per node, one SBOM.
 
 FROM oven/bun:1.3.14-alpine AS web
@@ -44,7 +44,14 @@ COPY --from=build /app/target/release/gateway \
                   /app/target/release/router \
                   /app/target/release/risk \
                   /app/target/release/goalpost \
-                  /app/target/release/devpub /
+                  /app/target/release/devpub \
+                  /app/target/release/staler \
+                  /app/target/release/evaluator \
+                  /app/target/release/consensus \
+                  /app/target/release/reflection \
+                  /app/target/release/discovery \
+                  /app/target/release/price-alerts \
+                  /app/target/release/llmsmoke /
 USER nonroot
 EXPOSE 8080
 # No ENTRYPOINT — set `command:` per pod, e.g. ["/gateway"] or ["/ingest"].

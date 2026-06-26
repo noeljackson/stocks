@@ -85,6 +85,7 @@
   import TechnicalStatePanel from "./lib/TechnicalStatePanel.svelte";
   import ThesisDetails from "./lib/ThesisDetails.svelte";
   import ChartPanel from "./lib/ChartPanel.svelte";
+  import PriceAlertsPanel from "./lib/PriceAlertsPanel.svelte";
   import { PaneGroup, Pane, PaneResizer } from "paneforge";
 
   // ---------- workspace state ----------
@@ -1121,7 +1122,6 @@
     }
     return [...dirs].sort();
   });
-  // We don't have a per-symbol alerts endpoint yet; we filter globally.
   let showAcked = $state(false);
 
   // ---------- discovery review state (still uses the same model) ----------
@@ -4520,6 +4520,7 @@
                 {/if}
               {/if}
             {:else if rightTab === "alerts"}
+              <PriceAlertsPanel symbol={selectedSymbol} liveEvents={live} />
               <div class="alert-toolbar">
                 <label class="toggle"><input type="checkbox" bind:checked={showAcked} /> show acked</label>
               </div>
@@ -5560,7 +5561,7 @@
     background: #1b2230; color: #cdd6f4; border: 1px solid #2a3548;
     border-radius: 3px; padding: .05rem .35rem; font-size: .7rem; cursor: pointer;
   }
-  .alert-toolbar { margin-bottom: .4rem; }
+  .alert-toolbar { margin: .75rem 0 .4rem; }
   .toggle { display: flex; gap: .35rem; align-items: center; font-size: .75rem; color: #6c7693; cursor: pointer; }
 
   /* Discovery cards in drawer (same as before, compacted) */

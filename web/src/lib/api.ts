@@ -58,6 +58,99 @@ export async function ackAlert(id: number): Promise<void> {
   if (!r.ok && r.status !== 204) throw new Error(`ack ${r.status}`);
 }
 
+export interface PriceAlertRule {
+  id: number;
+  symbol: string;
+  thesis_id?: string | null;
+  origin: "manual" | "ai";
+  intent: "watch" | "entry" | "invalidation" | "exit";
+  direction: "above" | "below";
+  target_price: number;
+  label: string;
+  rationale?: string | null;
+  semantic_key?: string | null;
+  status: "active" | "triggered" | "disabled" | "expired";
+  source_ref?: Record<string, unknown>;
+  expires_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  triggered_at?: string | null;
+  disabled_at?: string | null;
+}
+
+export interface PriceAlertEvent {
+  id: number;
+  rule_id: number;
+  symbol: string;
+  thesis_id?: string | null;
+  triggered_at: string;
+  trigger_ts: string;
+  trigger_interval: string;
+  trigger_price: number;
+  rule_snapshot?: PriceAlertRule | Record<string, unknown>;
+}
+
+export interface PriceAlertRuleInput {
+  symbol: string;
+  thesis_id?: string | null;
+  origin?: "manual" | "ai";
+  intent?: "watch" | "entry" | "invalidation" | "exit";
+  direction: "above" | "below";
+  target_price: number;
+  label: string;
+  rationale?: string | null;
+  semantic_key?: string | null;
+  source_ref?: Record<string, unknown>;
+  expires_at?: string | null;
+}
+
+export type PriceAlertRulePatch = Partial<
+  Pick<PriceAlertRuleInput, "intent" | "direction" | "target_price" | "label" | "rationale" | "expires_at">
+> & { status?: PriceAlertRule["status"] };
+
+export async function fetchPriceAlerts(opts?: { symbol?: string; status?: string }): Promise<PriceAlertRule[]> {
+  const q = new URLSearchParams();
+  if (opts?.symbol) q.set("symbol", opts.symbol);
+  if (opts?.status) q.set("status", opts.status);
+  const r = await fetch(`/api/price-alerts${q.size ? `?${q}` : ""}`);
+  if (!r.ok) throw new Error(`price-alerts ${r.status}`);
+  return ((await r.json()) as PriceAlertRule[] | null) ?? [];
+}
+
+export async function createPriceAlert(input: PriceAlertRuleInput): Promise<PriceAlertRule> {
+  const r = await fetch("/api/price-alerts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!r.ok) throw new Error(`create price alert ${r.status}: ${await r.text()}`);
+  return (await r.json()) as PriceAlertRule;
+}
+
+export async function updatePriceAlert(id: number, patch: PriceAlertRulePatch): Promise<PriceAlertRule> {
+  const r = await fetch(`/api/price-alerts/${id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!r.ok) throw new Error(`update price alert ${r.status}: ${await r.text()}`);
+  return (await r.json()) as PriceAlertRule;
+}
+
+export async function disablePriceAlert(id: number): Promise<PriceAlertRule> {
+  const r = await fetch(`/api/price-alerts/${id}/disable`, { method: "POST" });
+  if (!r.ok) throw new Error(`disable price alert ${r.status}: ${await r.text()}`);
+  return (await r.json()) as PriceAlertRule;
+}
+
+export async function fetchPriceAlertEvents(opts?: { symbol?: string }): Promise<PriceAlertEvent[]> {
+  const q = new URLSearchParams();
+  if (opts?.symbol) q.set("symbol", opts.symbol);
+  const r = await fetch(`/api/price-alert-events${q.size ? `?${q}` : ""}`);
+  if (!r.ok) throw new Error(`price-alert-events ${r.status}`);
+  return ((await r.json()) as PriceAlertEvent[] | null) ?? [];
+}
+
 export async function fetchRegime(): Promise<MarketState> {
   const r = await fetch("/api/regime");
   if (!r.ok) throw new Error(`regime ${r.status}`);

@@ -3901,13 +3901,14 @@ impl Store {
                         (array_agg(ts ORDER BY ts DESC))[1] AS ts,
                         max(high::float8) AS high,
                         min(low::float8) AS low,
-                        (array_agg(close::float8 ORDER BY ts DESC))[1] AS close
+                        (array_agg(close::float8 ORDER BY ts DESC))[1] AS close,
+                        sum(volume::float8) AS volume
                    FROM price_bar
                   WHERE symbol = $1
                     AND ts > now() - ($2 || ' days')::interval
                GROUP BY 1
              )
-             SELECT ts, close, high, low
+             SELECT ts, close, high, low, volume
                FROM daily
               ORDER BY day ASC"#,
         )
@@ -3923,6 +3924,7 @@ impl Store {
                     close: r.try_get("close")?,
                     high: r.try_get("high")?,
                     low: r.try_get("low")?,
+                    volume: r.try_get("volume")?,
                 })
             })
             .collect()
@@ -3938,7 +3940,11 @@ impl Store {
         let rows = sqlx::query(
             r#"WITH bucketed AS (
                  SELECT to_timestamp(floor(extract(epoch FROM ts) / ($4::float8 * 60.0)) * ($4::float8 * 60.0)) AS bucket,
-                        ts, close::float8 AS close, high::float8 AS high, low::float8 AS low
+                        ts,
+                        close::float8 AS close,
+                        high::float8 AS high,
+                        low::float8 AS low,
+                        volume::float8 AS volume
                    FROM price_bar_intraday
                   WHERE symbol = $1
                     AND interval = $2
@@ -3947,7 +3953,8 @@ impl Store {
              SELECT bucket,
                     (array_agg(close ORDER BY ts DESC))[1] AS close,
                     max(high) AS high,
-                    min(low) AS low
+                    min(low) AS low,
+                    sum(volume) AS volume
                FROM bucketed
               GROUP BY bucket
               ORDER BY bucket ASC"#,
@@ -3966,6 +3973,7 @@ impl Store {
                     close: r.try_get("close")?,
                     high: r.try_get("high")?,
                     low: r.try_get("low")?,
+                    volume: r.try_get("volume")?,
                 })
             })
             .collect()

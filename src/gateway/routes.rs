@@ -28,7 +28,7 @@ use super::Gateway;
 use crate::llm::prompts;
 use crate::platform::{
     subjects,
-    technical::{TechnicalState, build_technical_state},
+    technical::{TechnicalState, build_technical_state_with_benchmarks},
 };
 use crate::web::Dist;
 
@@ -784,7 +784,27 @@ async fn technical_state_for(gw: &Gateway, symbol: &str) -> AnyResult<TechnicalS
             }
         }
     }
-    Ok(build_technical_state(symbol, &daily, &intraday))
+    let mut benchmarks = Vec::new();
+    for benchmark in ["QQQ", "SMH"] {
+        if benchmark.eq_ignore_ascii_case(symbol) {
+            continue;
+        }
+        match gw.store.daily_technical_bars_for(benchmark, 365 * 30).await {
+            Ok(rows) if !rows.is_empty() => benchmarks.push((benchmark, rows)),
+            Ok(_) => {
+                warn!(symbol = %symbol, benchmark, "technical benchmark bars unavailable");
+            }
+            Err(e) => {
+                warn!(symbol = %symbol, benchmark, error = %e, "get technical benchmark bars failed");
+            }
+        }
+    }
+    Ok(build_technical_state_with_benchmarks(
+        symbol,
+        &daily,
+        &intraday,
+        &benchmarks,
+    ))
 }
 
 async fn maybe_backfill_intraday(

@@ -755,6 +755,69 @@ export interface DailyTechnical {
   sma: SmaPoint[];
   pct_vs_252d_high?: number | null;
   pct_vs_252d_low?: number | null;
+  macd?: MacdTechnical | null;
+  dmi?: DmiTechnical | null;
+  atr?: AtrTechnical | null;
+  bollinger?: BollingerTechnical | null;
+  volume?: VolumeTechnical | null;
+  relative_strength?: RelativeStrengthTechnical[];
+}
+
+export interface MacdTechnical {
+  line: number;
+  signal: number;
+  histogram: number;
+  histogram_delta?: number | null;
+  state: string;
+}
+
+export interface DmiTechnical {
+  adx14: number;
+  plus_di14: number;
+  minus_di14: number;
+  state: string;
+}
+
+export interface AtrTechnical {
+  atr14: number;
+  natr14_pct: number;
+  state: string;
+}
+
+export interface BollingerTechnical {
+  middle20: number;
+  upper20: number;
+  lower20: number;
+  bandwidth_pct: number;
+  pct_b: number;
+  state: string;
+}
+
+export interface VolumeTechnical {
+  latest: number;
+  avg20?: number | null;
+  avg50?: number | null;
+  ratio_vs_20?: number | null;
+  state: string;
+}
+
+export interface RelativeStrengthTechnical {
+  benchmark: string;
+  rel_20d_pct?: number | null;
+  rel_60d_pct?: number | null;
+  rel_120d_pct?: number | null;
+  state: string;
+}
+
+export interface CrossTechnical {
+  trend_state: string;
+  momentum_state: string;
+  volatility_state: string;
+  volume_state: string;
+  relative_strength_state: string;
+  reversal_signal: string;
+  buy_timing: string;
+  summary: string;
 }
 
 export interface CrossEvent {
@@ -785,6 +848,7 @@ export interface TechnicalState {
   };
   summary: string;
   daily?: DailyTechnical | null;
+  cross?: CrossTechnical | null;
   intervals: IntervalTechnical[];
   last_crosses: CrossEvent[];
   analog_events: AnalogEvent[];

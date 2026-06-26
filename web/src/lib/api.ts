@@ -735,6 +735,14 @@ export interface IntervalTechnical {
   rsi_zone: string;
   rsi_zone_bars: number;
   rsi_zone_since?: string | null;
+  stochastic_k14?: number | null;
+  stochastic_d3?: number | null;
+  stochastic_zone: string;
+  stochastic_zone_bars: number;
+  pso?: number | null;
+  pso_delta?: number | null;
+  pso_zone: string;
+  pso_zone_bars: number;
 }
 
 export interface DailyTechnical {

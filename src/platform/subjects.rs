@@ -14,6 +14,7 @@ pub const CONTEXT_SHIFT: &str = "context.shift";
 pub const REGIME_STATE: &str = "regime.state";
 pub const REGIME_CAPITULATION: &str = "regime.capitulation";
 pub const MARKET_BAR_FILTER: &str = "market.bar.>";
+pub const POSITION_UPDATED: &str = "position.updated";
 
 // Discovery.
 pub const DISCOVERY_CANDIDATE: &str = "discovery.candidate";
@@ -35,11 +36,11 @@ pub const DECISION_RECORDED: &str = "decision.recorded";
 pub const STREAM_INGEST: &str = "INGEST"; // ingest.*
 pub const STREAM_CONTEXT: &str = "CONTEXT"; // context.*
 pub const STREAM_THESIS: &str = "THESIS"; // thesis.*
-pub const STREAM_MARKET: &str = "MARKET"; // regime.*, discovery.*, market.*
+pub const STREAM_MARKET: &str = "MARKET"; // regime.*, discovery.*, market.*, position.*
 pub const STREAM_DECISIONS: &str = "DECISIONS"; // risk.*, decision.*
 pub const STREAM_TICKER: &str = "TICKER"; // route.ticker.>
 pub const TICKER_ROUTE_FILTER: &str = "route.ticker.>";
-pub const MARKET_STREAM_SUBJECTS: &[&str] = &["regime.*", "discovery.*", "market.>"];
+pub const MARKET_STREAM_SUBJECTS: &[&str] = &["regime.*", "discovery.*", "market.>", "position.*"];
 
 /// Per-ticker routed subject (event router → context maintainer).
 #[must_use]
@@ -62,5 +63,6 @@ mod tests {
     fn market_stream_includes_bar_subjects() {
         assert_eq!(MARKET_BAR_FILTER, "market.bar.>");
         assert!(MARKET_STREAM_SUBJECTS.contains(&"market.>"));
+        assert!(MARKET_STREAM_SUBJECTS.contains(&"position.*"));
     }
 }

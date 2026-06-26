@@ -75,24 +75,41 @@
 
     <section class="tech-section">
       <div class="section-hdr">
-        <h4>RSI By Interval</h4>
+        <h4>Momentum By Interval</h4>
       </div>
-      <table class="tech-table">
-        <thead>
-          <tr><th>bar</th><th>close</th><th>RSI 14</th><th>zone</th><th>span</th></tr>
-        </thead>
-        <tbody>
-          {#each state.intervals as interval (interval.interval)}
+      <div class="table-scroll">
+        <table class="tech-table">
+          <thead>
             <tr>
-              <td>{interval.interval}</td>
-              <td>{num(interval.close)}</td>
-              <td>{num(interval.rsi14)}</td>
-              <td><span class="zone zone-{interval.rsi_zone}">{titleize(interval.rsi_zone)}</span></td>
-              <td>{interval.rsi_zone_bars > 0 ? `${interval.rsi_zone_bars} bars` : "-"}</td>
+              <th>bar</th>
+              <th>close</th>
+              <th>RSI 14</th>
+              <th>Stoch %K/%D</th>
+              <th>PSO 8/25</th>
+              <th>zone</th>
+              <th>span</th>
             </tr>
-          {/each}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {#each state.intervals as interval (interval.interval)}
+              <tr>
+                <td>{interval.interval}</td>
+                <td>{num(interval.close)}</td>
+                <td>{num(interval.rsi14)}</td>
+                <td>{num(interval.stochastic_k14)} / {num(interval.stochastic_d3)}</td>
+                <td>
+                  {num(interval.pso)}
+                  {#if interval.pso_delta !== null && interval.pso_delta !== undefined}
+                    <span class:pos={interval.pso_delta > 0} class:neg={interval.pso_delta < 0}>({interval.pso_delta > 0 ? "+" : ""}{num(interval.pso_delta)})</span>
+                  {/if}
+                </td>
+                <td><span class="zone zone-{interval.pso_zone}">{titleize(interval.pso_zone)}</span></td>
+                <td>{interval.pso_zone_bars > 0 ? `${interval.pso_zone_bars} bars` : "-"}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <section class="tech-section">
@@ -270,6 +287,10 @@
     width: 100%;
     border-collapse: collapse;
     font-size: .78rem;
+  }
+
+  .table-scroll {
+    overflow-x: auto;
   }
 
   .tech-table th,

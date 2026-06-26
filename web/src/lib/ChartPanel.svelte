@@ -61,6 +61,7 @@
   let priceSeries: ISeriesApi<"Candlestick"> | null = null;
   let volSeries: ISeriesApi<"Histogram"> | null = null;
   let rsiSeries: ISeriesApi<"Line"> | null = null;
+  let psoSeries: ISeriesApi<"Line"> | null = null;
   const smaSeries = new Map<number, ISeriesApi<"Line">>();
   let markersApi: ISeriesMarkersPluginApi<Time> | null = null;
   let candles = $state<Candle[] | null>(null);
@@ -310,6 +311,7 @@
     priceSeries?.setData([]);
     volSeries?.setData([]);
     rsiSeries?.setData([]);
+    psoSeries?.setData([]);
     for (const series of smaSeries.values()) series.setData([]);
     markersApi?.setMarkers([]);
   }
@@ -373,6 +375,40 @@
       out.push({ time: toUtc(candles[i].time), value: toRsi() });
     }
     return out;
+  }
+
+  function emaOptional(values: (number | null)[], window: number): (number | null)[] {
+    const out = values.map(() => null as number | null);
+    if (window <= 0) return out;
+    const alpha = 2 / (window + 1);
+    let ema: number | null = null;
+    values.forEach((value, idx) => {
+      if (value === null) return;
+      ema = ema === null ? value : (alpha * value) + ((1 - alpha) * ema);
+      out[idx] = ema;
+    });
+    return out;
+  }
+
+  function psoData(stochasticWindow = 8, smoothingWindow = 5): LineData[] {
+    if (!candles || candles.length < stochasticWindow) return [];
+    const stochastic = candles.map((c, idx) => {
+      if (idx + 1 < stochasticWindow) return null;
+      const slice = candles!.slice(idx + 1 - stochasticWindow, idx + 1);
+      const high = Math.max(...slice.map((bar) => bar.high));
+      const low = Math.min(...slice.map((bar) => bar.low));
+      const range = high - low;
+      if (Math.abs(range) < Number.EPSILON) return 50;
+      return Math.max(0, Math.min(100, ((c.close - low) / range) * 100));
+    });
+    const normalized = stochastic.map((value) => value === null ? null : 0.1 * (value - 50));
+    const first = emaOptional(normalized, smoothingWindow);
+    const second = emaOptional(first, smoothingWindow);
+    return second.flatMap((value, idx) => {
+      if (value === null) return [];
+      const exp = Math.exp(value);
+      return [{ time: toUtc(candles![idx].time), value: (exp - 1) / (exp + 1) }];
+    });
   }
 
   function ensureChart() {
@@ -449,8 +485,55 @@
       axisLabelVisible: true,
       title: "30",
     });
+    psoSeries = chart.addSeries(LineSeries, {
+      color: "#94e2d5",
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: true,
+      crosshairMarkerVisible: true,
+      priceScaleId: "pso",
+      title: "PSO 8/25",
+      priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+    }, 2);
+    chart.priceScale("pso", 2).applyOptions({
+      scaleMargins: { top: 0.12, bottom: 0.12 },
+      borderColor: "#2a3548",
+    });
+    psoSeries.createPriceLine({
+      price: 0.9,
+      color: "rgba(243, 139, 168, 0.7)",
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      axisLabelVisible: true,
+      title: "+0.9",
+    });
+    psoSeries.createPriceLine({
+      price: 0.2,
+      color: "rgba(186, 194, 222, 0.35)",
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      axisLabelVisible: false,
+      title: "+0.2",
+    });
+    psoSeries.createPriceLine({
+      price: -0.2,
+      color: "rgba(186, 194, 222, 0.35)",
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      axisLabelVisible: false,
+      title: "-0.2",
+    });
+    psoSeries.createPriceLine({
+      price: -0.9,
+      color: "rgba(166, 227, 161, 0.7)",
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      axisLabelVisible: true,
+      title: "-0.9",
+    });
     chart.panes()[0]?.setStretchFactor(4);
     chart.panes()[1]?.setStretchFactor(1);
+    chart.panes()[2]?.setStretchFactor(1);
     markersApi = createSeriesMarkers(priceSeries, []);
   }
 
@@ -469,6 +552,7 @@
     priceSeries.setData(cs);
     volSeries.setData(vs);
     rsiSeries?.setData(rsiData(14));
+    psoSeries?.setData(psoData());
     chart.timeScale().applyOptions({ timeVisible: isIntraday(interval), secondsVisible: false });
     for (const window of SMA_WINDOWS) {
       smaSeries.get(window)?.applyOptions({ title: smaLabel(window) });
@@ -504,6 +588,7 @@
       priceSeries = null;
       volSeries = null;
       rsiSeries = null;
+      psoSeries = null;
       smaSeries.clear();
       markersApi = null;
     };
@@ -558,6 +643,9 @@
     {/if}
     {#if candles && candles.length > 14}
       <span class="rsi-key" data-testid="rsi-legend">RSI 14</span>
+    {/if}
+    {#if candles && candles.length > 25}
+      <span class="pso-key" data-testid="pso-legend">PSO 8/25</span>
     {/if}
     <span class="interval-picker" aria-label="Chart interval">
       {#each INTERVALS as intv}
@@ -622,6 +710,11 @@
   }
   .rsi-key {
     color: #fab387;
+    font-size: .72rem;
+    white-space: nowrap;
+  }
+  .pso-key {
+    color: #94e2d5;
     font-size: .72rem;
     white-space: nowrap;
   }

@@ -4,12 +4,13 @@ version = "0.1.0"
 description = "Trading intelligence — Python services (LLM/ML/research)"
 requires-python = ">=3.12"
 # Exact pins (same hygiene as the frontend; the May-2026 wave hit PyPI too).
-# Verified against PyPI 2026-05-30.
+# Verified against PyPI 2026-06-26.
 dependencies = [
   "pydantic==2.12.4",
   "asyncpg==0.31.0",
   "nats-py==2.12.0",
   "httpx==0.28.1",
+  "ib-insync==0.9.86",
 ]
 
 [project.optional-dependencies]

@@ -240,6 +240,33 @@ services:
       nats:
         condition: service_healthy
 
+  ibkr-sync:
+    image: python:3.12-slim
+    container_name: stocks-ibkr-sync
+    profiles: ["ibkr"]
+    working_dir: /repo/py
+    volumes:
+      - ../..:/repo
+    environment:
+      - DATABASE_URL=postgres://stocks:stocks_dev_only@postgres:5432/stocks?sslmode=disable
+      - NATS_URL=nats://nats:4222
+      - IBKR_HOST=${IBKR_HOST:-host.docker.internal}
+      - IBKR_PORT=${IBKR_PORT:-7497}
+      - IBKR_CLIENT_ID=${IBKR_CLIENT_ID:-81}
+      - IBKR_ACCOUNT
+      - IBKR_READONLY=${IBKR_READONLY:-true}
+      - IBKR_TIMEOUT_SECONDS=${IBKR_TIMEOUT_SECONDS:-6}
+      - IBKR_SYNC_INTERVAL_SECONDS=${IBKR_SYNC_INTERVAL_SECONDS:-30}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: >-
+      sh -c "pip install -q -e . && python -m stocks.ibkr_sync --loop"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
 volumes:
   cargo-cache:
   web-node-modules:

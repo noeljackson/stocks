@@ -62,6 +62,7 @@
   let volSeries: ISeriesApi<"Histogram"> | null = null;
   let rsiSeries: ISeriesApi<"Line"> | null = null;
   let psoSeries: ISeriesApi<"Line"> | null = null;
+  let pso32Series: ISeriesApi<"Line"> | null = null;
   const smaSeries = new Map<number, ISeriesApi<"Line">>();
   let markersApi: ISeriesMarkersPluginApi<Time> | null = null;
   let candles = $state<Candle[] | null>(null);
@@ -312,6 +313,7 @@
     volSeries?.setData([]);
     rsiSeries?.setData([]);
     psoSeries?.setData([]);
+    pso32Series?.setData([]);
     for (const series of smaSeries.values()) series.setData([]);
     markersApi?.setMarkers([]);
   }
@@ -531,6 +533,16 @@
       axisLabelVisible: true,
       title: "-0.9",
     });
+    pso32Series = chart.addSeries(LineSeries, {
+      color: "#cba6f7",
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: true,
+      crosshairMarkerVisible: true,
+      priceScaleId: "pso",
+      title: "PSO 32",
+      priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+    }, 2);
     chart.panes()[0]?.setStretchFactor(4);
     chart.panes()[1]?.setStretchFactor(1);
     chart.panes()[2]?.setStretchFactor(1);
@@ -553,6 +565,7 @@
     volSeries.setData(vs);
     rsiSeries?.setData(rsiData(14));
     psoSeries?.setData(psoData());
+    pso32Series?.setData(psoData(32, 5));
     chart.timeScale().applyOptions({ timeVisible: isIntraday(interval), secondsVisible: false });
     for (const window of SMA_WINDOWS) {
       smaSeries.get(window)?.applyOptions({ title: smaLabel(window) });
@@ -589,6 +602,7 @@
       volSeries = null;
       rsiSeries = null;
       psoSeries = null;
+      pso32Series = null;
       smaSeries.clear();
       markersApi = null;
     };
@@ -646,6 +660,9 @@
     {/if}
     {#if candles && candles.length > 25}
       <span class="pso-key" data-testid="pso-legend">PSO 8/25</span>
+    {/if}
+    {#if candles && candles.length > 32}
+      <span class="pso32-key" data-testid="pso32-legend">PSO 32</span>
     {/if}
     <span class="interval-picker" aria-label="Chart interval">
       {#each INTERVALS as intv}
@@ -715,6 +732,11 @@
   }
   .pso-key {
     color: #94e2d5;
+    font-size: .72rem;
+    white-space: nowrap;
+  }
+  .pso32-key {
+    color: #cba6f7;
     font-size: .72rem;
     white-space: nowrap;
   }

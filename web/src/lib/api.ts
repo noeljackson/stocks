@@ -743,6 +743,10 @@ export interface IntervalTechnical {
   pso_delta?: number | null;
   pso_zone: string;
   pso_zone_bars: number;
+  pso32?: number | null;
+  pso32_delta?: number | null;
+  pso32_zone: string;
+  pso32_zone_bars: number;
 }
 
 export interface DailyTechnical {

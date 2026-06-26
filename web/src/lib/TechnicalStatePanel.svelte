@@ -86,6 +86,7 @@
               <th>RSI 14</th>
               <th>Stoch %K/%D</th>
               <th>PSO 8/25</th>
+              <th>PSO 32</th>
               <th>zone</th>
               <th>span</th>
             </tr>
@@ -103,8 +104,22 @@
                     <span class:pos={interval.pso_delta > 0} class:neg={interval.pso_delta < 0}>({interval.pso_delta > 0 ? "+" : ""}{num(interval.pso_delta)})</span>
                   {/if}
                 </td>
-                <td><span class="zone zone-{interval.pso_zone}">{titleize(interval.pso_zone)}</span></td>
-                <td>{interval.pso_zone_bars > 0 ? `${interval.pso_zone_bars} bars` : "-"}</td>
+                <td>
+                  {num(interval.pso32)}
+                  {#if interval.pso32_delta !== null && interval.pso32_delta !== undefined}
+                    <span class:pos={interval.pso32_delta > 0} class:neg={interval.pso32_delta < 0}>({interval.pso32_delta > 0 ? "+" : ""}{num(interval.pso32_delta)})</span>
+                  {/if}
+                </td>
+                <td class="zone-stack">
+                  <span class="zone zone-{interval.pso_zone}">8 {titleize(interval.pso_zone)}</span>
+                  <span class="zone zone-{interval.pso32_zone}">32 {titleize(interval.pso32_zone)}</span>
+                </td>
+                <td>
+                  {interval.pso_zone_bars > 0 ? `${interval.pso_zone_bars}` : "-"}
+                  /
+                  {interval.pso32_zone_bars > 0 ? `${interval.pso32_zone_bars}` : "-"}
+                  bars
+                </td>
               </tr>
             {/each}
           </tbody>
@@ -304,6 +319,12 @@
   .tech-table th {
     color: #6c7693;
     font-weight: 500;
+  }
+
+  .zone-stack {
+    display: flex;
+    gap: .25rem;
+    flex-wrap: wrap;
   }
 
   .event-list {

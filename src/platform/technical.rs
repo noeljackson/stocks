@@ -39,6 +39,10 @@ pub struct IntervalTechnical {
     pub pso_delta: Option<f64>,
     pub pso_zone: String,
     pub pso_zone_bars: usize,
+    pub pso32: Option<f64>,
+    pub pso32_delta: Option<f64>,
+    pub pso32_zone: String,
+    pub pso32_zone_bars: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -172,10 +176,14 @@ fn interval_state(interval: &str, bars: &[TechnicalBar]) -> IntervalTechnical {
         latest_stochastic_k.map_or_else(|| "unknown".to_string(), stochastic_zone);
     let (stochastic_zone_bars, _) =
         current_zone_span(bars, &stochastic_k, &stochastic_zone_name, stochastic_zone);
-    let pso = pso_series(bars);
+    let pso = pso_series(bars, 8, 5);
     let latest_pso = pso.last().copied().flatten();
     let pso_zone_name = latest_pso.map_or_else(|| "unknown".to_string(), pso_zone);
     let (pso_zone_bars, _) = current_zone_span(bars, &pso, &pso_zone_name, pso_zone);
+    let pso32 = pso_series(bars, 32, 5);
+    let latest_pso32 = pso32.last().copied().flatten();
+    let pso32_zone_name = latest_pso32.map_or_else(|| "unknown".to_string(), pso_zone);
+    let (pso32_zone_bars, _) = current_zone_span(bars, &pso32, &pso32_zone_name, pso_zone);
     IntervalTechnical {
         interval: interval.to_string(),
         bars: bars.len(),
@@ -193,6 +201,10 @@ fn interval_state(interval: &str, bars: &[TechnicalBar]) -> IntervalTechnical {
         pso_delta: latest_delta(&pso),
         pso_zone: pso_zone_name,
         pso_zone_bars,
+        pso32: latest_pso32.map(round2),
+        pso32_delta: latest_delta(&pso32),
+        pso32_zone: pso32_zone_name,
+        pso32_zone_bars,
     }
 }
 
@@ -388,6 +400,10 @@ fn state_summary(
         .iter()
         .find(|i| i.interval == "1d")
         .and_then(|i| i.pso);
+    let pso32_1d = intervals
+        .iter()
+        .find(|i| i.interval == "1d")
+        .and_then(|i| i.pso32);
     let mut parts = vec![format!("technical state is {state}")];
     if let Some(v) = pct_200 {
         parts.push(format!("{v:+.1}% vs 200-day SMA"));
@@ -400,6 +416,9 @@ fn state_summary(
     }
     if let Some(v) = pso_1d {
         parts.push(format!("PSO 8/25 {v:.2}"));
+    }
+    if let Some(v) = pso32_1d {
+        parts.push(format!("PSO 32 {v:.2}"));
     }
     if let Some(v) = d.pct_vs_252d_high {
         parts.push(format!("{v:+.1}% vs 252-day high"));
@@ -440,11 +459,12 @@ fn oscillator_extended(interval: &IntervalTechnical) -> bool {
 }
 
 fn pso_extreme(interval: &IntervalTechnical) -> bool {
-    interval.pso.is_some_and(|v| v >= 0.9)
+    interval.pso.is_some_and(|v| v >= 0.9) || interval.pso32.is_some_and(|v| v >= 0.9)
 }
 
 fn oscillator_weak(interval: &IntervalTechnical) -> bool {
     interval.pso.is_some_and(|v| v <= -0.2)
+        || interval.pso32.is_some_and(|v| v <= -0.2)
         || (interval.stochastic_k14.is_some_and(|v| v <= 20.0)
             && interval.stochastic_d3.is_some_and(|v| v <= 25.0))
 }
@@ -668,16 +688,18 @@ fn ema_optional(values: &[Option<f64>], window: usize) -> Vec<Option<f64>> {
     out
 }
 
-fn pso_series(bars: &[TechnicalBar]) -> Vec<Option<f64>> {
-    const STOCHASTIC_WINDOW: usize = 8;
-    const SMOOTHING_WINDOW: usize = 5;
-    let stochastic = stochastic_k_series(bars, STOCHASTIC_WINDOW);
+fn pso_series(
+    bars: &[TechnicalBar],
+    stochastic_window: usize,
+    smoothing_window: usize,
+) -> Vec<Option<f64>> {
+    let stochastic = stochastic_k_series(bars, stochastic_window);
     let normalized = stochastic
         .iter()
         .map(|value| value.map(|k| 0.1 * (k - 50.0)))
         .collect::<Vec<_>>();
-    let first = ema_optional(&normalized, SMOOTHING_WINDOW);
-    let second = ema_optional(&first, SMOOTHING_WINDOW);
+    let first = ema_optional(&normalized, smoothing_window);
+    let second = ema_optional(&first, smoothing_window);
     second
         .into_iter()
         .map(|value| {
@@ -804,10 +826,13 @@ mod tests {
         assert!(daily.stochastic_k14.unwrap() >= 80.0);
         assert!(daily.stochastic_d3.unwrap() >= 80.0);
         assert!(daily.pso.unwrap() >= 0.2);
+        assert!(daily.pso32.is_some());
         assert_eq!(daily.stochastic_zone, "overbought");
         assert_ne!(daily.pso_zone, "unknown");
+        assert_ne!(daily.pso32_zone, "unknown");
         assert!(state.summary.contains("Stoch 14 %K"));
         assert!(state.summary.contains("PSO 8/25"));
+        assert!(state.summary.contains("PSO 32"));
     }
 
     #[test]

@@ -23,6 +23,14 @@ pub struct SmaPoint {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct VwapPoint {
+    pub window: usize,
+    pub value: Option<f64>,
+    pub pct_vs: Option<f64>,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct IntervalTechnical {
     pub interval: String,
     pub bars: usize,
@@ -51,6 +59,7 @@ pub struct DailyTechnical {
     pub as_of: DateTime<Utc>,
     pub close: f64,
     pub sma: Vec<SmaPoint>,
+    pub vwap: Vec<VwapPoint>,
     pub pct_vs_252d_high: Option<f64>,
     pub pct_vs_252d_low: Option<f64>,
     pub macd: Option<MacdTechnical>,
@@ -117,6 +126,7 @@ pub struct RelativeStrengthTechnical {
 pub struct CrossTechnical {
     pub trend_state: String,
     pub momentum_state: String,
+    pub vwap_state: String,
     pub volatility_state: String,
     pub volume_state: String,
     pub relative_strength_state: String,
@@ -237,6 +247,25 @@ fn daily_state(
             }
         })
         .collect::<Vec<_>>();
+    let vwap = [20, 50]
+        .into_iter()
+        .map(|window| {
+            let value = vwap_at(bars, bars.len().saturating_sub(1), window);
+            let pct_vs = value.and_then(|v| pct_vs(latest.close, v));
+            let state = match pct_vs {
+                Some(v) if v >= 1.0 => "above",
+                Some(v) if v >= -1.5 => "testing",
+                Some(_) => "below",
+                None => "unknown",
+            };
+            VwapPoint {
+                window,
+                value: value.map(round2),
+                pct_vs,
+                state: state.to_string(),
+            }
+        })
+        .collect::<Vec<_>>();
     let window = bars.iter().rev().take(252).copied().collect::<Vec<_>>();
     let high = window.iter().map(|b| b.high).fold(f64::MIN, f64::max);
     let low = window.iter().map(|b| b.low).fold(f64::MAX, f64::min);
@@ -244,6 +273,7 @@ fn daily_state(
         as_of: latest.ts,
         close: latest.close,
         sma,
+        vwap,
         pct_vs_252d_high: (high > 0.0).then(|| (latest.close - high) / high * 100.0),
         pct_vs_252d_low: (low > 0.0).then(|| (latest.close - low) / low * 100.0),
         macd: macd_state(&closes),
@@ -537,6 +567,9 @@ fn state_summary(
     if let Some(v) = pct_200 {
         parts.push(format!("{v:+.1}% vs 200-day SMA"));
     }
+    if let Some(v) = vwap_pct(d, 20) {
+        parts.push(format!("{v:+.1}% vs 20-day VWAP"));
+    }
     if let Some(v) = rsi_1d {
         parts.push(format!("RSI 14 daily {v:.1}"));
     }
@@ -611,8 +644,25 @@ fn cross_technical(
     let pct_vs_20 = sma_pct(d, 20);
     let pct_vs_50 = sma_pct(d, 50);
     let pct_vs_200 = sma_pct(d, 200);
+    let pct_vs_vwap20 = vwap_pct(d, 20);
+    let pct_vs_vwap50 = vwap_pct(d, 50);
     let above_or_near_200 = pct_vs_200.is_some_and(|v| v >= -2.0);
     let below_short_mas = pct_vs_20.is_some_and(|v| v < 0.0) && pct_vs_50.is_some_and(|v| v < 0.0);
+    let below_vwap =
+        pct_vs_vwap20.is_some_and(|v| v < 0.0) && pct_vs_vwap50.is_some_and(|v| v < 0.0);
+    let testing_vwap = pct_vs_vwap20.is_some_and(|v| (-1.5..=1.5).contains(&v))
+        || pct_vs_vwap50.is_some_and(|v| (-1.5..=1.5).contains(&v));
+    let above_vwap =
+        pct_vs_vwap20.is_some_and(|v| v >= 0.0) && pct_vs_vwap50.is_some_and(|v| v >= 0.0);
+    let vwap_state = if below_vwap {
+        "below_vwap"
+    } else if testing_vwap {
+        "testing_vwap"
+    } else if above_vwap {
+        "above_vwap_support"
+    } else {
+        "mixed_vwap"
+    };
     let near_high = d.pct_vs_252d_high.is_some_and(|v| v >= -2.0);
     let extended_from_trend = pct_vs_200.is_some_and(|v| v > 20.0) || near_high;
     let fast_oversold = daily_interval.is_some_and(|i| {
@@ -652,7 +702,7 @@ fn cross_technical(
         "breakdown"
     } else if extended_from_trend || oscillator_extended_now {
         "extended_chase"
-    } else if above_or_near_200 && below_short_mas {
+    } else if above_or_near_200 && (below_short_mas || below_vwap || testing_vwap) {
         "pullback_in_uptrend"
     } else if above_or_near_200 {
         "uptrend"
@@ -697,13 +747,15 @@ fn cross_technical(
     } else if trend_state == "extended_chase" {
         "avoid_chase"
     } else if above_or_near_200
-        && (below_short_mas || fast_oversold || slow_oversold)
+        && (below_short_mas || below_vwap || testing_vwap || fast_oversold || slow_oversold)
         && reversal_signal == "confirmed"
     {
         "pullback_reversal"
-    } else if above_or_near_200 && (below_short_mas || fast_oversold || slow_oversold) {
+    } else if above_or_near_200
+        && (below_short_mas || below_vwap || testing_vwap || fast_oversold || slow_oversold)
+    {
         "pullback_watch"
-    } else if above_or_near_200 && momentum_state == "positive" {
+    } else if above_or_near_200 && momentum_state == "positive" && (above_vwap || !below_vwap) {
         "constructive"
     } else {
         "wait"
@@ -712,6 +764,7 @@ fn cross_technical(
         trend_state,
         momentum_state,
         reversal_signal,
+        vwap_state,
         &relative_strength_state,
         &volume_state,
         daily.len(),
@@ -719,6 +772,7 @@ fn cross_technical(
     Some(CrossTechnical {
         trend_state: trend_state.to_string(),
         momentum_state: momentum_state.to_string(),
+        vwap_state: vwap_state.to_string(),
         volatility_state,
         volume_state,
         relative_strength_state,
@@ -732,6 +786,7 @@ fn cross_summary(
     trend: &str,
     momentum: &str,
     reversal: &str,
+    vwap: &str,
     relative_strength: &str,
     volume: &str,
     bars: usize,
@@ -740,7 +795,7 @@ fn cross_summary(
         return "cross read has limited history".to_string();
     }
     format!(
-        "cross read: trend {trend}, momentum {momentum}, reversal {reversal}, RS {relative_strength}, volume {volume}"
+        "cross read: trend {trend}, momentum {momentum}, reversal {reversal}, VWAP {vwap}, RS {relative_strength}, volume {volume}"
     )
 }
 
@@ -750,6 +805,14 @@ fn sma_pct(daily: &DailyTechnical, window: usize) -> Option<f64> {
         .iter()
         .find(|s| s.window == window)
         .and_then(|s| s.pct_vs)
+}
+
+fn vwap_pct(daily: &DailyTechnical, window: usize) -> Option<f64> {
+    daily
+        .vwap
+        .iter()
+        .find(|v| v.window == window)
+        .and_then(|v| v.pct_vs)
 }
 
 fn macd_state(closes: &[f64]) -> Option<MacdTechnical> {
@@ -1142,6 +1205,25 @@ fn sma_at(closes: &[f64], idx: usize, window: usize) -> Option<f64> {
     Some(slice.iter().sum::<f64>() / window as f64)
 }
 
+fn vwap_at(bars: &[TechnicalBar], idx: usize, window: usize) -> Option<f64> {
+    if idx + 1 < window {
+        return None;
+    }
+    let start = idx + 1 - window;
+    let slice = &bars[start..=idx];
+    let mut price_volume = 0.0;
+    let mut volume = 0.0;
+    for bar in slice {
+        if bar.volume <= 0.0 {
+            continue;
+        }
+        let typical_price = (bar.high + bar.low + bar.close) / 3.0;
+        price_volume += typical_price * bar.volume;
+        volume += bar.volume;
+    }
+    (volume > 0.0).then_some(price_volume / volume)
+}
+
 fn rsi14_series(closes: &[f64]) -> Vec<Option<f64>> {
     const WINDOW: usize = 14;
     let mut out = vec![None; closes.len()];
@@ -1442,6 +1524,38 @@ mod tests {
         assert!(state.summary.contains("Stoch 14 %K"));
         assert!(state.summary.contains("PSO 8/25"));
         assert!(state.summary.contains("PSO 32"));
+    }
+
+    #[test]
+    fn computes_daily_vwap_levels() {
+        let bars = (0..220)
+            .map(|i| {
+                let close = 100.0 + i as f64 * 0.08;
+                bar_ohlcv(
+                    i,
+                    close + 0.75,
+                    close - 0.55,
+                    close,
+                    10_000.0 + i as f64 * 90.0,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let state = build_technical_state("VWAP", &bars, &[]);
+        let daily = state.daily.as_ref().unwrap();
+        let latest_idx = bars.len() - 1;
+        let vwap20 = daily.vwap.iter().find(|v| v.window == 20).unwrap();
+        let vwap50 = daily.vwap.iter().find(|v| v.window == 50).unwrap();
+
+        assert_eq!(vwap20.value, vwap_at(&bars, latest_idx, 20).map(round2));
+        assert_eq!(vwap50.value, vwap_at(&bars, latest_idx, 50).map(round2));
+        assert!(vwap20.pct_vs.is_some());
+        assert!(matches!(
+            vwap20.state.as_str(),
+            "above" | "testing" | "below"
+        ));
+        assert!(state.summary.contains("20-day VWAP"));
+        assert!(state.cross.as_ref().unwrap().summary.contains("VWAP"));
     }
 
     #[test]

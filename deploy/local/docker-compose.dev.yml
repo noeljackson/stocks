@@ -248,6 +248,31 @@ services:
       nats:
         condition: service_healthy
 
+  ibkr-gateway:
+    image: ${IBKR_GATEWAY_IMAGE:-ghcr.io/gnzsnz/ib-gateway:10.45.1h}
+    container_name: stocks-ibkr-gateway
+    profiles: ["ibkr-gateway"]
+    restart: unless-stopped
+    environment:
+      - TWS_USERID
+      - TWS_PASSWORD
+      - TWS_USERID_PAPER
+      - TWS_PASSWORD_PAPER
+      - TRADING_MODE=${IBKR_TRADING_MODE:-paper}
+      - READ_ONLY_API=${IBKR_GATEWAY_READ_ONLY_API:-yes}
+      - TWS_ACCEPT_INCOMING=${IBKR_TWS_ACCEPT_INCOMING:-accept}
+      - TWS_SETTINGS_PATH=${IBKR_GATEWAY_SETTINGS_PATH:-/home/ibgateway/tws_settings}
+      - TIME_ZONE=${IBKR_GATEWAY_TIME_ZONE:-Europe/Amsterdam}
+      - TWOFA_TIMEOUT_ACTION=${IBKR_TWOFA_TIMEOUT_ACTION:-restart}
+      - RELOGIN_AFTER_TWOFA_TIMEOUT=${IBKR_RELOGIN_AFTER_TWOFA_TIMEOUT:-yes}
+      - VNC_SERVER_PASSWORD
+    ports:
+      - "127.0.0.1:${IBKR_GATEWAY_LIVE_PORT:-4001}:4003"
+      - "127.0.0.1:${IBKR_GATEWAY_PAPER_PORT:-4002}:4004"
+      - "127.0.0.1:${IBKR_GATEWAY_VNC_PORT:-15900}:5900"
+    volumes:
+      - ibkr-gateway-settings:/home/ibgateway/tws_settings
+
   ibkr-sync:
     image: python:3.12-slim
     container_name: stocks-ibkr-sync
@@ -278,3 +303,4 @@ services:
 volumes:
   cargo-cache:
   web-node-modules:
+  ibkr-gateway-settings:

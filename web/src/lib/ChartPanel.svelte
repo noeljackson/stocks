@@ -63,6 +63,11 @@
     100: "#cba6f7",
     200: "#94e2d5",
   };
+  const VWAP_WINDOWS = [20, 50] as const;
+  const VWAP_COLORS: Record<(typeof VWAP_WINDOWS)[number], string> = {
+    20: "#fab387",
+    50: "#74c7ec",
+  };
   let interval = $state<Interval>("1D");
   let range = $state<Range>("ALL");
   let crosshairMode = $state<"magnet" | "free" | "hidden">("magnet");
@@ -72,6 +77,7 @@
   let showPso = $state(true);
   let showPso32 = $state(true);
   let visibleSma = $state<Record<number, boolean>>({ 20: true, 50: true, 100: true, 200: true });
+  let visibleVwap = $state<Record<number, boolean>>({ 20: true, 50: true });
   let alertMenuOpen = $state(false);
   let alertDirection = $state<"above" | "below">("above");
   let alertIntent = $state<"watch" | "entry" | "invalidation" | "exit">("watch");
@@ -88,6 +94,7 @@
   let psoSeries: ISeriesApi<"Line"> | null = null;
   let pso32Series: ISeriesApi<"Line"> | null = null;
   const smaSeries = new Map<number, ISeriesApi<"Line">>();
+  const vwapSeries = new Map<number, ISeriesApi<"Line">>();
   let markersApi: ISeriesMarkersPluginApi<Time> | null = null;
   let priceAlertLines: IPriceLine[] = [];
   let candles = $state<Candle[] | null>(null);
@@ -276,8 +283,14 @@
     render();
   }
 
+  function toggleVwap(window: number) {
+    visibleVwap = { ...visibleVwap, [window]: !visibleVwap[window] };
+    render();
+  }
+
   function resetIndicators() {
     visibleSma = { 20: true, 50: true, 100: true, 200: true };
+    visibleVwap = { 20: true, 50: true };
     showVolume = true;
     showRsi = true;
     showPso = true;
@@ -337,6 +350,7 @@
 
   function activeIndicatorCount() {
     return SMA_WINDOWS.filter((window) => visibleSma[window]).length
+      + VWAP_WINDOWS.filter((window) => visibleVwap[window]).length
       + (showVolume ? 1 : 0)
       + (showRsi ? 1 : 0)
       + (showPso ? 1 : 0)
@@ -355,6 +369,10 @@
 
   function smaLabel(window: number) {
     return `SMA ${window}D`;
+  }
+
+  function vwapLabel(window: number) {
+    return `VWAP ${window}D`;
   }
 
   async function load(sym: string, rng: Range, intv: Interval) {
@@ -496,6 +514,7 @@
     psoSeries?.setData([]);
     pso32Series?.setData([]);
     for (const series of smaSeries.values()) series.setData([]);
+    for (const series of vwapSeries.values()) series.setData([]);
     markersApi?.setMarkers([]);
     clearPriceAlertLines();
   }
@@ -533,6 +552,54 @@
 
   function hasAnySma() {
     return SMA_WINDOWS.some((window) => hasSma(window));
+  }
+
+  function vwapData(window: number): LineData[] {
+    if (!smaCandles || smaCandles.length < window || !candles) return [];
+    const dailyPoints: { date: string; value: number }[] = [];
+    let rollingPriceVolume = 0;
+    let rollingVolume = 0;
+    for (let i = 0; i < smaCandles.length; i += 1) {
+      const candle = smaCandles[i];
+      const typicalPrice = (candle.high + candle.low + candle.close) / 3;
+      const volume = Math.max(0, candle.volume);
+      rollingPriceVolume += typicalPrice * volume;
+      rollingVolume += volume;
+      if (i >= window) {
+        const old = smaCandles[i - window];
+        const oldTypical = (old.high + old.low + old.close) / 3;
+        const oldVolume = Math.max(0, old.volume);
+        rollingPriceVolume -= oldTypical * oldVolume;
+        rollingVolume -= oldVolume;
+      }
+      if (i >= window - 1 && rollingVolume > 0) {
+        dailyPoints.push({ date: candle.time.slice(0, 10), value: rollingPriceVolume / rollingVolume });
+      }
+    }
+
+    if (interval === "1D") {
+      const visibleTimes = new Set(candles.map((c) => c.time));
+      return dailyPoints
+        .filter((point) => visibleTimes.has(point.date))
+        .map((point) => ({ time: toUtc(point.date), value: point.value }));
+    }
+
+    const out: LineData[] = [];
+    let dailyIndex = 0;
+    for (const candle of candles) {
+      const date = candle.time.slice(0, 10);
+      while (dailyIndex + 1 < dailyPoints.length && dailyPoints[dailyIndex + 1].date <= date) dailyIndex += 1;
+      if (dailyPoints[dailyIndex]?.date <= date) out.push({ time: toUtc(candle.time), value: dailyPoints[dailyIndex].value });
+    }
+    return out;
+  }
+
+  function hasVwap(window: number) {
+    return visibleVwap[window] && vwapData(window).length > 0;
+  }
+
+  function hasAnyVwap() {
+    return VWAP_WINDOWS.some((window) => hasVwap(window));
   }
 
   function rsiData(window = 14): LineData[] {
@@ -630,6 +697,18 @@
         title: smaLabel(window),
       });
       smaSeries.set(window, series);
+    }
+    for (const window of VWAP_WINDOWS) {
+      const series = chart.addSeries(LineSeries, {
+        color: VWAP_COLORS[window],
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        crosshairMarkerVisible: false,
+        title: vwapLabel(window),
+      });
+      vwapSeries.set(window, series);
     }
     rsiSeries = chart.addSeries(LineSeries, {
       color: "#fab387",
@@ -753,6 +832,10 @@
       smaSeries.get(window)?.applyOptions({ title: smaLabel(window) });
       smaSeries.get(window)?.setData(visibleSma[window] ? smaData(window) : []);
     }
+    for (const window of VWAP_WINDOWS) {
+      vwapSeries.get(window)?.applyOptions({ title: vwapLabel(window) });
+      vwapSeries.get(window)?.setData(visibleVwap[window] ? vwapData(window) : []);
+    }
     applyMarkers();
     applyPriceAlertLines();
     if (cs.length > 0) chart.timeScale().fitContent();
@@ -796,6 +879,7 @@
       psoSeries = null;
       pso32Series = null;
       smaSeries.clear();
+      vwapSeries.clear();
       markersApi = null;
       priceAlertLines = [];
     };
@@ -871,6 +955,12 @@
         <label>
           <input type="checkbox" checked={visibleSma[window]} onchange={() => toggleSma(window)} />
           <span class="sma-key" style={`--sma-color: ${SMA_COLORS[window]}`}>{smaLabel(window)}</span>
+        </label>
+      {/each}
+      {#each VWAP_WINDOWS as window}
+        <label>
+          <input type="checkbox" checked={visibleVwap[window]} onchange={() => toggleVwap(window)} />
+          <span class="vwap-key" style={`--vwap-color: ${VWAP_COLORS[window]}`}>{vwapLabel(window)}</span>
         </label>
       {/each}
       <label>
@@ -980,6 +1070,15 @@
               {#each SMA_WINDOWS as window}
                 {#if hasSma(window)}
                   <span class="sma-key" style={`--sma-color: ${SMA_COLORS[window]}`}>{smaLabel(window)}</span>
+                {/if}
+              {/each}
+            </span>
+          {/if}
+          {#if hasAnyVwap()}
+            <span class="vwap-legend" aria-label="VWAP ribbon">
+              {#each VWAP_WINDOWS as window}
+                {#if hasVwap(window)}
+                  <span class="vwap-key" style={`--vwap-color: ${VWAP_COLORS[window]}`}>{vwapLabel(window)}</span>
                 {/if}
               {/each}
             </span>
@@ -1417,14 +1516,16 @@
     justify-content: flex-end;
   }
 
-  .sma-legend {
+  .sma-legend,
+  .vwap-legend {
     display: flex;
     gap: .45rem;
     align-items: center;
     flex-wrap: wrap;
   }
 
-  .sma-key {
+  .sma-key,
+  .vwap-key {
     color: #bac2de;
     display: inline-flex;
     gap: .25rem;
@@ -1439,6 +1540,20 @@
     background: var(--sma-color);
     display: inline-block;
     border-radius: 2px;
+  }
+
+  .vwap-key::before {
+    content: "";
+    width: .9rem;
+    height: 2px;
+    background: repeating-linear-gradient(
+      to right,
+      var(--vwap-color) 0,
+      var(--vwap-color) 4px,
+      transparent 4px,
+      transparent 7px
+    );
+    display: inline-block;
   }
 
   .rsi-key { color: #fab387; white-space: nowrap; }

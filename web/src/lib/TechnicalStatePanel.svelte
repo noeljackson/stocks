@@ -71,6 +71,10 @@
             <strong>{titleize(state.cross.momentum_state)}</strong>
           </div>
           <div>
+            <span>VWAP</span>
+            <strong>{titleize(state.cross.vwap_state)}</strong>
+          </div>
+          <div>
             <span>reversal</span>
             <strong>{titleize(state.cross.reversal_signal)}</strong>
           </div>
@@ -111,6 +115,18 @@
             </div>
           {/each}
         </div>
+        {#if (state.daily.vwap ?? []).length > 0}
+          <div class="sma-grid vwap-grid">
+            {#each state.daily.vwap ?? [] as vwap (vwap.window)}
+              <div class="sma-cell">
+                <span>{vwap.window}D VWAP</span>
+                <strong>{num(vwap.value)}</strong>
+                <em class:pos={(vwap.pct_vs ?? 0) > 0} class:neg={(vwap.pct_vs ?? 0) < 0}>{pct(vwap.pct_vs)}</em>
+                <span class="zone zone-{vwap.state}">{titleize(vwap.state)}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
 
         {#if state.daily.macd || state.daily.dmi || state.daily.atr || state.daily.bollinger || state.daily.volume}
           <div class="section-hdr subhdr">

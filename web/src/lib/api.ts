@@ -819,6 +819,13 @@ export interface SmaPoint {
   pct_vs?: number | null;
 }
 
+export interface VwapPoint {
+  window: number;
+  value?: number | null;
+  pct_vs?: number | null;
+  state: string;
+}
+
 export interface IntervalTechnical {
   interval: string;
   bars: number;
@@ -846,6 +853,7 @@ export interface DailyTechnical {
   as_of: string;
   close: number;
   sma: SmaPoint[];
+  vwap: VwapPoint[];
   pct_vs_252d_high?: number | null;
   pct_vs_252d_low?: number | null;
   macd?: MacdTechnical | null;
@@ -905,6 +913,7 @@ export interface RelativeStrengthTechnical {
 export interface CrossTechnical {
   trend_state: string;
   momentum_state: string;
+  vwap_state: string;
   volatility_state: string;
   volume_state: string;
   relative_strength_state: string;

@@ -1899,11 +1899,13 @@ test("chart defaults to ALL range and interval controls change bar size only", a
   await expect(page.getByTestId("chart-interval-status")).toContainText("1D");
   await expect(page.getByTestId("chart-interval-status")).toContainText("ALL");
   await expect(page.getByText("SMA 200D")).toBeVisible();
+  await expect(page.getByText("VWAP 20D").first()).toBeVisible();
   await expect(page.getByTestId("rsi-legend")).toHaveText("RSI 14");
   await expect(page.getByTestId("pso-legend")).toHaveText("PSO 8/25");
   await expect(page.getByTestId("pso32-legend")).toHaveText("PSO 32");
   await page.getByTestId("chart-indicators-button").click();
   await expect(page.getByTestId("chart-indicator-menu")).toBeVisible();
+  await expect(page.getByTestId("chart-indicator-menu")).toContainText("VWAP 50D");
   await expect(page.getByTestId("chart-alert-button")).toContainText("1");
   await page.getByTestId("chart-alert-button").click();
   await expect(page.getByTestId("chart-alert-menu")).toBeVisible();

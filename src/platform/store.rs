@@ -21,6 +21,10 @@ use crate::platform::domain::{
     WellFormedCondCounts,
 };
 use crate::platform::technical::TechnicalBar;
+use crate::price_alerts::{
+    PriceAlertEvent, PriceAlertRule, PriceAlertRuleInput, PriceAlertRulePatch, PriceTrigger,
+    validate_rule_input, validate_rule_patch,
+};
 use crate::thesis::substance::{self, Thesis as SubstanceInput};
 
 #[derive(Clone)]
@@ -3901,13 +3905,14 @@ impl Store {
                         (array_agg(ts ORDER BY ts DESC))[1] AS ts,
                         max(high::float8) AS high,
                         min(low::float8) AS low,
-                        (array_agg(close::float8 ORDER BY ts DESC))[1] AS close
+                        (array_agg(close::float8 ORDER BY ts DESC))[1] AS close,
+                        sum(volume::float8) AS volume
                    FROM price_bar
                   WHERE symbol = $1
                     AND ts > now() - ($2 || ' days')::interval
                GROUP BY 1
              )
-             SELECT ts, close, high, low
+             SELECT ts, close, high, low, volume
                FROM daily
               ORDER BY day ASC"#,
         )
@@ -3923,6 +3928,7 @@ impl Store {
                     close: r.try_get("close")?,
                     high: r.try_get("high")?,
                     low: r.try_get("low")?,
+                    volume: r.try_get("volume")?,
                 })
             })
             .collect()
@@ -3938,7 +3944,11 @@ impl Store {
         let rows = sqlx::query(
             r#"WITH bucketed AS (
                  SELECT to_timestamp(floor(extract(epoch FROM ts) / ($4::float8 * 60.0)) * ($4::float8 * 60.0)) AS bucket,
-                        ts, close::float8 AS close, high::float8 AS high, low::float8 AS low
+                        ts,
+                        close::float8 AS close,
+                        high::float8 AS high,
+                        low::float8 AS low,
+                        volume::float8 AS volume
                    FROM price_bar_intraday
                   WHERE symbol = $1
                     AND interval = $2
@@ -3947,7 +3957,8 @@ impl Store {
              SELECT bucket,
                     (array_agg(close ORDER BY ts DESC))[1] AS close,
                     max(high) AS high,
-                    min(low) AS low
+                    min(low) AS low,
+                    sum(volume) AS volume
                FROM bucketed
               GROUP BY bucket
               ORDER BY bucket ASC"#,
@@ -3966,6 +3977,7 @@ impl Store {
                     close: r.try_get("close")?,
                     high: r.try_get("high")?,
                     low: r.try_get("low")?,
+                    volume: r.try_get("volume")?,
                 })
             })
             .collect()
@@ -4097,6 +4109,295 @@ impl Store {
         .context("recent_alerts")?;
 
         rows.into_iter().map(decode_alert).collect()
+    }
+
+    pub async fn list_price_alert_rules(
+        &self,
+        symbol: Option<&str>,
+        status: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<PriceAlertRule>> {
+        let rows = sqlx::query(
+            r#"SELECT id, symbol, thesis_id, origin, intent, direction,
+                      target_price::float8 AS target_price, label, rationale,
+                      semantic_key, status, source_ref, expires_at, created_at,
+                      updated_at, triggered_at, disabled_at
+                 FROM price_alert_rule
+                WHERE ($1::text IS NULL OR symbol = upper($1))
+                  AND ($2::text IS NULL OR status = $2)
+             ORDER BY created_at DESC
+                LIMIT $3"#,
+        )
+        .bind(symbol)
+        .bind(status)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("list_price_alert_rules")?;
+        rows.into_iter().map(decode_price_alert_rule).collect()
+    }
+
+    pub async fn create_price_alert_rule(
+        &self,
+        input: PriceAlertRuleInput,
+    ) -> Result<Option<PriceAlertRule>> {
+        validate_rule_input(&input)?;
+        let row = sqlx::query(
+            r#"INSERT INTO price_alert_rule
+                  (symbol, thesis_id, origin, intent, direction, target_price,
+                   label, rationale, semantic_key, source_ref, expires_at)
+               VALUES (upper($1), $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
+               ON CONFLICT DO NOTHING
+            RETURNING id, symbol, thesis_id, origin, intent, direction,
+                      target_price::float8 AS target_price, label, rationale,
+                      semantic_key, status, source_ref, expires_at, created_at,
+                      updated_at, triggered_at, disabled_at"#,
+        )
+        .bind(input.symbol.trim())
+        .bind(input.thesis_id)
+        .bind(input.origin)
+        .bind(input.intent)
+        .bind(input.direction)
+        .bind(input.target_price)
+        .bind(input.label.trim())
+        .bind(input.rationale.as_deref())
+        .bind(input.semantic_key.as_deref())
+        .bind(input.source_ref)
+        .bind(input.expires_at)
+        .fetch_optional(&self.pool)
+        .await
+        .context("create_price_alert_rule")?;
+        row.map(decode_price_alert_rule).transpose()
+    }
+
+    pub async fn update_price_alert_rule(
+        &self,
+        id: i64,
+        patch: PriceAlertRulePatch,
+    ) -> Result<Option<PriceAlertRule>> {
+        validate_rule_patch(&patch)?;
+        let row = sqlx::query(
+            r#"UPDATE price_alert_rule
+                  SET intent = COALESCE($2, intent),
+                      direction = COALESCE($3, direction),
+                      target_price = COALESCE($4, target_price::float8),
+                      label = COALESCE($5, label),
+                      rationale = COALESCE($6, rationale),
+                      expires_at = COALESCE($7, expires_at),
+                      status = COALESCE($8, status),
+                      disabled_at = CASE
+                        WHEN $8 = 'disabled' AND disabled_at IS NULL THEN now()
+                        ELSE disabled_at
+                      END,
+                      updated_at = now()
+                WHERE id = $1
+            RETURNING id, symbol, thesis_id, origin, intent, direction,
+                      target_price::float8 AS target_price, label, rationale,
+                      semantic_key, status, source_ref, expires_at, created_at,
+                      updated_at, triggered_at, disabled_at"#,
+        )
+        .bind(id)
+        .bind(patch.intent.as_deref())
+        .bind(patch.direction.as_deref())
+        .bind(patch.target_price)
+        .bind(patch.label.as_deref())
+        .bind(patch.rationale.as_deref())
+        .bind(patch.expires_at)
+        .bind(patch.status.as_deref())
+        .fetch_optional(&self.pool)
+        .await
+        .context("update_price_alert_rule")?;
+        row.map(decode_price_alert_rule).transpose()
+    }
+
+    pub async fn disable_price_alert_rule(&self, id: i64) -> Result<Option<PriceAlertRule>> {
+        self.update_price_alert_rule(
+            id,
+            PriceAlertRulePatch {
+                status: Some("disabled".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn expire_price_alert_rules(&self) -> Result<u64> {
+        let res = sqlx::query(
+            r#"UPDATE price_alert_rule
+                  SET status = 'expired', updated_at = now()
+                WHERE status = 'active'
+                  AND expires_at IS NOT NULL
+                  AND expires_at <= now()"#,
+        )
+        .execute(&self.pool)
+        .await
+        .context("expire_price_alert_rules")?;
+        Ok(res.rows_affected())
+    }
+
+    pub async fn active_price_alert_symbols(&self) -> Result<Vec<String>> {
+        let rows = sqlx::query(
+            r#"SELECT DISTINCT symbol
+                 FROM price_alert_rule
+                WHERE status = 'active'
+                  AND (expires_at IS NULL OR expires_at > now())
+             ORDER BY symbol"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("active_price_alert_symbols")?;
+        rows.into_iter()
+            .map(|r| r.try_get("symbol").map_err(Into::into))
+            .collect()
+    }
+
+    pub async fn active_price_alert_rules_for_symbol(
+        &self,
+        symbol: &str,
+    ) -> Result<Vec<PriceAlertRule>> {
+        let rows = sqlx::query(
+            r#"SELECT id, symbol, thesis_id, origin, intent, direction,
+                      target_price::float8 AS target_price, label, rationale,
+                      semantic_key, status, source_ref, expires_at, created_at,
+                      updated_at, triggered_at, disabled_at
+                 FROM price_alert_rule
+                WHERE symbol = upper($1)
+                  AND status = 'active'
+                  AND (expires_at IS NULL OR expires_at > now())
+             ORDER BY created_at ASC"#,
+        )
+        .bind(symbol)
+        .fetch_all(&self.pool)
+        .await
+        .context("active_price_alert_rules_for_symbol")?;
+        rows.into_iter().map(decode_price_alert_rule).collect()
+    }
+
+    pub async fn latest_daily_bar_for_alert(
+        &self,
+        symbol: &str,
+    ) -> Result<Option<(DateTime<Utc>, f64, f64, f64)>> {
+        let row = sqlx::query(
+            r#"SELECT ts, high::float8 AS high, low::float8 AS low, close::float8 AS close
+                 FROM price_bar
+                WHERE symbol = upper($1)
+             ORDER BY ts DESC
+                LIMIT 1"#,
+        )
+        .bind(symbol)
+        .fetch_optional(&self.pool)
+        .await
+        .context("latest_daily_bar_for_alert")?;
+        row.map(|r| {
+            Ok((
+                r.try_get("ts")?,
+                r.try_get("high")?,
+                r.try_get("low")?,
+                r.try_get("close")?,
+            ))
+        })
+        .transpose()
+    }
+
+    pub async fn latest_intraday_bar_for_alert(
+        &self,
+        symbol: &str,
+    ) -> Result<Option<(DateTime<Utc>, f64, f64, f64)>> {
+        let row = sqlx::query(
+            r#"SELECT ts, high::float8 AS high, low::float8 AS low, close::float8 AS close
+                 FROM price_bar_intraday
+                WHERE symbol = upper($1)
+             ORDER BY ts DESC
+                LIMIT 1"#,
+        )
+        .bind(symbol)
+        .fetch_optional(&self.pool)
+        .await
+        .context("latest_intraday_bar_for_alert")?;
+        row.map(|r| {
+            Ok((
+                r.try_get("ts")?,
+                r.try_get("high")?,
+                r.try_get("low")?,
+                r.try_get("close")?,
+            ))
+        })
+        .transpose()
+    }
+
+    pub async fn trigger_price_alert_rule(
+        &self,
+        rule: &PriceAlertRule,
+        trigger: &PriceTrigger,
+    ) -> Result<Option<PriceAlertEvent>> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("trigger price alert begin")?;
+        let updated = sqlx::query(
+            r#"UPDATE price_alert_rule
+                  SET status = 'triggered',
+                      triggered_at = now(),
+                      updated_at = now()
+                WHERE id = $1
+                  AND status = 'active'
+                  AND (expires_at IS NULL OR expires_at > now())
+            RETURNING id"#,
+        )
+        .bind(rule.id)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("trigger price alert update")?;
+        if updated.is_none() {
+            tx.rollback().await.ok();
+            return Ok(None);
+        }
+        let snapshot = serde_json::to_value(rule).context("price alert rule snapshot")?;
+        let row = sqlx::query(
+            r#"INSERT INTO price_alert_event
+                  (rule_id, symbol, thesis_id, trigger_ts, trigger_interval,
+                   trigger_price, rule_snapshot)
+               VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+               ON CONFLICT (rule_id) DO NOTHING
+            RETURNING id, rule_id, symbol, thesis_id, triggered_at, trigger_ts,
+                      trigger_interval, trigger_price::float8 AS trigger_price,
+                      rule_snapshot"#,
+        )
+        .bind(rule.id)
+        .bind(&rule.symbol)
+        .bind(rule.thesis_id)
+        .bind(trigger.ts)
+        .bind(&trigger.interval)
+        .bind(trigger.price)
+        .bind(snapshot)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("trigger price alert event")?;
+        tx.commit().await.context("trigger price alert commit")?;
+        row.map(decode_price_alert_event).transpose()
+    }
+
+    pub async fn list_price_alert_events(
+        &self,
+        symbol: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<PriceAlertEvent>> {
+        let rows = sqlx::query(
+            r#"SELECT id, rule_id, symbol, thesis_id, triggered_at, trigger_ts,
+                      trigger_interval, trigger_price::float8 AS trigger_price,
+                      rule_snapshot
+                 FROM price_alert_event
+                WHERE ($1::text IS NULL OR symbol = upper($1))
+             ORDER BY triggered_at DESC
+                LIMIT $2"#,
+        )
+        .bind(symbol)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("list_price_alert_events")?;
+        rows.into_iter().map(decode_price_alert_event).collect()
     }
 
     /// Returns the latest market_state row for the UI. None if the table is empty.
@@ -5846,6 +6147,42 @@ fn decode_alert(row: sqlx::postgres::PgRow) -> Result<Alert> {
         payload: row.try_get("payload")?,
         acknowledged: row.try_get("acknowledged")?,
         created_at: row.try_get("created_at")?,
+    })
+}
+
+fn decode_price_alert_rule(row: sqlx::postgres::PgRow) -> Result<PriceAlertRule> {
+    Ok(PriceAlertRule {
+        id: row.try_get("id")?,
+        symbol: row.try_get("symbol")?,
+        thesis_id: row.try_get("thesis_id")?,
+        origin: row.try_get("origin")?,
+        intent: row.try_get("intent")?,
+        direction: row.try_get("direction")?,
+        target_price: row.try_get("target_price")?,
+        label: row.try_get("label")?,
+        rationale: row.try_get("rationale")?,
+        semantic_key: row.try_get("semantic_key")?,
+        status: row.try_get("status")?,
+        source_ref: row.try_get("source_ref")?,
+        expires_at: row.try_get("expires_at")?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+        triggered_at: row.try_get("triggered_at")?,
+        disabled_at: row.try_get("disabled_at")?,
+    })
+}
+
+fn decode_price_alert_event(row: sqlx::postgres::PgRow) -> Result<PriceAlertEvent> {
+    Ok(PriceAlertEvent {
+        id: row.try_get("id")?,
+        rule_id: row.try_get("rule_id")?,
+        symbol: row.try_get("symbol")?,
+        thesis_id: row.try_get("thesis_id")?,
+        triggered_at: row.try_get("triggered_at")?,
+        trigger_ts: row.try_get("trigger_ts")?,
+        trigger_interval: row.try_get("trigger_interval")?,
+        trigger_price: row.try_get("trigger_price")?,
+        rule_snapshot: row.try_get("rule_snapshot")?,
     })
 }
 

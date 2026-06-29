@@ -23,6 +23,11 @@
     return `${sign}${value.toFixed(1)}%`;
   }
 
+  function ratio(value: number | null | undefined): string {
+    if (value === null || value === undefined || Number.isNaN(value)) return "-";
+    return `${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}x`;
+  }
+
   function directionLabel(direction: string): string {
     return direction === "up" ? "crossed above" : direction === "down" ? "crossed below" : direction;
   }
@@ -50,6 +55,46 @@
       <p class="muted">{state.setup.summary}</p>
     </header>
 
+    {#if state.cross}
+      <section class="tech-section cross-read">
+        <div class="section-hdr">
+          <h4>Cross Analysis</h4>
+          <span class="zone zone-{state.cross.buy_timing}">{titleize(state.cross.buy_timing)}</span>
+        </div>
+        <div class="cross-grid">
+          <div>
+            <span>trend</span>
+            <strong>{titleize(state.cross.trend_state)}</strong>
+          </div>
+          <div>
+            <span>momentum</span>
+            <strong>{titleize(state.cross.momentum_state)}</strong>
+          </div>
+          <div>
+            <span>VWAP</span>
+            <strong>{titleize(state.cross.vwap_state)}</strong>
+          </div>
+          <div>
+            <span>reversal</span>
+            <strong>{titleize(state.cross.reversal_signal)}</strong>
+          </div>
+          <div>
+            <span>relative strength</span>
+            <strong>{titleize(state.cross.relative_strength_state)}</strong>
+          </div>
+          <div>
+            <span>volume</span>
+            <strong>{titleize(state.cross.volume_state)}</strong>
+          </div>
+          <div>
+            <span>volatility</span>
+            <strong>{titleize(state.cross.volatility_state)}</strong>
+          </div>
+        </div>
+        <p>{state.cross.summary}</p>
+      </section>
+    {/if}
+
     {#if state.daily}
       <section class="tech-section">
         <div class="section-hdr">
@@ -70,29 +115,153 @@
             </div>
           {/each}
         </div>
+        {#if (state.daily.vwap ?? []).length > 0}
+          <div class="sma-grid vwap-grid">
+            {#each state.daily.vwap ?? [] as vwap (vwap.window)}
+              <div class="sma-cell">
+                <span>{vwap.window}D VWAP</span>
+                <strong>{num(vwap.value)}</strong>
+                <em class:pos={(vwap.pct_vs ?? 0) > 0} class:neg={(vwap.pct_vs ?? 0) < 0}>{pct(vwap.pct_vs)}</em>
+                <span class="zone zone-{vwap.state}">{titleize(vwap.state)}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        {#if state.daily.macd || state.daily.dmi || state.daily.atr || state.daily.bollinger || state.daily.volume}
+          <div class="section-hdr subhdr">
+            <h4>Daily Internals</h4>
+          </div>
+          <div class="indicator-grid">
+            {#if state.daily.macd}
+              <div class="indicator-cell">
+                <span>MACD histogram</span>
+                <strong>{num(state.daily.macd.histogram)}</strong>
+                <em class:pos={(state.daily.macd.histogram_delta ?? 0) > 0} class:neg={(state.daily.macd.histogram_delta ?? 0) < 0}>
+                  delta {num(state.daily.macd.histogram_delta)}
+                </em>
+                <span class="zone zone-{state.daily.macd.state}">{titleize(state.daily.macd.state)}</span>
+              </div>
+            {/if}
+            {#if state.daily.dmi}
+              <div class="indicator-cell">
+                <span>ADX / DI</span>
+                <strong>{num(state.daily.dmi.adx14)}</strong>
+                <em>+DI {num(state.daily.dmi.plus_di14)} / -DI {num(state.daily.dmi.minus_di14)}</em>
+                <span class="zone zone-{state.daily.dmi.state}">{titleize(state.daily.dmi.state)}</span>
+              </div>
+            {/if}
+            {#if state.daily.atr}
+              <div class="indicator-cell">
+                <span>ATR 14</span>
+                <strong>{num(state.daily.atr.atr14)}</strong>
+                <em>NATR {num(state.daily.atr.natr14_pct)}%</em>
+                <span class="zone zone-{state.daily.atr.state}">{titleize(state.daily.atr.state)}</span>
+              </div>
+            {/if}
+            {#if state.daily.bollinger}
+              <div class="indicator-cell">
+                <span>Bollinger 20</span>
+                <strong>%B {num(state.daily.bollinger.pct_b)}</strong>
+                <em>width {num(state.daily.bollinger.bandwidth_pct)}%</em>
+                <span class="zone zone-{state.daily.bollinger.state}">{titleize(state.daily.bollinger.state)}</span>
+              </div>
+            {/if}
+            {#if state.daily.volume}
+              <div class="indicator-cell">
+                <span>Volume</span>
+                <strong>{num(state.daily.volume.latest)}</strong>
+                <em>vs 20D {ratio(state.daily.volume.ratio_vs_20)}</em>
+                <span class="zone zone-{state.daily.volume.state}">{titleize(state.daily.volume.state)}</span>
+              </div>
+            {/if}
+          </div>
+        {/if}
+
+        {#if (state.daily.relative_strength ?? []).length > 0}
+          <div class="section-hdr subhdr">
+            <h4>Relative Strength</h4>
+          </div>
+          <div class="table-scroll">
+            <table class="tech-table">
+              <thead>
+                <tr>
+                  <th>benchmark</th>
+                  <th>20D</th>
+                  <th>60D</th>
+                  <th>120D</th>
+                  <th>state</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each state.daily.relative_strength ?? [] as row (row.benchmark)}
+                  <tr>
+                    <td>{row.benchmark}</td>
+                    <td class:pos={(row.rel_20d_pct ?? 0) > 0} class:neg={(row.rel_20d_pct ?? 0) < 0}>{pct(row.rel_20d_pct)}</td>
+                    <td class:pos={(row.rel_60d_pct ?? 0) > 0} class:neg={(row.rel_60d_pct ?? 0) < 0}>{pct(row.rel_60d_pct)}</td>
+                    <td class:pos={(row.rel_120d_pct ?? 0) > 0} class:neg={(row.rel_120d_pct ?? 0) < 0}>{pct(row.rel_120d_pct)}</td>
+                    <td><span class="zone zone-{row.state}">{titleize(row.state)}</span></td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
       </section>
     {/if}
 
     <section class="tech-section">
       <div class="section-hdr">
-        <h4>RSI By Interval</h4>
+        <h4>Momentum By Interval</h4>
       </div>
-      <table class="tech-table">
-        <thead>
-          <tr><th>bar</th><th>close</th><th>RSI 14</th><th>zone</th><th>span</th></tr>
-        </thead>
-        <tbody>
-          {#each state.intervals as interval (interval.interval)}
+      <div class="table-scroll">
+        <table class="tech-table">
+          <thead>
             <tr>
-              <td>{interval.interval}</td>
-              <td>{num(interval.close)}</td>
-              <td>{num(interval.rsi14)}</td>
-              <td><span class="zone zone-{interval.rsi_zone}">{titleize(interval.rsi_zone)}</span></td>
-              <td>{interval.rsi_zone_bars > 0 ? `${interval.rsi_zone_bars} bars` : "-"}</td>
+              <th>bar</th>
+              <th>close</th>
+              <th>RSI 14</th>
+              <th>Stoch %K/%D</th>
+              <th>PSO 8/25</th>
+              <th>PSO 32</th>
+              <th>zone</th>
+              <th>span</th>
             </tr>
-          {/each}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {#each state.intervals as interval (interval.interval)}
+              <tr>
+                <td>{interval.interval}</td>
+                <td>{num(interval.close)}</td>
+                <td>{num(interval.rsi14)}</td>
+                <td>{num(interval.stochastic_k14)} / {num(interval.stochastic_d3)}</td>
+                <td>
+                  {num(interval.pso)}
+                  {#if interval.pso_delta !== null && interval.pso_delta !== undefined}
+                    <span class:pos={interval.pso_delta > 0} class:neg={interval.pso_delta < 0}>({interval.pso_delta > 0 ? "+" : ""}{num(interval.pso_delta)})</span>
+                  {/if}
+                </td>
+                <td>
+                  {num(interval.pso32)}
+                  {#if interval.pso32_delta !== null && interval.pso32_delta !== undefined}
+                    <span class:pos={interval.pso32_delta > 0} class:neg={interval.pso32_delta < 0}>({interval.pso32_delta > 0 ? "+" : ""}{num(interval.pso32_delta)})</span>
+                  {/if}
+                </td>
+                <td class="zone-stack">
+                  <span class="zone zone-{interval.pso_zone}">8 {titleize(interval.pso_zone)}</span>
+                  <span class="zone zone-{interval.pso32_zone}">32 {titleize(interval.pso32_zone)}</span>
+                </td>
+                <td>
+                  {interval.pso_zone_bars > 0 ? `${interval.pso_zone_bars}` : "-"}
+                  /
+                  {interval.pso32_zone_bars > 0 ? `${interval.pso32_zone_bars}` : "-"}
+                  bars
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <section class="tech-section">
@@ -160,6 +329,8 @@
 
   .tech-top.state-constructive,
   .tech-top.state-base_building { border-left-color: rgb(166, 227, 161); }
+  .tech-top.state-reversal_confirming,
+  .tech-top.state-pullback_watch { border-left-color: rgb(137, 180, 250); }
   .tech-top.state-extended { border-left-color: rgb(249, 226, 175); }
   .tech-top.state-deteriorating { border-left-color: rgb(243, 139, 168); }
 
@@ -199,9 +370,20 @@
 
   .state-badge.state-constructive,
   .state-badge.state-base_building,
+  .state-badge.state-reversal_confirming,
   .state-badge.setup-200d_reclaim,
+  .state-badge.setup-pullback_reversal,
   .state-badge.stance-actionable,
+  .state-badge.stance-starter_ok,
   .state-badge.stance-constructive,
+  .zone-bullish,
+  .zone-bull_trend,
+  .zone-positive,
+  .zone-confirmed,
+  .zone-outperforming,
+  .zone-accumulation,
+  .zone-constructive,
+  .zone-pullback_reversal,
   .zone-strong,
   .zone-up {
     background: rgba(166, 227, 161, .18);
@@ -209,12 +391,29 @@
   }
 
   .state-badge.state-extended,
+  .state-badge.state-pullback_watch,
   .state-badge.setup-extended_run,
   .state-badge.setup-200d_reclaim_watch,
+  .state-badge.setup-pullback_watch,
   .state-badge.stance-wait_reclaim,
   .state-badge.stance-wait_retest,
   .state-badge.stance-wait_breakout,
+  .state-badge.stance-wait_reversal,
   .state-badge.stance-avoid_chase,
+  .zone-improving,
+  .zone-early,
+  .zone-compressed,
+  .zone-expanded,
+  .zone-quiet,
+  .zone-pullback_watch,
+  .zone-pullback_in_uptrend,
+  .zone-wait,
+  .zone-testing_200d,
+  .zone-avoid_chase,
+  .zone-extended,
+  .zone-extended_chase,
+  .zone-lower_band,
+  .zone-upper_band,
   .zone-overbought {
     background: rgba(249, 226, 175, .15);
     color: rgb(249, 226, 175);
@@ -223,11 +422,52 @@
   .state-badge.state-deteriorating,
   .state-badge.setup-breakdown,
   .state-badge.stance-avoid,
+  .zone-bearish,
+  .zone-bear_trend,
+  .zone-breakdown,
+  .zone-avoid_breakdown,
+  .zone-underperforming,
+  .zone-distribution,
   .zone-weak,
   .zone-oversold,
   .zone-down {
     background: rgba(243, 139, 168, .18);
     color: rgb(243, 139, 168);
+  }
+
+  .cross-grid,
+  .indicator-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(126px, 1fr));
+    gap: .4rem;
+    margin-bottom: .5rem;
+  }
+
+  .cross-grid div,
+  .indicator-cell {
+    border: 1px solid #1f2733;
+    border-radius: 4px;
+    padding: .35rem;
+    display: grid;
+    gap: .14rem;
+    min-width: 0;
+  }
+
+  .cross-grid span,
+  .indicator-cell span,
+  .indicator-cell em {
+    color: #6c7693;
+    font-style: normal;
+    font-size: .72rem;
+  }
+
+  .cross-grid strong,
+  .indicator-cell strong {
+    font-size: .86rem;
+  }
+
+  .subhdr {
+    margin-top: .65rem;
   }
 
   .daily-grid {
@@ -272,6 +512,10 @@
     font-size: .78rem;
   }
 
+  .table-scroll {
+    overflow-x: auto;
+  }
+
   .tech-table th,
   .tech-table td {
     border-bottom: 1px solid #1f2733;
@@ -283,6 +527,12 @@
   .tech-table th {
     color: #6c7693;
     font-weight: 500;
+  }
+
+  .zone-stack {
+    display: flex;
+    gap: .25rem;
+    flex-wrap: wrap;
   }
 
   .event-list {

@@ -58,6 +58,99 @@ export async function ackAlert(id: number): Promise<void> {
   if (!r.ok && r.status !== 204) throw new Error(`ack ${r.status}`);
 }
 
+export interface PriceAlertRule {
+  id: number;
+  symbol: string;
+  thesis_id?: string | null;
+  origin: "manual" | "ai";
+  intent: "watch" | "entry" | "invalidation" | "exit";
+  direction: "above" | "below";
+  target_price: number;
+  label: string;
+  rationale?: string | null;
+  semantic_key?: string | null;
+  status: "active" | "triggered" | "disabled" | "expired";
+  source_ref?: Record<string, unknown>;
+  expires_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  triggered_at?: string | null;
+  disabled_at?: string | null;
+}
+
+export interface PriceAlertEvent {
+  id: number;
+  rule_id: number;
+  symbol: string;
+  thesis_id?: string | null;
+  triggered_at: string;
+  trigger_ts: string;
+  trigger_interval: string;
+  trigger_price: number;
+  rule_snapshot?: PriceAlertRule | Record<string, unknown>;
+}
+
+export interface PriceAlertRuleInput {
+  symbol: string;
+  thesis_id?: string | null;
+  origin?: "manual" | "ai";
+  intent?: "watch" | "entry" | "invalidation" | "exit";
+  direction: "above" | "below";
+  target_price: number;
+  label: string;
+  rationale?: string | null;
+  semantic_key?: string | null;
+  source_ref?: Record<string, unknown>;
+  expires_at?: string | null;
+}
+
+export type PriceAlertRulePatch = Partial<
+  Pick<PriceAlertRuleInput, "intent" | "direction" | "target_price" | "label" | "rationale" | "expires_at">
+> & { status?: PriceAlertRule["status"] };
+
+export async function fetchPriceAlerts(opts?: { symbol?: string; status?: string }): Promise<PriceAlertRule[]> {
+  const q = new URLSearchParams();
+  if (opts?.symbol) q.set("symbol", opts.symbol);
+  if (opts?.status) q.set("status", opts.status);
+  const r = await fetch(`/api/price-alerts${q.size ? `?${q}` : ""}`);
+  if (!r.ok) throw new Error(`price-alerts ${r.status}`);
+  return ((await r.json()) as PriceAlertRule[] | null) ?? [];
+}
+
+export async function createPriceAlert(input: PriceAlertRuleInput): Promise<PriceAlertRule> {
+  const r = await fetch("/api/price-alerts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!r.ok) throw new Error(`create price alert ${r.status}: ${await r.text()}`);
+  return (await r.json()) as PriceAlertRule;
+}
+
+export async function updatePriceAlert(id: number, patch: PriceAlertRulePatch): Promise<PriceAlertRule> {
+  const r = await fetch(`/api/price-alerts/${id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!r.ok) throw new Error(`update price alert ${r.status}: ${await r.text()}`);
+  return (await r.json()) as PriceAlertRule;
+}
+
+export async function disablePriceAlert(id: number): Promise<PriceAlertRule> {
+  const r = await fetch(`/api/price-alerts/${id}/disable`, { method: "POST" });
+  if (!r.ok) throw new Error(`disable price alert ${r.status}: ${await r.text()}`);
+  return (await r.json()) as PriceAlertRule;
+}
+
+export async function fetchPriceAlertEvents(opts?: { symbol?: string }): Promise<PriceAlertEvent[]> {
+  const q = new URLSearchParams();
+  if (opts?.symbol) q.set("symbol", opts.symbol);
+  const r = await fetch(`/api/price-alert-events${q.size ? `?${q}` : ""}`);
+  if (!r.ok) throw new Error(`price-alert-events ${r.status}`);
+  return ((await r.json()) as PriceAlertEvent[] | null) ?? [];
+}
+
 export async function fetchRegime(): Promise<MarketState> {
   const r = await fetch("/api/regime");
   if (!r.ok) throw new Error(`regime ${r.status}`);
@@ -726,6 +819,13 @@ export interface SmaPoint {
   pct_vs?: number | null;
 }
 
+export interface VwapPoint {
+  window: number;
+  value?: number | null;
+  pct_vs?: number | null;
+  state: string;
+}
+
 export interface IntervalTechnical {
   interval: string;
   bars: number;
@@ -735,14 +835,91 @@ export interface IntervalTechnical {
   rsi_zone: string;
   rsi_zone_bars: number;
   rsi_zone_since?: string | null;
+  stochastic_k14?: number | null;
+  stochastic_d3?: number | null;
+  stochastic_zone: string;
+  stochastic_zone_bars: number;
+  pso?: number | null;
+  pso_delta?: number | null;
+  pso_zone: string;
+  pso_zone_bars: number;
+  pso32?: number | null;
+  pso32_delta?: number | null;
+  pso32_zone: string;
+  pso32_zone_bars: number;
 }
 
 export interface DailyTechnical {
   as_of: string;
   close: number;
   sma: SmaPoint[];
+  vwap: VwapPoint[];
   pct_vs_252d_high?: number | null;
   pct_vs_252d_low?: number | null;
+  macd?: MacdTechnical | null;
+  dmi?: DmiTechnical | null;
+  atr?: AtrTechnical | null;
+  bollinger?: BollingerTechnical | null;
+  volume?: VolumeTechnical | null;
+  relative_strength?: RelativeStrengthTechnical[];
+}
+
+export interface MacdTechnical {
+  line: number;
+  signal: number;
+  histogram: number;
+  histogram_delta?: number | null;
+  state: string;
+}
+
+export interface DmiTechnical {
+  adx14: number;
+  plus_di14: number;
+  minus_di14: number;
+  state: string;
+}
+
+export interface AtrTechnical {
+  atr14: number;
+  natr14_pct: number;
+  state: string;
+}
+
+export interface BollingerTechnical {
+  middle20: number;
+  upper20: number;
+  lower20: number;
+  bandwidth_pct: number;
+  pct_b: number;
+  state: string;
+}
+
+export interface VolumeTechnical {
+  latest: number;
+  avg20?: number | null;
+  avg50?: number | null;
+  ratio_vs_20?: number | null;
+  state: string;
+}
+
+export interface RelativeStrengthTechnical {
+  benchmark: string;
+  rel_20d_pct?: number | null;
+  rel_60d_pct?: number | null;
+  rel_120d_pct?: number | null;
+  state: string;
+}
+
+export interface CrossTechnical {
+  trend_state: string;
+  momentum_state: string;
+  vwap_state: string;
+  volatility_state: string;
+  volume_state: string;
+  relative_strength_state: string;
+  reversal_signal: string;
+  buy_timing: string;
+  summary: string;
 }
 
 export interface CrossEvent {
@@ -773,6 +950,7 @@ export interface TechnicalState {
   };
   summary: string;
   daily?: DailyTechnical | null;
+  cross?: CrossTechnical | null;
   intervals: IntervalTechnical[];
   last_crosses: CrossEvent[];
   analog_events: AnalogEvent[];

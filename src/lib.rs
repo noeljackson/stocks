@@ -19,6 +19,7 @@ pub mod goalpost;
 pub mod ingest;
 pub mod llm;
 pub mod platform;
+pub mod price_alerts;
 pub mod reflection;
 pub mod regime;
 pub mod risk;

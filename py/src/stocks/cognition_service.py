@@ -1056,7 +1056,10 @@ async def run() -> None:
     try:
         await js.stream_info(STREAM)
     except NotFoundError:
-        await js.add_stream(name=STREAM, subjects=["regime.*", "discovery.*"])
+        await js.add_stream(
+            name=STREAM,
+            subjects=["regime.*", "discovery.*", "market.>", "position.*"],
+        )
 
     psub = await js.pull_subscribe(SUBJECT, durable=DURABLE, stream=STREAM)
     log.info("cognition consumer subscribed: stream=%s subject=%s durable=%s",

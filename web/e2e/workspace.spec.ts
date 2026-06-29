@@ -8,6 +8,7 @@ type Calls = {
   addedSymbols: string[];
   refreshContextSymbols: string[];
   researchSymbols: string[];
+  priceAlertBodies: unknown[];
 };
 
 type MockWatchlistMember = {
@@ -91,6 +92,7 @@ async function mockApi(
     addedSymbols: [],
     refreshContextSymbols: [],
     researchSymbols: [],
+    priceAlertBodies: [],
   };
   let attentionOpen = true;
   const attentionItems = options.attentionItems ?? [{
@@ -451,6 +453,58 @@ async function mockApi(
       conviction: 50,
     }],
   }];
+  let nextPriceAlertId = 3003;
+  let priceAlertRules = [
+    {
+      id: 3001,
+      symbol: "MSFT",
+      thesis_id: null,
+      origin: "ai",
+      intent: "entry",
+      direction: "above",
+      target_price: 208.5,
+      label: "MSFT reclaim entry",
+      rationale: "AI timing rule from constructive cross-technical state.",
+      semantic_key: "msft_reclaim",
+      status: "active",
+      source_ref: {},
+      expires_at: null,
+      created_at: "2026-06-01T00:00:00Z",
+      updated_at: "2026-06-01T00:00:00Z",
+      triggered_at: null,
+      disabled_at: null,
+    },
+    {
+      id: 3002,
+      symbol: "OKTA",
+      thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+      origin: "manual",
+      intent: "invalidation",
+      direction: "below",
+      target_price: 90,
+      label: "OKTA invalidation",
+      rationale: null,
+      semantic_key: null,
+      status: "triggered",
+      source_ref: {},
+      expires_at: null,
+      created_at: "2026-06-01T00:00:00Z",
+      updated_at: "2026-06-01T00:15:00Z",
+      triggered_at: "2026-06-01T00:15:00Z",
+      disabled_at: null,
+    },
+  ];
+  const priceAlertEvents = [{
+    id: 3101,
+    rule_id: 3002,
+    symbol: "OKTA",
+    thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+    triggered_at: "2026-06-01T00:15:00Z",
+    trigger_ts: "2026-06-01T00:15:00Z",
+    trigger_interval: "1D",
+    trigger_price: 89.5,
+    rule_snapshot: priceAlertRules[1],
+  }];
 
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -490,6 +544,59 @@ async function mockApi(
           created_at: "2026-06-01T00:01:00Z",
         },
       ]);
+      return;
+    }
+    if (path === "/api/price-alerts" && request.method() === "GET") {
+      const symbol = url.searchParams.get("symbol");
+      const status = url.searchParams.get("status");
+      await json(route, priceAlertRules.filter((rule) =>
+        (!symbol || rule.symbol === symbol.toUpperCase())
+        && (!status || rule.status === status)
+      ));
+      return;
+    }
+    if (path === "/api/price-alerts" && request.method() === "POST") {
+      const body = await request.postDataJSON();
+      calls.priceAlertBodies.push(body);
+      const rule = {
+        id: nextPriceAlertId++,
+        symbol: String(body.symbol ?? "").toUpperCase(),
+        thesis_id: body.thesis_id ?? null,
+        origin: body.origin ?? "manual",
+        intent: body.intent ?? "watch",
+        direction: body.direction,
+        target_price: body.target_price,
+        label: body.label,
+        rationale: body.rationale ?? null,
+        semantic_key: body.semantic_key ?? null,
+        status: "active",
+        source_ref: body.source_ref ?? {},
+        expires_at: body.expires_at ?? null,
+        created_at: "2026-06-01T00:30:00Z",
+        updated_at: "2026-06-01T00:30:00Z",
+        triggered_at: null,
+        disabled_at: null,
+      };
+      priceAlertRules = [rule, ...priceAlertRules];
+      await json(route, rule, 201);
+      return;
+    }
+    if (/^\/api\/price-alerts\/\d+\/disable$/.test(path) && request.method() === "POST") {
+      const id = Number(path.split("/")[3]);
+      const rule = priceAlertRules.find((row) => row.id === id);
+      if (!rule) {
+        await route.fulfill({ status: 404, body: "price alert not found" });
+        return;
+      }
+      rule.status = "disabled";
+      rule.disabled_at = "2026-06-01T00:35:00Z";
+      rule.updated_at = "2026-06-01T00:35:00Z";
+      await json(route, rule);
+      return;
+    }
+    if (path === "/api/price-alert-events") {
+      const symbol = url.searchParams.get("symbol");
+      await json(route, priceAlertEvents.filter((event) => !symbol || event.symbol === symbol.toUpperCase()));
       return;
     }
     if (path === "/api/regime") {
@@ -1787,10 +1894,36 @@ test("chart defaults to ALL range and interval controls change bar size only", a
   await page.goto("/");
 
   await expect(page.locator(".symbol-box input")).toHaveValue("MSFT");
+  await expect(page.getByTestId("chart-topbar")).toBeVisible();
+  await expect(page.getByTestId("chart-left-tools")).toBeVisible();
   await expect(page.getByTestId("chart-interval-status")).toContainText("1D");
   await expect(page.getByTestId("chart-interval-status")).toContainText("ALL");
   await expect(page.getByText("SMA 200D")).toBeVisible();
+  await expect(page.getByText("VWAP 20D").first()).toBeVisible();
   await expect(page.getByTestId("rsi-legend")).toHaveText("RSI 14");
+  await expect(page.getByTestId("pso-legend")).toHaveText("PSO 8/25");
+  await expect(page.getByTestId("pso32-legend")).toHaveText("PSO 32");
+  await page.getByTestId("chart-indicators-button").click();
+  await expect(page.getByTestId("chart-indicator-menu")).toBeVisible();
+  await expect(page.getByTestId("chart-indicator-menu")).toContainText("VWAP 50D");
+  await expect(page.getByTestId("chart-alert-button")).toContainText("1");
+  await page.getByTestId("chart-alert-button").click();
+  await expect(page.getByTestId("chart-alert-menu")).toBeVisible();
+  await expect(page.getByTestId("chart-alert-menu")).toContainText("AI above 208.50");
+  await page.getByLabel("Alert price").fill("222.22");
+  await page.getByLabel("Alert label").fill("MSFT breakout check");
+  await page.getByTestId("chart-alert-menu").getByRole("button", { name: "Create" }).click();
+  await expect.poll(() => calls.priceAlertBodies).toContainEqual({
+    symbol: "MSFT",
+    origin: "manual",
+    intent: "watch",
+    direction: "above",
+    target_price: 222.22,
+    label: "MSFT breakout check",
+    rationale: "Manual chart alert",
+    source_ref: { surface: "chart" },
+  });
+  await expect(page.getByTestId("chart-alert-button")).toContainText("2");
   await expect.poll(() => calls.candleUrls.some((url) =>
     url.searchParams.get("symbol") === "MSFT"
     && url.searchParams.get("range") === "ALL"
@@ -1834,6 +1967,20 @@ test("chart patches latest candle from market bar stream events", async ({ page 
   await expect(page.locator(".symbol-box input")).toHaveValue("MSFT");
   await expect(page.getByTestId("chart-live-status")).toContainText("live");
   await expect(page.getByTestId("chart-last-close")).toHaveText("333.33");
+});
+
+test("alerts tab shows active price alert rules", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/symbol/MSFT?p=alerts");
+
+  const panel = page.getByTestId("price-alerts-panel");
+  await expect(panel).toContainText("Price Alerts");
+  await expect(panel).toContainText("MSFT reclaim entry");
+  await expect(panel).toContainText("$208.50");
+
+  await panel.getByRole("button", { name: "disable" }).click();
+  await expect(panel).toContainText("No active price levels");
+  await expect(panel).toContainText("Disabled");
 });
 
 test("theses tab lists declined thesis attempts with reasons", async ({ page }) => {

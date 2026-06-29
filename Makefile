@@ -52,7 +52,7 @@ doctor: ## Check local disk, Docker, Postgres, and gateway database reachability
 # ---- all-in-docker dev environment (#36) ----
 # Brings up postgres + nats + ALL rust services + vite SPA dev server, each
 # with hot-reload on source changes. Secrets injected via Infisical.
-.PHONY: dev dev-down dev-logs dev-build dev-restart firecrawl-up firecrawl-enable firecrawl-down firecrawl-logs
+.PHONY: dev dev-down dev-logs dev-build dev-restart firecrawl-up firecrawl-enable firecrawl-down firecrawl-logs ibkr-up ibkr-stack-up ibkr-gateway-up ibkr-logs ibkr-gateway-logs
 dev: dev-warm ## Start the full dev stack (postgres + nats + 6 rust services + vite) with hot reload
 	$(RUN) $(COMPOSE_DEV) up -d
 	@echo
@@ -104,6 +104,30 @@ firecrawl-down: ## Stop optional local Firecrawl sidecar without stopping the st
 
 firecrawl-logs: ## Follow optional local Firecrawl logs
 	$(COMPOSE_FIRECRAWL) logs -f firecrawl-api firecrawl-playwright firecrawl-rabbitmq firecrawl-postgres
+
+ibkr-up: ## Start optional IBKR read-only broker sync sidecar
+	$(RUN) $(COMPOSE_DEV) --profile ibkr up -d ibkr-sync
+	@echo "IBKR sync: python -m stocks.ibkr_sync --loop"
+	@echo "Defaults: IBKR_HOST=$${IBKR_HOST:-host.docker.internal} IBKR_PORT=$${IBKR_PORT:-7497}"
+	@echo "For managed IB Gateway in compose, use: make ibkr-stack-up"
+
+ibkr-gateway-up: ## Start optional managed IB Gateway container only
+	$(RUN) $(COMPOSE_DEV) --profile ibkr-gateway up -d ibkr-gateway
+	@echo "IB Gateway: paper API localhost:$${IBKR_GATEWAY_PAPER_PORT:-4002}, live API localhost:$${IBKR_GATEWAY_LIVE_PORT:-4001}"
+	@echo "VNC: localhost:$${IBKR_GATEWAY_VNC_PORT:-15900} when VNC_SERVER_PASSWORD is set"
+	@echo "Credentials must live in Infisical dev: TWS_USERID/TWS_PASSWORD"
+
+ibkr-stack-up: ## Start managed IB Gateway and read-only IBKR sync against paper API
+	$(RUN) env IBKR_HOST=ibkr-gateway IBKR_PORT=4004 $(COMPOSE_DEV) --profile ibkr-gateway --profile ibkr up -d ibkr-gateway ibkr-sync
+	@echo "IBKR stack: gateway + read-only sync"
+	@echo "Sync target: IBKR_HOST=ibkr-gateway IBKR_PORT=4004 (paper API)"
+	@echo "Host access: paper localhost:$${IBKR_GATEWAY_PAPER_PORT:-4002}, live localhost:$${IBKR_GATEWAY_LIVE_PORT:-4001}"
+
+ibkr-logs: ## Follow optional IBKR sync logs
+	$(COMPOSE_DEV) --profile ibkr logs -f ibkr-sync
+
+ibkr-gateway-logs: ## Follow optional managed IB Gateway logs
+	$(COMPOSE_DEV) --profile ibkr-gateway logs -f ibkr-gateway
 
 seed-demo: ## Seed sample tickers + theses so the UI has content on first load
 	PSQL_URL="$(PSQL_URL)" ./scripts/seed-demo.sh
@@ -163,7 +187,7 @@ web-e2e: ## Playwright UI workflow tests (mocked API, no DB mutation)
 # ---- run (local dev; build once with `make build`, then ./target/release/<bin>) ----
 # $(RUN) injects infisical when installed (see top of file). Override with
 # `make RUN= run-gateway` to bypass.
-.PHONY: run-gateway run-ingest run-regime run-router run-risk run-goalpost llmsmoke
+.PHONY: run-gateway run-ingest run-regime run-router run-risk run-goalpost run-price-alerts llmsmoke
 run-gateway: ## Run the gateway
 	$(RUN) cargo run --release --bin gateway
 
@@ -196,6 +220,9 @@ run-discovery: ## Run the discovery scanner (cheap-wide signals → discovery_ca
 
 run-reflection: ## Run the reflection service (predictions → outcomes → calibration)
 	$(RUN) cargo run --release --bin reflection
+
+run-price-alerts: ## Run the price alert evaluator (manual + AI price levels)
+	$(RUN) cargo run --release --bin price-alerts
 
 llmsmoke: ## One-shot LLM round-trip — picks transport from env (mock if no key)
 	$(RUN) cargo run --release --bin llmsmoke -- "$(MSG)"
@@ -234,7 +261,7 @@ watch-all: ## Show how to run all services in watch mode
 	@echo "  make watch-ingest    # only when actively iterating on adapter code"
 
 # ---- Python ----
-.PHONY: py-setup py-check run-context research
+.PHONY: py-setup py-check run-context research sync-ibkr run-ibkr-sync
 py-setup: ## Create venv + install pinned python deps
 	cd py && python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 
@@ -250,6 +277,12 @@ research: ## Run product/theme web research for one symbol (SYMBOL=AMD make rese
 
 source-tasks: ## Run due Python-owned source tasks once (LIMIT=5)
 	cd py && $(RUN) .venv/bin/python -m stocks.source_tasks --once $(if $(LIMIT),--limit $(LIMIT))
+
+sync-ibkr: ## Run one IBKR read-only broker sync pass
+	cd py && $(RUN) .venv/bin/python -m stocks.ibkr_sync --once
+
+run-ibkr-sync: ## Run IBKR read-only broker sync loop locally
+	cd py && $(RUN) .venv/bin/python -m stocks.ibkr_sync --loop
 
 draft-thesis: ## Draft a thesis from the latest ticker_context (SYMBOL=NVDA make draft-thesis)
 	cd py && $(RUN) .venv/bin/python -m stocks.thesis_engine $(SYMBOL)

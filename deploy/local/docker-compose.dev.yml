@@ -78,6 +78,7 @@ x-rust-common: &rust-common
     - EVAL_INTERVAL_SECS=20
     - CONSENSUS_INTERVAL_SECS=30
     - DISCOVERY_INTERVAL_SECS=60
+    - PRICE_ALERT_INTERVAL_SECS=${PRICE_ALERT_INTERVAL_SECS:-60}
     - RUST_LOG=info,sqlx=warn
     # cargo-watch occasionally hits "could not find Cargo.toml" if the bind
     # mount isn't ready; small delay tolerates the race on first start.
@@ -169,6 +170,13 @@ services:
       cargo watch -w src -w Cargo.toml
         -x 'run --bin discovery'
 
+  price-alerts:
+    <<: *rust-common
+    container_name: stocks-price-alerts
+    command: >-
+      cargo watch -w src -w Cargo.toml
+        -x 'run --bin price-alerts'
+
   # Vite dev server with HMR. Browser hits :5173 directly during dev; vite's
   # proxy forwards /api/* and /healthz + /api/stream (SSE) to the gateway
   # container. Production serves the SPA from the rust gateway via rust-embed.
@@ -234,6 +242,55 @@ services:
       - FIRECRAWL_SEARCH_TBS=${FIRECRAWL_SEARCH_TBS:-qdr:m}
     command: >-
       sh -c "pip install -q -e . && python -m stocks.cognition_service"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+  ibkr-gateway:
+    image: ${IBKR_GATEWAY_IMAGE:-ghcr.io/gnzsnz/ib-gateway:10.45.1h}
+    container_name: stocks-ibkr-gateway
+    profiles: ["ibkr-gateway"]
+    restart: unless-stopped
+    environment:
+      - TWS_USERID
+      - TWS_PASSWORD
+      - TWS_USERID_PAPER
+      - TWS_PASSWORD_PAPER
+      - TRADING_MODE=${IBKR_TRADING_MODE:-paper}
+      - READ_ONLY_API=${IBKR_GATEWAY_READ_ONLY_API:-yes}
+      - TWS_ACCEPT_INCOMING=${IBKR_TWS_ACCEPT_INCOMING:-accept}
+      - TWS_SETTINGS_PATH=${IBKR_GATEWAY_SETTINGS_PATH:-}
+      - TIME_ZONE=${IBKR_GATEWAY_TIME_ZONE:-Europe/Amsterdam}
+      - TWOFA_TIMEOUT_ACTION=${IBKR_TWOFA_TIMEOUT_ACTION:-restart}
+      - RELOGIN_AFTER_TWOFA_TIMEOUT=${IBKR_RELOGIN_AFTER_TWOFA_TIMEOUT:-yes}
+      - VNC_SERVER_PASSWORD
+    ports:
+      - "127.0.0.1:${IBKR_GATEWAY_LIVE_PORT:-4001}:4003"
+      - "127.0.0.1:${IBKR_GATEWAY_PAPER_PORT:-4002}:4004"
+      - "127.0.0.1:${IBKR_GATEWAY_VNC_PORT:-15900}:5900"
+  ibkr-sync:
+    image: python:3.12-slim
+    container_name: stocks-ibkr-sync
+    profiles: ["ibkr"]
+    working_dir: /repo/py
+    volumes:
+      - ../..:/repo
+    environment:
+      - DATABASE_URL=postgres://stocks:stocks_dev_only@postgres:5432/stocks?sslmode=disable
+      - NATS_URL=nats://nats:4222
+      - IBKR_HOST=${IBKR_HOST:-host.docker.internal}
+      - IBKR_PORT=${IBKR_PORT:-7497}
+      - IBKR_CLIENT_ID=${IBKR_CLIENT_ID:-81}
+      - IBKR_ACCOUNT
+      - IBKR_READONLY=${IBKR_READONLY:-true}
+      - IBKR_TIMEOUT_SECONDS=${IBKR_TIMEOUT_SECONDS:-6}
+      - IBKR_SYNC_INTERVAL_SECONDS=${IBKR_SYNC_INTERVAL_SECONDS:-30}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: >-
+      sh -c "pip install -q -e . && python -m stocks.ibkr_sync --loop"
     depends_on:
       postgres:
         condition: service_healthy

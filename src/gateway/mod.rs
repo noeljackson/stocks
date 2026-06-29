@@ -91,7 +91,8 @@ impl Gateway {
             )
             .await?;
         let market = self.bind_market_bar_consumer().await?;
-        Ok(vec![thesis, risk, market])
+        let price_alert = self.bind_price_alert_consumer().await?;
+        Ok(vec![thesis, risk, market, price_alert])
     }
 
     pub fn start_derived_refresh_worker(&self) -> tokio::task::JoinHandle<()> {
@@ -174,6 +175,31 @@ impl Gateway {
                         let env = serde_json::json!({
                             "subject": msg.subject.as_str(),
                             "kind": "market_bar",
+                            "payload": payload_json,
+                        });
+                        hub.broadcast(env.to_string());
+                        Ok(())
+                    }
+                },
+            )
+            .await
+    }
+
+    async fn bind_price_alert_consumer(&self) -> Result<ConsumerHandle> {
+        let hub = self.hub.clone();
+        self.bus
+            .consume(
+                subjects::STREAM_MARKET,
+                "gateway-price-alerts",
+                subjects::PRICE_ALERT_FILTER,
+                move |msg| {
+                    let hub = hub.clone();
+                    async move {
+                        let payload_json: serde_json::Value =
+                            serde_json::from_slice(&msg.payload).unwrap_or(serde_json::Value::Null);
+                        let env = serde_json::json!({
+                            "subject": msg.subject.as_str(),
+                            "kind": "price_alert",
                             "payload": payload_json,
                         });
                         hub.broadcast(env.to_string());

@@ -11,7 +11,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response, Sse, sse::Event},
-    routing::{get, post},
+    routing::{get, patch, post},
 };
 use chrono::NaiveDate;
 use futures::{
@@ -28,8 +28,9 @@ use super::Gateway;
 use crate::llm::prompts;
 use crate::platform::{
     subjects,
-    technical::{TechnicalState, build_technical_state},
+    technical::{TechnicalState, build_technical_state_with_benchmarks},
 };
+use crate::price_alerts::{PriceAlertRuleInput, PriceAlertRulePatch};
 use crate::web::Dist;
 
 pub(super) fn build(gw: Arc<Gateway>) -> Router {
@@ -37,6 +38,16 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .route("/api/alerts", get(list_alerts))
         .route("/api/alerts/{id}/ack", post(ack_alert))
+        .route(
+            "/api/price-alerts",
+            get(list_price_alert_rules).post(create_price_alert_rule),
+        )
+        .route("/api/price-alerts/{id}", patch(update_price_alert_rule))
+        .route(
+            "/api/price-alerts/{id}/disable",
+            post(disable_price_alert_rule),
+        )
+        .route("/api/price-alert-events", get(list_price_alert_events))
         .route("/api/regime", get(get_regime))
         .route("/api/tickers", get(list_tickers).post(add_ticker))
         .route("/api/theses", get(list_theses))
@@ -784,7 +795,27 @@ async fn technical_state_for(gw: &Gateway, symbol: &str) -> AnyResult<TechnicalS
             }
         }
     }
-    Ok(build_technical_state(symbol, &daily, &intraday))
+    let mut benchmarks = Vec::new();
+    for benchmark in ["QQQ", "SMH"] {
+        if benchmark.eq_ignore_ascii_case(symbol) {
+            continue;
+        }
+        match gw.store.daily_technical_bars_for(benchmark, 365 * 30).await {
+            Ok(rows) if !rows.is_empty() => benchmarks.push((benchmark, rows)),
+            Ok(_) => {
+                warn!(symbol = %symbol, benchmark, "technical benchmark bars unavailable");
+            }
+            Err(e) => {
+                warn!(symbol = %symbol, benchmark, error = %e, "get technical benchmark bars failed");
+            }
+        }
+    }
+    Ok(build_technical_state_with_benchmarks(
+        symbol,
+        &daily,
+        &intraday,
+        &benchmarks,
+    ))
 }
 
 async fn maybe_backfill_intraday(
@@ -1790,6 +1821,109 @@ async fn ack_alert(State(gw): State<Arc<Gateway>>, Path(id): Path<i64>) -> impl 
         Ok(false) => (StatusCode::NOT_FOUND, format!("alert {id} not found")).into_response(),
         Err(e) => {
             warn!(id, error = %e, "ack_alert failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PriceAlertsQuery {
+    #[serde(default)]
+    symbol: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+async fn list_price_alert_rules(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<PriceAlertsQuery>,
+) -> impl IntoResponse {
+    let limit = q.limit.unwrap_or(200).clamp(1, 500);
+    match gw
+        .store
+        .list_price_alert_rules(q.symbol.as_deref(), q.status.as_deref(), limit)
+        .await
+    {
+        Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
+        Err(e) => {
+            warn!(error = %e, "list_price_alert_rules failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn create_price_alert_rule(
+    State(gw): State<Arc<Gateway>>,
+    Json(req): Json<PriceAlertRuleInput>,
+) -> impl IntoResponse {
+    if let Err(e) = crate::price_alerts::validate_rule_input(&req) {
+        return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
+    }
+    match gw.store.create_price_alert_rule(req).await {
+        Ok(Some(row)) => (StatusCode::CREATED, Json(row)).into_response(),
+        Ok(None) => (StatusCode::CONFLICT, "duplicate price alert rule").into_response(),
+        Err(e) => {
+            warn!(error = %e, "create_price_alert_rule failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn update_price_alert_rule(
+    State(gw): State<Arc<Gateway>>,
+    Path(id): Path<i64>,
+    Json(req): Json<PriceAlertRulePatch>,
+) -> impl IntoResponse {
+    if let Err(e) = crate::price_alerts::validate_rule_patch(&req) {
+        return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
+    }
+    match gw.store.update_price_alert_rule(id, req).await {
+        Ok(Some(row)) => (StatusCode::OK, Json(row)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, format!("price alert {id} not found")).into_response(),
+        Err(e) => {
+            warn!(id, error = %e, "update_price_alert_rule failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn disable_price_alert_rule(
+    State(gw): State<Arc<Gateway>>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    match gw.store.disable_price_alert_rule(id).await {
+        Ok(Some(row)) => (StatusCode::OK, Json(row)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, format!("price alert {id} not found")).into_response(),
+        Err(e) => {
+            warn!(id, error = %e, "disable_price_alert_rule failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PriceAlertEventsQuery {
+    #[serde(default)]
+    symbol: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+async fn list_price_alert_events(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<PriceAlertEventsQuery>,
+) -> impl IntoResponse {
+    let limit = q.limit.unwrap_or(200).clamp(1, 500);
+    match gw
+        .store
+        .list_price_alert_events(q.symbol.as_deref(), limit)
+        .await
+    {
+        Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
+        Err(e) => {
+            warn!(error = %e, "list_price_alert_events failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }

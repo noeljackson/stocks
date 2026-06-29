@@ -193,13 +193,15 @@ only if it carries signal beyond the free set.
 ## 7. Position / portfolio state
 
 For v0 the operator sets the account size manually (#26 — already shipped).
-Once #25 (IBKR bridge) lands, real position rows replace the manual entry.
+Once #25 (IBKR bridge) is live against the operator's local TWS/Gateway or the
+optional managed IB Gateway compose profile, broker position rows replace manual
+portfolio entry for risk sizing.
 
 | Data | Why | Vendor | Tier / cost | Status |
 |---|---|---|---|---|
 | Account size + high-water mark | Risk overlay portfolio frame (cash floor, single-name cap, drawdown brake) | Operator-set via `PUT /api/portfolio` | n/a | wired — `db/migrations/0012_portfolio_settings.sql` |
-| Open positions + fills | Real-time portfolio state for risk overlay; replaces manual entry | **IBKR** via `ib_insync` against the gateway | IBKR Pro $10/mo activity min (waived with active trading); paper trading free | not wired (#25) |
-| Realized PnL | Drawdown anchor in `risk::derive_portfolio` | Currently SUM of `position.realized_pnl WHERE closed_at IS NOT NULL`; IBKR will populate | n/a | wired — `Store::realized_pnl_total` |
+| Open positions + fills | Real-time portfolio state for risk overlay; replaces manual entry | **IBKR** via `ib_insync` against TWS/IB Gateway | IBKR Pro $10/mo activity min (waived with active trading); paper trading free | partial — `py/src/stocks/ibkr_sync.py` connects read-only, upserts broker-tagged `position` rows, appends deduped broker fills, updates `portfolio_settings` from NetLiquidation, and publishes `position.updated`; use an existing local TWS/Gateway with `make sync-ibkr` one-shot or `make ibkr-up` loop, or run the managed compose gateway with `make ibkr-stack-up` (paper API defaults to `ibkr-gateway:4004`, host port `4002`; live host port `4001`). IBKR credentials must be stored in Infisical dev (`TWS_USERID`/`TWS_PASSWORD`, or paper variants when `TRADING_MODE=both`). Order placement remains explicitly not wired |
+| Realized PnL | Drawdown anchor in `risk::derive_portfolio` | Currently SUM of `position.realized_pnl WHERE closed_at IS NOT NULL`; broker-imported account equity now updates the portfolio frame | n/a | wired — `Store::realized_pnl_total` plus IBKR NetLiquidation high-water update |
 
 ## 8. Auth / LLM
 

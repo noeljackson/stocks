@@ -19,6 +19,7 @@ resources:
   - consensus.yaml
   - reflection.yaml
   - discovery.yaml
+  - price-alerts.yaml
   - context-maintainer.yaml
 
 labels:

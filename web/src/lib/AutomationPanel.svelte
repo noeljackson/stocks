@@ -72,6 +72,13 @@
     return reasons.length > 0 ? "blocked" : "ok";
   }
 
+  function marketStatus(row: AutomationPermission): string {
+    if (!row.latest_proof) return "missing";
+    return row.latest_proof.data_freshness?.market_readiness_status
+      ?? row.latest_proof.data_freshness?.market_readiness?.status
+      ?? "missing";
+  }
+
   function simOrderCount(row: AutomationPermission): number {
     return row.reconciliation?.order_plan?.orders?.length ?? 0;
   }
@@ -239,6 +246,7 @@
                 <dl>
                   <dt>result</dt><dd>{titleize(row.latest_proof?.result ?? "missing")}</dd>
                   <dt>data</dt><dd>{titleize(row.latest_proof?.data_freshness?.status ?? "missing")}</dd>
+                  <dt>market</dt><dd>{titleize(marketStatus(row))}</dd>
                   <dt>session</dt><dd>{titleize(row.latest_proof?.session_state?.label ?? "missing")}</dd>
                   <dt>risk</dt><dd>{titleize(proofRisk(row))}</dd>
                   <dt>allocator</dt><dd>{titleize(allocatorStatus(row))}</dd>

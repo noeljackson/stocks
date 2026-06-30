@@ -5,6 +5,7 @@
 //! gates.
 
 mod allocator;
+mod market_readiness;
 mod policy;
 mod simulator;
 
@@ -24,6 +25,10 @@ use crate::risk;
 
 pub use allocator::{
     AllocationDecision, AllocationLimits, AllocationRequest, SleeveAllocation, evaluate_allocation,
+};
+pub use market_readiness::{
+    HaltState, MarketReadinessDecision, MarketReadinessInput, NoTradeWindow,
+    evaluate_market_readiness,
 };
 pub use policy::{
     AutomationControlState, BrokerPolicyState, CapitalPolicyState, DataFreshnessPolicyState,
@@ -145,6 +150,7 @@ pub struct TechnicalFeature {
     pub entry_stance: String,
     pub summary: String,
     pub close: Option<f64>,
+    pub previous_close: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -253,6 +259,9 @@ pub fn builtin_strategy_definitions() -> Vec<BuiltinStrategyDefinition> {
             config: json!({
                 "default_weight_pct": 0.05,
                 "max_bar_age_days": 5,
+                "max_bar_gap_pct": 20.0,
+                "corporate_actions_adjusted": true,
+                "no_trade_windows_utc": [],
                 "validation_horizon_days": 20,
                 "long_entry_stances": ["actionable", "starter_ok", "constructive"],
                 "flat_entry_stances": ["avoid", "avoid_chase", "wait_breakout", "wait_reversal", "wait_reclaim", "wait_data"]
@@ -268,6 +277,9 @@ pub fn builtin_strategy_definitions() -> Vec<BuiltinStrategyDefinition> {
             config: json!({
                 "default_weight_pct": 0.05,
                 "max_bar_age_days": 5,
+                "max_bar_gap_pct": 20.0,
+                "corporate_actions_adjusted": true,
+                "no_trade_windows_utc": [],
                 "validation_horizon_days": 20,
                 "actionable_thesis_states": ["actionable", "position_open"],
                 "long_entry_stances": ["actionable", "starter_ok", "constructive"]
@@ -418,8 +430,9 @@ async fn load_strategy_features(store: &Store, symbol: &str) -> Result<StrategyF
     let technical = if daily.is_empty() {
         None
     } else {
+        let previous_close = daily.iter().rev().nth(1).map(|bar| bar.close);
         let technical_state = build_technical_state(symbol, &daily, &[]);
-        Some(technical_feature(&technical_state))
+        Some(technical_feature(&technical_state, previous_close))
     };
     let thesis = store
         .theses_for_symbol(symbol)
@@ -451,7 +464,7 @@ async fn load_strategy_features(store: &Store, symbol: &str) -> Result<StrategyF
     })
 }
 
-fn technical_feature(state: &TechnicalState) -> TechnicalFeature {
+fn technical_feature(state: &TechnicalState, previous_close: Option<f64>) -> TechnicalFeature {
     TechnicalFeature {
         as_of: state.as_of.unwrap_or_else(Utc::now),
         state: state.state.clone(),
@@ -459,6 +472,7 @@ fn technical_feature(state: &TechnicalState) -> TechnicalFeature {
         entry_stance: state.setup.entry_stance.clone(),
         summary: state.summary.clone(),
         close: state.daily.as_ref().map(|daily| daily.close),
+        previous_close,
     }
 }
 
@@ -526,8 +540,8 @@ async fn proof_policy_input(
     now: DateTime<Utc>,
 ) -> Result<ProofPolicyInput> {
     let control = store.automation_control_state().await?;
-    let data_freshness = data_freshness_policy_state(input);
     let session = session_policy_state(now);
+    let data_freshness = data_freshness_policy_state(input, &session);
     let (risk, capital) = risk_and_capital_policy_state(store, candidate, decision).await?;
     let sleeve = store
         .automation_sleeve_policy_state(candidate.permission.permission_id)
@@ -550,22 +564,49 @@ async fn proof_policy_input(
     })
 }
 
-fn data_freshness_policy_state(input: &StrategyEvaluationInput) -> DataFreshnessPolicyState {
+fn data_freshness_policy_state(
+    input: &StrategyEvaluationInput,
+    session: &SessionPolicyState,
+) -> DataFreshnessPolicyState {
     let max_age_days = config_i64(&input.definition.config, "max_bar_age_days", 5).max(1);
-    let Some(technical) = input.features.technical.as_ref() else {
-        return DataFreshnessPolicyState {
-            status: "missing".to_string(),
-            latest_bar_at: None,
-            max_age_days,
-            stale: true,
-        };
-    };
-    let stale = input.now - technical.as_of > ChronoDuration::days(max_age_days);
+    let technical = input.features.technical.as_ref();
+    let latest_bar_at = technical.map(|technical| technical.as_of);
+    let latest_price = technical.and_then(|technical| technical.close);
+    let previous_close = technical.and_then(|technical| technical.previous_close);
+    let stale =
+        latest_bar_at.is_none_or(|latest| input.now - latest > ChronoDuration::days(max_age_days));
+    let readiness = evaluate_market_readiness(&MarketReadinessInput {
+        now: input.now,
+        latest_bar_at,
+        latest_price,
+        previous_close,
+        max_age_days,
+        max_gap_pct: config_f64(&input.definition.config, "max_bar_gap_pct", 20.0).max(0.0),
+        session_open: session.is_open,
+        session_label: session.label.clone(),
+        halt_state: halt_state_from_config(&input.definition.config),
+        corporate_actions_adjusted: config_bool(
+            &input.definition.config,
+            "corporate_actions_adjusted",
+            true,
+        ),
+        no_trade_windows_utc: no_trade_windows_utc(&input.definition.config),
+    });
     DataFreshnessPolicyState {
-        status: if stale { "stale" } else { "fresh" }.to_string(),
-        latest_bar_at: Some(technical.as_of),
+        status: if technical.is_none() {
+            "missing"
+        } else if stale {
+            "stale"
+        } else {
+            "fresh"
+        }
+        .to_string(),
+        latest_bar_at,
         max_age_days,
         stale,
+        market_readiness_status: readiness.status,
+        market_readiness_blocked_reasons: readiness.blocked_reasons,
+        market_readiness_snapshot: readiness.snapshot,
     }
 }
 
@@ -1004,6 +1045,48 @@ fn config_f64(config: &Value, key: &str, default: f64) -> f64 {
     config.get(key).and_then(Value::as_f64).unwrap_or(default)
 }
 
+fn config_bool(config: &Value, key: &str, default: bool) -> bool {
+    config.get(key).and_then(Value::as_bool).unwrap_or(default)
+}
+
+fn halt_state_from_config(config: &Value) -> HaltState {
+    match config.get("halt_state").and_then(Value::as_str) {
+        Some("halted" | "suspended") => HaltState::Halted,
+        Some("unknown") => HaltState::Unknown,
+        _ if config_bool(config, "halted", false) => HaltState::Halted,
+        _ => HaltState::NotHalted,
+    }
+}
+
+fn no_trade_windows_utc(config: &Value) -> Vec<NoTradeWindow> {
+    config
+        .get("no_trade_windows_utc")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let label = item
+                .get("label")
+                .and_then(Value::as_str)
+                .unwrap_or("configured")
+                .to_string();
+            let start_utc = parse_utc_time(item.get("start_utc").and_then(Value::as_str)?)?;
+            let end_utc = parse_utc_time(item.get("end_utc").and_then(Value::as_str)?)?;
+            Some(NoTradeWindow {
+                label,
+                start_utc,
+                end_utc,
+            })
+        })
+        .collect()
+}
+
+fn parse_utc_time(value: &str) -> Option<NaiveTime> {
+    NaiveTime::parse_from_str(value, "%H:%M:%S")
+        .ok()
+        .or_else(|| NaiveTime::parse_from_str(value, "%H:%M").ok())
+}
+
 fn stance_list_contains(config: &Value, key: &str, value: &str) -> bool {
     config
         .get(key)
@@ -1059,6 +1142,7 @@ fn feature_snapshot(
             "entry_stance": t.entry_stance,
             "summary": t.summary,
             "close": t.close,
+            "previous_close": t.previous_close,
         })
     });
     let thesis = input.features.thesis.as_ref().map(|t| {
@@ -1146,6 +1230,7 @@ mod tests {
             entry_stance: entry_stance.to_string(),
             summary: "constructive setup".to_string(),
             close: Some(100.0),
+            previous_close: Some(99.0),
         }
     }
 
@@ -1313,12 +1398,19 @@ mod tests {
     fn missing_technical_features_become_missing_data_policy_state() {
         let mut input = base_input("technical_timing");
         input.features.technical = None;
+        let session = session_policy_state(input.now);
 
-        let state = data_freshness_policy_state(&input);
+        let state = data_freshness_policy_state(&input, &session);
 
         assert_eq!(state.status, "missing");
         assert!(state.stale);
         assert_eq!(state.latest_bar_at, None);
+        assert!(
+            state
+                .market_readiness_blocked_reasons
+                .iter()
+                .any(|reason| reason == "market_price_missing")
+        );
     }
 
     #[test]

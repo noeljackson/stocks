@@ -2144,6 +2144,58 @@ test("chart defaults to ALL range and interval controls change bar size only", a
   ).length).toBeGreaterThanOrEqual(2);
 });
 
+test("chart drawing tools create move delete persist and isolate by symbol", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+
+  const layer = page.getByTestId("chart-drawing-layer");
+  await expect(layer).toBeVisible();
+  const box = await layer.boundingBox();
+  expect(box).not.toBeNull();
+  if (!box) return;
+  const clickLayer = async (x: number, y: number) => {
+    await page.mouse.click(box.x + x, box.y + y);
+  };
+
+  await page.getByTestId("draw-tool-trendline").click();
+  await clickLayer(180, 120);
+  await clickLayer(360, 210);
+  const trendline = page.getByTestId("chart-drawing-trendline").first();
+  await expect(trendline).toBeVisible();
+  const beforeMove = await trendline.getAttribute("data-model");
+
+  await page.getByTestId("draw-tool-select").click();
+  await page.mouse.move(box.x + 270, box.y + 165);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 315, box.y + 190);
+  await page.mouse.up();
+  await expect(trendline).toHaveAttribute("data-selected", "true");
+  await expect.poll(() => trendline.getAttribute("data-model")).not.toBe(beforeMove);
+
+  await page.keyboard.press("Delete");
+  await expect(page.getByTestId("chart-drawing-trendline")).toHaveCount(0);
+
+  await page.getByTestId("draw-tool-horizontal").click();
+  await clickLayer(280, 180);
+  await expect(page.getByTestId("chart-drawing-horizontal")).toHaveCount(1);
+  await page.getByTestId("range-1Y").click();
+  await expect(page.getByTestId("chart-drawing-horizontal")).toHaveCount(1);
+
+  await page.reload();
+  await expect(page.locator(".symbol-box input")).toHaveValue("MSFT");
+  await expect(page.getByTestId("chart-drawing-horizontal")).toHaveCount(1);
+
+  await page.locator(".symbol-box input").fill("OKTA");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".symbol-box input")).toHaveValue("OKTA");
+  await expect(page.getByTestId("chart-drawing-horizontal")).toHaveCount(0);
+
+  await page.locator(".symbol-box input").fill("MSFT");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".symbol-box input")).toHaveValue("MSFT");
+  await expect(page.getByTestId("chart-drawing-horizontal")).toHaveCount(1);
+});
+
 test("chart patches latest candle from market bar stream events", async ({ page }) => {
   await mockApi(page, {
     streamEvents: [{

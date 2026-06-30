@@ -5163,6 +5163,33 @@ impl Store {
 
     pub async fn automation_status(&self, symbol: Option<&str>) -> Result<serde_json::Value> {
         let control = self.automation_control_state().await?;
+        let paper_order_adapter = sqlx::query_scalar::<_, serde_json::Value>(
+            r#"SELECT jsonb_build_object(
+                     'enabled', enabled,
+                     'broker', broker,
+                     'account_mode', account_mode,
+                     'broker_account', broker_account,
+                     'max_position_snapshot_age_seconds', max_position_snapshot_age_seconds,
+                     'updated_by', updated_by,
+                     'updated_at', updated_at
+                   )
+                 FROM automation_paper_order_config
+                WHERE config_id = 1"#,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .context("automation paper order config")?
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "enabled": false,
+                "broker": "ibkr",
+                "account_mode": "paper",
+                "broker_account": null,
+                "max_position_snapshot_age_seconds": 120,
+                "updated_by": null,
+                "updated_at": null,
+            })
+        });
         let rows = sqlx::query(
             r#"SELECT p.status AS permission_status,
                       p.manual_freeze,
@@ -5200,6 +5227,7 @@ impl Store {
                         'desired_position', desired.row,
                         'latest_proof', proof.row,
                         'reconciliation', reconciliation.row,
+                        'paper_orders', paper_order.row,
                         'broker_position', broker.row,
                         'incidents', COALESCE(incident.rows, '[]'::jsonb)
                       ) AS permission
@@ -5270,7 +5298,8 @@ impl Store {
                      LIMIT 1
                  ) proof ON TRUE
             LEFT JOIN LATERAL (
-                    SELECT jsonb_build_object(
+                    SELECT ar.reconciliation_id,
+                           jsonb_build_object(
                              'reconciliation_id', ar.reconciliation_id,
                              'status', ar.status,
                              'idempotency_key', ar.idempotency_key,
@@ -5288,6 +5317,58 @@ impl Store {
                   ORDER BY ar.updated_at DESC
                      LIMIT 1
                  ) reconciliation ON TRUE
+            LEFT JOIN LATERAL (
+                    SELECT jsonb_build_object(
+                             'orders_total', COUNT(*)::int,
+                             'submitted', COUNT(*) FILTER (WHERE bo.status = 'submitted')::int,
+                             'filled', COUNT(*) FILTER (WHERE bo.status = 'filled')::int,
+                             'partially_filled', COUNT(*) FILTER (WHERE bo.status = 'partially_filled')::int,
+                             'rejected', COUNT(*) FILTER (WHERE bo.status = 'rejected')::int,
+                             'cancelled', COUNT(*) FILTER (WHERE bo.status = 'cancelled')::int,
+                             'latest_event', (
+                               SELECT jsonb_build_object(
+                                        'event_id', e.event_id,
+                                        'client_order_id', e.client_order_id,
+                                        'broker_order_id', e.broker_order_id,
+                                        'event_kind', e.event_kind,
+                                        'status', e.status,
+                                        'filled_quantity', e.filled_quantity::float8,
+                                        'fill_price', e.fill_price::float8,
+                                        'message', e.message,
+                                        'created_at', e.created_at
+                                      )
+                                 FROM automation_broker_order_event e
+                                WHERE e.reconciliation_id = reconciliation.reconciliation_id
+                             ORDER BY e.created_at DESC
+                                LIMIT 1
+                             ),
+                             'orders', COALESCE(jsonb_agg(jsonb_build_object(
+                               'order_id', bo.order_id,
+                               'client_order_id', bo.client_order_id,
+                               'broker_order_id', bo.broker_order_id,
+                               'parent_client_order_id', bo.parent_client_order_id,
+                               'order_role', bo.order_role,
+                               'action', bo.action,
+                               'position_side', bo.position_side,
+                               'order_type', bo.order_type,
+                               'quantity', bo.quantity::float8,
+                               'limit_price', bo.limit_price::float8,
+                               'stop_price', bo.stop_price::float8,
+                               'transmit', bo.transmit,
+                               'status', bo.status,
+                               'created_at', bo.created_at,
+                               'updated_at', bo.updated_at
+                             ) ORDER BY bo.created_at DESC), '[]'::jsonb)
+                           ) AS row
+                      FROM (
+                            SELECT bo.*
+                              FROM automation_broker_order bo
+                             WHERE reconciliation.reconciliation_id IS NOT NULL
+                               AND bo.reconciliation_id = reconciliation.reconciliation_id
+                          ORDER BY bo.created_at DESC
+                             LIMIT 9
+                           ) bo
+                 ) paper_order ON TRUE
             LEFT JOIN LATERAL (
                     SELECT jsonb_build_object(
                              'open_positions', COUNT(*)::int,
@@ -5384,6 +5465,7 @@ impl Store {
                 "source": "automation_control_state",
                 "reason": control.kill_switch_reason
             },
+            "paper_order_adapter": paper_order_adapter,
             "summary": {
                 "permissions_total": permissions.len() as i64,
                 "approved": approved,

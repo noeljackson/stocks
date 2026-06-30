@@ -268,7 +268,7 @@ watch-all: ## Show how to run all services in watch mode
 	@echo "  make run-strategy-runner"
 
 # ---- Python ----
-.PHONY: py-setup py-check run-context research sync-ibkr run-ibkr-sync
+.PHONY: py-setup py-check run-context research sync-ibkr run-ibkr-sync ibkr-paper-orders run-ibkr-paper-orders
 py-setup: ## Create venv + install pinned python deps
 	cd py && python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"
 
@@ -290,6 +290,12 @@ sync-ibkr: ## Run one IBKR read-only broker sync pass
 
 run-ibkr-sync: ## Run IBKR read-only broker sync loop locally
 	cd py && $(RUN) .venv/bin/python -m stocks.ibkr_sync --loop
+
+ibkr-paper-orders: ## Run one disabled-by-default IBKR paper order adapter pass
+	cd py && $(RUN) .venv/bin/python -m stocks.ibkr_paper_orders --once
+
+run-ibkr-paper-orders: ## Run disabled-by-default IBKR paper order adapter loop locally
+	cd py && $(RUN) .venv/bin/python -m stocks.ibkr_paper_orders --loop
 
 draft-thesis: ## Draft a thesis from the latest ticker_context (SYMBOL=NVDA make draft-thesis)
 	cd py && $(RUN) .venv/bin/python -m stocks.thesis_engine $(SYMBOL)

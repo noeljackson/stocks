@@ -13,7 +13,7 @@ strategy definition
   -> automation_proof
   -> desired_strategy_position, when proof passes
   -> automation_execution_reconciliation
-  -> digital broker simulator now, broker adapter later
+  -> digital broker simulator in shadow, paper adapter only when explicitly enabled
   -> fills attributed back to sleeves
 ```
 
@@ -62,7 +62,19 @@ market has moved; the runner never backfills a signal into the past.
 reconciles against broker state. In shadow mode the digital broker simulator
 can produce `noop`, `submitted`, `blocked`, `incident`, or `reconciled` rows,
 with deterministic order plans, idempotency keys, simulated fills, and sleeve
-attribution. Paper/live adapters are later work.
+attribution.
+
+`automation_paper_order_config` is the singleton gate for the first broker
+write path. It defaults to disabled, only allows `broker='ibkr'`,
+`account_mode='paper'`, and requires a `DU...` IBKR paper account before the
+adapter can submit anything. The Python adapter also requires
+`IBKR_PAPER_ORDERS_ENABLED=true` at runtime.
+
+`automation_broker_order` stores the current paper broker order rows tied to a
+reconciliation: broker/client ids, parent-child bracket links, order role,
+action, type, quantity, prices, transmit flag, and latest status.
+`automation_broker_order_event` is the append-only lifecycle log for submitted
+status, fills, partial fills, rejects, cancels, errors, and unknown statuses.
 
 `automation_incident` is the operational safety log for stale broker state,
 irreconcilable sleeves, duplicate submission risk, repeated rejects, or any
@@ -81,6 +93,10 @@ Reconciliation is idempotent per desired-state/proof pair. Duplicate simulator
 submissions return the existing reconciliation row and do not append another
 fill or mutate sleeve state again.
 
+Paper order submission is idempotent per reconciliation/client order id. If an
+order already exists, the adapter blocks before calling IBKR and records the
+duplicate attempt as a blocked state.
+
 The existing risk overlay remains an independent hard gate. Automation proof
 may include risk output, but it does not replace the risk module.
 
@@ -97,8 +113,10 @@ Model outputs and LLM outputs are evidence inputs only. Future Kronos-style
 forecast signals may feed a strategy feature snapshot after validation, but
 they cannot create desired positions or orders directly.
 
-Broker order placement is out of scope for the schema slice. The first broker
-write path must be paper-only and explicitly gated by later issues.
+Live broker order placement is out of scope. The current broker write path is
+paper-only and rejects non-paper automation scopes, non-paper account modes,
+non-`DU...` accounts, disabled DB config, disabled env config, and live-looking
+IBKR API ports.
 
 ## Shadow Strategy Runner
 

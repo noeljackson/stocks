@@ -227,6 +227,11 @@ Manual exposure and automated exposure are separate sleeves. The broker may
 report one net position, but the app must keep sleeve attribution so strategy
 P/L, allocation use, manual freezes, and overrides remain auditable.
 
+The capital allocator uses those sleeves as the ownership boundary. A strategy
+can resize its own reserved notional, but other sleeves on the same symbol still
+count against symbol and portfolio caps, so one strategy cannot silently consume
+another strategy's allocation.
+
 Kronos-style forecasts, LLM reads, and other model outputs are evidence inputs
 only. They may appear in a strategy feature snapshot after validation, but they
 must not directly create desired positions, proofs, reconciliations, or orders.

@@ -15,9 +15,10 @@ use sqlx::{
 use std::time::Duration;
 
 use crate::automation::{
-    AutomationControlState, AutomationStrategyCandidate, BlockedProofWrite, BrokerPolicyState,
-    BuiltinStrategyDefinition, DesiredPositionReceipt, DesiredPositionWrite, LatestDesiredPosition,
-    SleevePolicyState, StrategyDefinitionInput, TargetSide, TradePermissionInput,
+    AllocationLimits, AutomationControlState, AutomationStrategyCandidate, BlockedProofWrite,
+    BrokerPolicyState, BuiltinStrategyDefinition, DesiredPositionReceipt, DesiredPositionWrite,
+    LatestDesiredPosition, SleeveAllocation, SleevePolicyState, StrategyDefinitionInput,
+    TargetSide, TradePermissionInput,
 };
 use crate::llm::prompts::{InvocationRecorder, InvocationRow};
 use crate::platform::domain::{
@@ -4285,6 +4286,82 @@ impl Store {
         })
     }
 
+    pub async fn automation_allocation_limits(&self) -> Result<AllocationLimits> {
+        let row = sqlx::query(
+            r#"SELECT max_strategy_allocation_pct::float8 AS max_strategy,
+                      max_symbol_allocation_pct::float8 AS max_symbol,
+                      max_portfolio_allocation_pct::float8 AS max_portfolio
+                 FROM automation_allocation_policy
+                WHERE id = true"#,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .context("automation_allocation_limits")?;
+        let Some(row) = row else {
+            return Ok(AllocationLimits {
+                max_strategy_allocation_pct: Some(0.10),
+                max_symbol_allocation_pct: Some(0.15),
+                max_portfolio_allocation_pct: Some(0.80),
+            });
+        };
+        Ok(AllocationLimits {
+            max_strategy_allocation_pct: row.try_get("max_strategy")?,
+            max_symbol_allocation_pct: row.try_get("max_symbol")?,
+            max_portfolio_allocation_pct: row.try_get("max_portfolio")?,
+        })
+    }
+
+    pub async fn automation_sleeve_allocations(&self) -> Result<Vec<SleeveAllocation>> {
+        let rows = sqlx::query(
+            r#"SELECT sleeve_id,
+                      symbol,
+                      sleeve_kind,
+                      status,
+                      COALESCE(allocated_notional_usd, current_notional_usd, 0)::float8 AS allocated_notional_usd,
+                      COALESCE(current_notional_usd, 0)::float8 AS current_notional_usd,
+                      COALESCE(realized_pnl, 0)::float8 AS realized_pnl,
+                      COALESCE(unrealized_pnl, 0)::float8 AS unrealized_pnl
+                 FROM automation_strategy_sleeve
+                WHERE closed_at IS NULL"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("automation_sleeve_allocations")?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(SleeveAllocation {
+                    sleeve_id: Some(row.try_get("sleeve_id")?),
+                    symbol: row.try_get("symbol")?,
+                    sleeve_kind: row.try_get("sleeve_kind")?,
+                    status: row.try_get("status")?,
+                    allocated_notional_usd: row.try_get("allocated_notional_usd")?,
+                    current_notional_usd: row.try_get("current_notional_usd")?,
+                    realized_pnl: row.try_get("realized_pnl")?,
+                    unrealized_pnl: row.try_get("unrealized_pnl")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn open_strategy_sleeve_id(
+        &self,
+        permission_id: uuid::Uuid,
+    ) -> Result<Option<uuid::Uuid>> {
+        sqlx::query_scalar(
+            r#"SELECT sleeve_id
+                 FROM automation_strategy_sleeve
+                WHERE permission_id = $1
+                  AND sleeve_kind = 'strategy'
+                  AND closed_at IS NULL
+             ORDER BY updated_at DESC
+                LIMIT 1"#,
+        )
+        .bind(permission_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("open_strategy_sleeve_id")
+    }
+
     pub async fn automation_sleeve_policy_state(
         &self,
         permission_id: uuid::Uuid,
@@ -4297,6 +4374,9 @@ impl Store {
                       current_notional_usd::float8 AS current_notional_usd,
                       allocated_notional_usd::float8 AS allocated_notional_usd,
                       realized_pnl::float8 AS realized_pnl,
+                      unrealized_pnl::float8 AS unrealized_pnl,
+                      last_mark_price::float8 AS last_mark_price,
+                      last_mark_at,
                       opened_at,
                       closed_at,
                       updated_at
@@ -4332,6 +4412,9 @@ impl Store {
                 "current_notional_usd": row.try_get::<f64, _>("current_notional_usd")?,
                 "allocated_notional_usd": row.try_get::<Option<f64>, _>("allocated_notional_usd")?,
                 "realized_pnl": row.try_get::<f64, _>("realized_pnl")?,
+                "unrealized_pnl": row.try_get::<f64, _>("unrealized_pnl")?,
+                "last_mark_price": row.try_get::<Option<f64>, _>("last_mark_price")?,
+                "last_mark_at": row.try_get::<Option<DateTime<Utc>>, _>("last_mark_at")?,
                 "opened_at": row.try_get::<DateTime<Utc>, _>("opened_at")?,
                 "closed_at": row.try_get::<Option<DateTime<Utc>>, _>("closed_at")?,
                 "updated_at": row.try_get::<DateTime<Utc>, _>("updated_at")?,
@@ -4455,10 +4538,10 @@ impl Store {
             r#"INSERT INTO desired_strategy_position
                  (permission_id, sleeve_id, symbol, thesis_id, strategy_id,
                   strategy_version, strategy_config_hash, target_side,
-                  target_weight_pct, rationale, reason_codes, feature_snapshot,
+                  target_weight_pct, target_notional_usd, rationale, reason_codes, feature_snapshot,
                   signal_ref, supersedes_desired_position_id)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-                       NULLIF($10, ''), $11::jsonb, $12::jsonb, $13::jsonb, $14)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                       NULLIF($11, ''), $12::jsonb, $13::jsonb, $14::jsonb, $15)
             RETURNING desired_position_id"#,
         )
         .bind(write.permission_id)
@@ -4470,6 +4553,7 @@ impl Store {
         .bind(&write.strategy_config_hash)
         .bind(write.target_side.as_str())
         .bind(write.target_weight_pct)
+        .bind(write.target_notional_usd)
         .bind(&write.rationale)
         .bind(&reason_codes)
         .bind(&write.feature_snapshot)
@@ -4478,6 +4562,18 @@ impl Store {
         .fetch_one(&mut *tx)
         .await
         .context("insert desired strategy position")?;
+
+        sqlx::query(
+            r#"UPDATE automation_strategy_sleeve
+                  SET allocated_notional_usd = $2,
+                      updated_at = now()
+                WHERE sleeve_id = $1"#,
+        )
+        .bind(sleeve_id)
+        .bind(write.target_notional_usd)
+        .execute(&mut *tx)
+        .await
+        .context("update automation sleeve allocation")?;
 
         sqlx::query(
             r#"INSERT INTO automation_sleeve_event
@@ -4688,6 +4784,9 @@ impl Store {
                              'current_notional_usd', sl.current_notional_usd::float8,
                              'allocated_notional_usd', sl.allocated_notional_usd::float8,
                              'realized_pnl', sl.realized_pnl::float8,
+                             'unrealized_pnl', sl.unrealized_pnl::float8,
+                             'last_mark_price', sl.last_mark_price::float8,
+                             'last_mark_at', sl.last_mark_at,
                              'opened_at', sl.opened_at,
                              'closed_at', sl.closed_at,
                              'updated_at', sl.updated_at

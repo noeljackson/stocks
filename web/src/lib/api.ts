@@ -212,6 +212,9 @@ export interface AutomationSleeve {
   current_notional_usd: number;
   allocated_notional_usd?: number | null;
   realized_pnl: number;
+  unrealized_pnl?: number | null;
+  last_mark_price?: number | null;
+  last_mark_at?: string | null;
   opened_at?: string | null;
   closed_at?: string | null;
   updated_at?: string | null;
@@ -261,6 +264,17 @@ export interface AutomationProof {
     max_allocation_pct?: number | null;
     target_notional_usd?: number | null;
     max_notional_usd?: number | null;
+    allocator_blocked_reasons?: string[];
+    allocator?: {
+      request?: {
+        is_reduction?: boolean;
+      };
+      limits?: {
+        max_strategy_allocation_pct?: number | null;
+        max_symbol_allocation_pct?: number | null;
+        max_portfolio_allocation_pct?: number | null;
+      };
+    };
   };
   broker_reconciliation?: {
     status?: string;

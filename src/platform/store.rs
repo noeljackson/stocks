@@ -15,9 +15,9 @@ use sqlx::{
 use std::time::Duration;
 
 use crate::automation::{
-    AutomationStrategyCandidate, BuiltinStrategyDefinition, DesiredPositionReceipt,
-    DesiredPositionWrite, LatestDesiredPosition, StrategyDefinitionInput, TargetSide,
-    TradePermissionInput,
+    AutomationControlState, AutomationStrategyCandidate, BlockedProofWrite, BrokerPolicyState,
+    BuiltinStrategyDefinition, DesiredPositionReceipt, DesiredPositionWrite, LatestDesiredPosition,
+    SleevePolicyState, StrategyDefinitionInput, TargetSide, TradePermissionInput,
 };
 use crate::llm::prompts::{InvocationRecorder, InvocationRow};
 use crate::platform::domain::{
@@ -4267,6 +4267,135 @@ impl Store {
             .collect()
     }
 
+    pub async fn automation_control_state(&self) -> Result<AutomationControlState> {
+        let row = sqlx::query(
+            r#"SELECT kill_switch_enabled, kill_switch_reason
+                 FROM automation_control_state
+                WHERE id = true"#,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .context("automation_control_state")?;
+        let Some(row) = row else {
+            return Ok(AutomationControlState::default());
+        };
+        Ok(AutomationControlState {
+            kill_switch_enabled: row.try_get("kill_switch_enabled")?,
+            kill_switch_reason: row.try_get("kill_switch_reason")?,
+        })
+    }
+
+    pub async fn automation_sleeve_policy_state(
+        &self,
+        permission_id: uuid::Uuid,
+    ) -> Result<SleevePolicyState> {
+        let row = sqlx::query(
+            r#"SELECT sleeve_id,
+                      status,
+                      current_side,
+                      current_quantity::float8 AS current_quantity,
+                      current_notional_usd::float8 AS current_notional_usd,
+                      allocated_notional_usd::float8 AS allocated_notional_usd,
+                      realized_pnl::float8 AS realized_pnl,
+                      opened_at,
+                      closed_at,
+                      updated_at
+                 FROM automation_strategy_sleeve
+                WHERE permission_id = $1
+             ORDER BY (closed_at IS NULL) DESC, updated_at DESC
+                LIMIT 1"#,
+        )
+        .bind(permission_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("automation_sleeve_policy_state")?;
+        let Some(row) = row else {
+            return Ok(SleevePolicyState {
+                status: "missing".to_string(),
+                current_side: TargetSide::Flat,
+                allocated_notional_usd: None,
+                snapshot: serde_json::json!({"status": "missing"}),
+            });
+        };
+        let current_side_raw: String = row.try_get("current_side")?;
+        let current_side =
+            TargetSide::try_from(current_side_raw.as_str()).unwrap_or(TargetSide::Flat);
+        Ok(SleevePolicyState {
+            status: row.try_get("status")?,
+            current_side,
+            allocated_notional_usd: row.try_get("allocated_notional_usd")?,
+            snapshot: serde_json::json!({
+                "sleeve_id": row.try_get::<uuid::Uuid, _>("sleeve_id")?,
+                "status": row.try_get::<String, _>("status")?,
+                "current_side": current_side.as_str(),
+                "current_quantity": row.try_get::<f64, _>("current_quantity")?,
+                "current_notional_usd": row.try_get::<f64, _>("current_notional_usd")?,
+                "allocated_notional_usd": row.try_get::<Option<f64>, _>("allocated_notional_usd")?,
+                "realized_pnl": row.try_get::<f64, _>("realized_pnl")?,
+                "opened_at": row.try_get::<DateTime<Utc>, _>("opened_at")?,
+                "closed_at": row.try_get::<Option<DateTime<Utc>>, _>("closed_at")?,
+                "updated_at": row.try_get::<DateTime<Utc>, _>("updated_at")?,
+            }),
+        })
+    }
+
+    pub async fn automation_broker_policy_state(&self, symbol: &str) -> Result<BrokerPolicyState> {
+        let row = sqlx::query(
+            r#"SELECT COUNT(*)::int8 AS open_positions,
+                      COUNT(*) FILTER (WHERE source = 'broker')::int8 AS broker_positions,
+                      COALESCE(SUM(CASE WHEN COALESCE(side, 'long') = 'short' THEN -qty ELSE qty END), 0)::float8 AS net_quantity,
+                      COALESCE(SUM(delta_notional), 0)::float8 AS delta_notional,
+                      COALESCE(SUM(premium_at_risk), 0)::float8 AS premium_at_risk,
+                      MAX(broker_last_sync_at) AS latest_sync_at
+                 FROM position
+                WHERE symbol = upper($1)
+                  AND closed_at IS NULL"#,
+        )
+        .bind(symbol.trim())
+        .fetch_one(&self.pool)
+        .await
+        .context("automation_broker_policy_state")?;
+        let open_positions: i64 = row.try_get("open_positions")?;
+        let broker_positions: i64 = row.try_get("broker_positions")?;
+        let latest_sync_at: Option<DateTime<Utc>> = row.try_get("latest_sync_at")?;
+        let status = if open_positions == 0 {
+            "no_open_position"
+        } else if broker_positions > 0 {
+            "broker_seen"
+        } else {
+            "shadow_only"
+        };
+        Ok(BrokerPolicyState {
+            status: status.to_string(),
+            mismatch: false,
+            latest_sync_at,
+            snapshot: serde_json::json!({
+                "status": status,
+                "open_positions": open_positions,
+                "broker_positions": broker_positions,
+                "net_quantity": row.try_get::<f64, _>("net_quantity")?,
+                "delta_notional": row.try_get::<f64, _>("delta_notional")?,
+                "premium_at_risk": row.try_get::<f64, _>("premium_at_risk")?,
+                "latest_sync_at": latest_sync_at,
+            }),
+        })
+    }
+
+    pub async fn ticker_cluster_id(&self, symbol: &str) -> Result<String> {
+        let row = sqlx::query(
+            r#"SELECT COALESCE(cluster_id, '') AS cluster_id
+                 FROM ticker
+                WHERE symbol = upper($1)"#,
+        )
+        .bind(symbol.trim())
+        .fetch_optional(&self.pool)
+        .await
+        .context("ticker_cluster_id")?;
+        Ok(row
+            .and_then(|row| row.try_get::<String, _>("cluster_id").ok())
+            .unwrap_or_default())
+    }
+
     pub async fn insert_desired_strategy_position(
         &self,
         write: &DesiredPositionWrite,
@@ -4368,14 +4497,7 @@ impl Store {
         .await
         .context("insert automation sleeve event")?;
 
-        let permission_snapshot = write
-            .feature_snapshot
-            .get("permission")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({}));
-        let data_freshness = serde_json::json!({
-            "technical": write.feature_snapshot.get("technical").cloned().unwrap_or_else(|| serde_json::json!(null))
-        });
+        let blocked_reasons = serde_json::json!(write.proof.blocked_reasons);
         let proof_id: uuid::Uuid = sqlx::query_scalar(
             r#"INSERT INTO automation_proof
                  (desired_position_id, permission_id, sleeve_id, symbol,
@@ -4383,9 +4505,9 @@ impl Store {
                   environment_scope, result, blocked_reasons, input_snapshot,
                   permission_snapshot, risk_result, data_freshness, session_state,
                   capital_allocation, broker_reconciliation)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'passed', '[]'::jsonb,
-                       $9::jsonb, $10::jsonb, $11::jsonb, $12::jsonb, $13::jsonb,
-                       $14::jsonb, $15::jsonb)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
+                       $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb,
+                       $16::jsonb, $17::jsonb)
             RETURNING proof_id"#,
         )
         .bind(desired_position_id)
@@ -4396,25 +4518,15 @@ impl Store {
         .bind(&write.strategy_version)
         .bind(&write.strategy_config_hash)
         .bind(&write.environment_scope)
-        .bind(&write.feature_snapshot)
-        .bind(&permission_snapshot)
-        .bind(serde_json::json!({
-            "status": "not_evaluated",
-            "reason": "shadow strategy runner does not execute orders"
-        }))
-        .bind(&data_freshness)
-        .bind(serde_json::json!({
-            "mode": "shadow",
-            "order_submission": "disabled"
-        }))
-        .bind(serde_json::json!({
-            "target_weight_pct": write.target_weight_pct,
-            "source": "permission_or_strategy_config"
-        }))
-        .bind(serde_json::json!({
-            "status": "not_applicable",
-            "reason": "shadow runner does not reconcile broker state"
-        }))
+        .bind(&write.proof.result)
+        .bind(&blocked_reasons)
+        .bind(&write.proof.input_snapshot)
+        .bind(&write.proof.permission_snapshot)
+        .bind(&write.proof.risk_result)
+        .bind(&write.proof.data_freshness)
+        .bind(&write.proof.session_state)
+        .bind(&write.proof.capital_allocation)
+        .bind(&write.proof.broker_reconciliation)
         .fetch_one(&mut *tx)
         .await
         .context("insert automation proof")?;
@@ -4467,7 +4579,60 @@ impl Store {
         })
     }
 
+    pub async fn insert_blocked_automation_proof(
+        &self,
+        write: &BlockedProofWrite,
+    ) -> Result<uuid::Uuid> {
+        let sleeve_id: Option<uuid::Uuid> = sqlx::query_scalar(
+            r#"SELECT sleeve_id
+                 FROM automation_strategy_sleeve
+                WHERE permission_id = $1
+                  AND closed_at IS NULL
+             ORDER BY updated_at DESC
+                LIMIT 1"#,
+        )
+        .bind(write.permission_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("select automation sleeve for blocked proof")?;
+
+        let blocked_reasons = serde_json::json!(write.proof.blocked_reasons);
+        let proof_id = sqlx::query_scalar(
+            r#"INSERT INTO automation_proof
+                 (desired_position_id, permission_id, sleeve_id, symbol,
+                  strategy_id, strategy_version, strategy_config_hash,
+                  environment_scope, result, blocked_reasons, input_snapshot,
+                  permission_snapshot, risk_result, data_freshness, session_state,
+                  capital_allocation, broker_reconciliation)
+               VALUES (NULL, $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb,
+                       $10::jsonb, $11::jsonb, $12::jsonb, $13::jsonb,
+                       $14::jsonb, $15::jsonb, $16::jsonb)
+            RETURNING proof_id"#,
+        )
+        .bind(write.permission_id)
+        .bind(sleeve_id)
+        .bind(&write.symbol)
+        .bind(&write.strategy_id)
+        .bind(&write.strategy_version)
+        .bind(&write.strategy_config_hash)
+        .bind(&write.environment_scope)
+        .bind(&write.proof.result)
+        .bind(&blocked_reasons)
+        .bind(&write.proof.input_snapshot)
+        .bind(&write.proof.permission_snapshot)
+        .bind(&write.proof.risk_result)
+        .bind(&write.proof.data_freshness)
+        .bind(&write.proof.session_state)
+        .bind(&write.proof.capital_allocation)
+        .bind(&write.proof.broker_reconciliation)
+        .fetch_one(&self.pool)
+        .await
+        .context("insert blocked automation proof")?;
+        Ok(proof_id)
+    }
+
     pub async fn automation_status(&self, symbol: Option<&str>) -> Result<serde_json::Value> {
+        let control = self.automation_control_state().await?;
         let rows = sqlx::query(
             r#"SELECT p.status AS permission_status,
                       p.manual_freeze,
@@ -4681,10 +4846,10 @@ impl Store {
         Ok(serde_json::json!({
             "as_of": Utc::now(),
             "kill_switch": {
-                "enabled": false,
+                "enabled": control.kill_switch_enabled,
                 "read_only": true,
-                "source": "not_configured",
-                "reason": "Automation mutation endpoints are not wired yet."
+                "source": "automation_control_state",
+                "reason": control.kill_switch_reason
             },
             "summary": {
                 "permissions_total": permissions.len() as i64,

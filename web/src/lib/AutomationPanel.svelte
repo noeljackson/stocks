@@ -58,6 +58,14 @@
     ].filter(Boolean);
   }
 
+  function proofRisk(row: AutomationPermission): string {
+    const proof = row.latest_proof;
+    if (!proof) return "missing";
+    return proof.risk_result?.snapshot?.status
+      ?? proof.risk_result?.status
+      ?? (proof.risk_result?.veto ? "veto" : proof.risk_result?.warnings?.length ? "warning" : "pass");
+  }
+
   $effect(() => {
     const key = symbol ?? "";
     if (key === lastKey) return;
@@ -195,6 +203,17 @@
                   <dt>positions</dt><dd>{row.broker_position?.open_positions ?? 0}</dd>
                   <dt>broker</dt><dd>{row.broker_position?.broker_positions ?? 0}</dd>
                   <dt>delta</dt><dd>{money(row.broker_position?.delta_notional)}</dd>
+                </dl>
+              </section>
+
+              <section>
+                <h5>Proof</h5>
+                <dl>
+                  <dt>result</dt><dd>{titleize(row.latest_proof?.result ?? "missing")}</dd>
+                  <dt>data</dt><dd>{titleize(row.latest_proof?.data_freshness?.status ?? "missing")}</dd>
+                  <dt>session</dt><dd>{titleize(row.latest_proof?.session_state?.label ?? "missing")}</dd>
+                  <dt>risk</dt><dd>{titleize(proofRisk(row))}</dd>
+                  <dt>target</dt><dd>{pct(row.latest_proof?.capital_allocation?.target_weight_pct)}</dd>
                 </dl>
               </section>
             </div>
@@ -398,6 +417,11 @@
   .rec-blocked {
     border-color: rgba(249,226,175,.45);
     color: #f9e2af;
+  }
+
+  .proof-warning {
+    border-color: rgba(250,179,135,.45);
+    color: #fab387;
   }
 
   .proof-passed,

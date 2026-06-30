@@ -4,16 +4,26 @@
 //! broker orders, mutate broker state, or bypass later proof/reconciliation
 //! gates.
 
+mod policy;
+
 use anyhow::{Context, Result};
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, NaiveTime, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::platform::{
+    market_calendar,
     store::Store,
     technical::{TechnicalState, build_technical_state},
+};
+use crate::risk;
+
+pub use policy::{
+    AutomationControlState, BrokerPolicyState, CapitalPolicyState, DataFreshnessPolicyState,
+    ProofPolicyDecision, ProofPolicyInput, RiskPolicyState, SessionPolicyState, SleevePolicyState,
+    evaluate_proof_policy,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +181,18 @@ pub struct DesiredPositionWrite {
     pub signal_ref: Value,
     pub validation: ValidationPlan,
     pub prior_target_side: Option<TargetSide>,
+    pub proof: ProofPolicyDecision,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockedProofWrite {
+    pub permission_id: Uuid,
+    pub symbol: String,
+    pub strategy_id: String,
+    pub strategy_version: String,
+    pub strategy_config_hash: String,
+    pub environment_scope: String,
+    pub proof: ProofPolicyDecision,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -312,21 +334,29 @@ pub async fn run_once(store: &Store, limit: i64) -> Result<AutomationRunSummary>
         let features = load_strategy_features(store, &candidate.permission.symbol)
             .await
             .with_context(|| format!("load strategy features {}", candidate.permission.symbol))?;
-        let Some(features) = features else {
+        if features.technical.is_none() {
             summary.no_features += 1;
-            continue;
-        };
+        }
+        let now = Utc::now();
         let input = StrategyEvaluationInput {
             definition: candidate.definition.clone(),
             permission: Some(candidate.permission.clone()),
             latest_desired: candidate.latest_desired.clone(),
             features,
-            now: Utc::now(),
+            now,
         };
         let decision = evaluate_strategy(&input);
+        let proof_input = proof_policy_input(store, &candidate, &input, &decision, now).await?;
+        let proof = evaluate_proof_policy(&proof_input);
+        if proof.result == "blocked" {
+            let write = blocked_proof_write(&candidate, proof);
+            store.insert_blocked_automation_proof(&write).await?;
+            summary.blocked += 1;
+            continue;
+        }
         match decision.kind {
             StrategyDecisionKind::EmitDesired => {
-                let write = desired_write(&candidate, &input, &decision)
+                let write = desired_write(&candidate, &input, &decision, proof)
                     .context("build desired position write")?;
                 store.insert_desired_strategy_position(&write).await?;
                 summary.emitted += 1;
@@ -357,13 +387,14 @@ pub async fn run(store: Store, interval: std::time::Duration, limit: i64) -> Res
     }
 }
 
-async fn load_strategy_features(store: &Store, symbol: &str) -> Result<Option<StrategyFeatures>> {
+async fn load_strategy_features(store: &Store, symbol: &str) -> Result<StrategyFeatures> {
     let daily = store.daily_technical_bars_for(symbol, 365 * 2).await?;
-    if daily.is_empty() {
-        return Ok(None);
-    }
-    let technical_state = build_technical_state(symbol, &daily, &[]);
-    let technical = technical_feature(&technical_state);
+    let technical = if daily.is_empty() {
+        None
+    } else {
+        let technical_state = build_technical_state(symbol, &daily, &[]);
+        Some(technical_feature(&technical_state))
+    };
     let thesis = store
         .theses_for_symbol(symbol)
         .await?
@@ -387,11 +418,11 @@ async fn load_strategy_features(store: &Store, symbol: &str) -> Result<Option<St
                 .map(|substance| substance.freshness_score),
             updated_at: t.updated_at,
         });
-    Ok(Some(StrategyFeatures {
+    Ok(StrategyFeatures {
         symbol: symbol.to_ascii_uppercase(),
-        technical: Some(technical),
+        technical,
         thesis,
-    }))
+    })
 }
 
 fn technical_feature(state: &TechnicalState) -> TechnicalFeature {
@@ -409,6 +440,7 @@ fn desired_write(
     candidate: &AutomationStrategyCandidate,
     input: &StrategyEvaluationInput,
     decision: &StrategyDecision,
+    proof: ProofPolicyDecision,
 ) -> Result<DesiredPositionWrite> {
     let target_side = decision
         .target_side
@@ -436,7 +468,258 @@ fn desired_write(
             .latest_desired
             .as_ref()
             .map(|desired| desired.target_side),
+        proof,
     })
+}
+
+fn blocked_proof_write(
+    candidate: &AutomationStrategyCandidate,
+    proof: ProofPolicyDecision,
+) -> BlockedProofWrite {
+    BlockedProofWrite {
+        permission_id: candidate.permission.permission_id,
+        symbol: candidate.permission.symbol.clone(),
+        strategy_id: candidate.definition.strategy_id.clone(),
+        strategy_version: candidate.definition.strategy_version.clone(),
+        strategy_config_hash: candidate.definition.config_hash.clone(),
+        environment_scope: candidate.permission.environment_scope.clone(),
+        proof,
+    }
+}
+
+async fn proof_policy_input(
+    store: &Store,
+    candidate: &AutomationStrategyCandidate,
+    input: &StrategyEvaluationInput,
+    decision: &StrategyDecision,
+    now: DateTime<Utc>,
+) -> Result<ProofPolicyInput> {
+    let control = store.automation_control_state().await?;
+    let data_freshness = data_freshness_policy_state(input);
+    let session = session_policy_state(now);
+    let (risk, capital) = risk_and_capital_policy_state(store, candidate, decision).await?;
+    let sleeve = store
+        .automation_sleeve_policy_state(candidate.permission.permission_id)
+        .await?;
+    let broker = store
+        .automation_broker_policy_state(&candidate.permission.symbol)
+        .await?;
+    Ok(ProofPolicyInput {
+        definition: candidate.definition.clone(),
+        permission: Some(candidate.permission.clone()),
+        decision: decision.clone(),
+        control,
+        data_freshness,
+        session,
+        risk,
+        capital,
+        sleeve,
+        broker,
+        now,
+    })
+}
+
+fn data_freshness_policy_state(input: &StrategyEvaluationInput) -> DataFreshnessPolicyState {
+    let max_age_days = config_i64(&input.definition.config, "max_bar_age_days", 5).max(1);
+    let Some(technical) = input.features.technical.as_ref() else {
+        return DataFreshnessPolicyState {
+            status: "missing".to_string(),
+            latest_bar_at: None,
+            max_age_days,
+            stale: true,
+        };
+    };
+    let stale = input.now - technical.as_of > ChronoDuration::days(max_age_days);
+    DataFreshnessPolicyState {
+        status: if stale { "stale" } else { "fresh" }.to_string(),
+        latest_bar_at: Some(technical.as_of),
+        max_age_days,
+        stale,
+    }
+}
+
+async fn risk_and_capital_policy_state(
+    store: &Store,
+    candidate: &AutomationStrategyCandidate,
+    decision: &StrategyDecision,
+) -> Result<(RiskPolicyState, CapitalPolicyState)> {
+    let positions = store.open_positions_for_risk().await.unwrap_or_default();
+    let settings = store.portfolio_settings().await.unwrap_or_default();
+    let realized_pnl = store.realized_pnl_total().await.unwrap_or(0.0);
+    let (portfolio, portfolio_demo) =
+        match risk::derive_portfolio(settings, &positions, realized_pnl) {
+            Some(portfolio) => (portfolio, false),
+            None => (
+                risk::Portfolio {
+                    total_value: 100_000.0,
+                    cash_pct: 50.0,
+                    drawdown_pct: 0.0,
+                },
+                true,
+            ),
+        };
+
+    let target_weight_pct = decision.target_weight_pct;
+    let target_notional_usd = target_weight_pct.map(|weight| weight * portfolio.total_value);
+    let capital = CapitalPolicyState {
+        target_weight_pct,
+        max_allocation_pct: candidate.permission.max_allocation_pct,
+        target_notional_usd,
+        max_notional_usd: candidate.permission.max_notional_usd,
+    };
+
+    let risk_config = match store.active_config("risk").await {
+        Ok((cfg_json, cfg_ver)) => match serde_json::from_value::<risk::Config>(cfg_json) {
+            Ok(cfg) => Some((cfg, cfg_ver)),
+            Err(error) => {
+                return Ok((
+                    RiskPolicyState {
+                        veto: true,
+                        reasons: vec!["config_invalid".to_string()],
+                        warnings: vec![],
+                        size_mult: 0.0,
+                        snapshot: json!({
+                            "status": "unavailable",
+                            "reason": "risk config invalid",
+                            "error": error.to_string(),
+                        }),
+                    },
+                    capital,
+                ));
+            }
+        },
+        Err(error) => {
+            return Ok((
+                RiskPolicyState {
+                    veto: true,
+                    reasons: vec!["config_unavailable".to_string()],
+                    warnings: vec![],
+                    size_mult: 0.0,
+                    snapshot: json!({
+                        "status": "unavailable",
+                        "reason": "risk config unavailable",
+                        "error": error.to_string(),
+                    }),
+                },
+                capital,
+            ));
+        }
+    };
+
+    let target_notional = match decision.target_side {
+        Some(TargetSide::Long) => target_notional_usd.unwrap_or(0.0),
+        _ => 0.0,
+    };
+    let cluster = store
+        .ticker_cluster_id(&candidate.permission.symbol)
+        .await
+        .unwrap_or_default();
+    let intent = risk::Intent {
+        symbol: candidate.permission.symbol.clone(),
+        cluster,
+        instrument: "equity".to_string(),
+        delta_notional: target_notional,
+        premium_at_risk: 0.0,
+    };
+    let (cfg, cfg_ver) = risk_config.expect("risk_config is Some after early returns");
+    let decision = risk::evaluate(&intent, &positions, portfolio, &cfg);
+    let mut warnings = decision.warnings;
+    if portfolio_demo {
+        warnings.push("portfolio_demo".to_string());
+    }
+    let risk_status = if decision.veto {
+        "veto"
+    } else if warnings.is_empty() {
+        "pass"
+    } else {
+        "warning"
+    };
+    Ok((
+        RiskPolicyState {
+            veto: decision.veto,
+            reasons: decision.reasons,
+            warnings,
+            size_mult: decision.size_mult,
+            snapshot: json!({
+                "status": risk_status,
+                "config_version": cfg_ver,
+                "portfolio_demo": portfolio_demo,
+                "portfolio": {
+                    "total_value": portfolio.total_value,
+                    "cash_pct": portfolio.cash_pct,
+                    "drawdown_pct": portfolio.drawdown_pct,
+                },
+                "intent": {
+                    "symbol": intent.symbol,
+                    "cluster": intent.cluster,
+                    "instrument": intent.instrument,
+                    "delta_notional": intent.delta_notional,
+                    "premium_at_risk": intent.premium_at_risk,
+                },
+            }),
+        },
+        capital,
+    ))
+}
+
+fn session_policy_state(now: DateTime<Utc>) -> SessionPolicyState {
+    if !market_calendar::is_us_equity_session(now.date_naive()) {
+        return SessionPolicyState {
+            is_open: false,
+            label: "closed".to_string(),
+            reason: Some("not_us_equity_session".to_string()),
+        };
+    }
+
+    let (open, close) = regular_session_utc_bounds(now.date_naive());
+    let time = now.time();
+    if time < open {
+        return SessionPolicyState {
+            is_open: false,
+            label: "pre_market".to_string(),
+            reason: Some(format!("regular session opens at {open} UTC")),
+        };
+    }
+    if time >= close {
+        return SessionPolicyState {
+            is_open: false,
+            label: "after_hours".to_string(),
+            reason: Some(format!("regular session closed at {close} UTC")),
+        };
+    }
+    SessionPolicyState {
+        is_open: true,
+        label: "regular".to_string(),
+        reason: None,
+    }
+}
+
+fn regular_session_utc_bounds(day: NaiveDate) -> (NaiveTime, NaiveTime) {
+    if is_us_eastern_dst(day) {
+        (
+            NaiveTime::from_hms_opt(13, 30, 0).expect("valid time"),
+            NaiveTime::from_hms_opt(20, 0, 0).expect("valid time"),
+        )
+    } else {
+        (
+            NaiveTime::from_hms_opt(14, 30, 0).expect("valid time"),
+            NaiveTime::from_hms_opt(21, 0, 0).expect("valid time"),
+        )
+    }
+}
+
+fn is_us_eastern_dst(day: NaiveDate) -> bool {
+    let start = nth_weekday(day.year(), 3, Weekday::Sun, 2);
+    let end = nth_weekday(day.year(), 11, Weekday::Sun, 1);
+    day >= start && day < end
+}
+
+fn nth_weekday(year: i32, month: u32, weekday: Weekday, nth: u32) -> NaiveDate {
+    let first = NaiveDate::from_ymd_opt(year, month, 1).expect("valid month");
+    let offset = (7 + weekday.num_days_from_monday() as i64
+        - first.weekday().num_days_from_monday() as i64)
+        % 7;
+    first + ChronoDuration::days(offset + 7 * (nth as i64 - 1))
 }
 
 #[derive(Debug, Clone)]
@@ -976,5 +1259,28 @@ mod tests {
                 .iter()
                 .any(|r| r == "permission_missing")
         );
+    }
+
+    #[test]
+    fn missing_technical_features_become_missing_data_policy_state() {
+        let mut input = base_input("technical_timing");
+        input.features.technical = None;
+
+        let state = data_freshness_policy_state(&input);
+
+        assert_eq!(state.status, "missing");
+        assert!(state.stale);
+        assert_eq!(state.latest_bar_at, None);
+    }
+
+    #[test]
+    fn session_policy_tracks_regular_us_equity_hours() {
+        let summer_open = Utc.with_ymd_and_hms(2026, 6, 30, 14, 0, 0).unwrap();
+        let after_hours = Utc.with_ymd_and_hms(2026, 6, 30, 20, 30, 0).unwrap();
+        let weekend = Utc.with_ymd_and_hms(2026, 7, 4, 16, 0, 0).unwrap();
+
+        assert_eq!(session_policy_state(summer_open).label, "regular");
+        assert_eq!(session_policy_state(after_hours).label, "after_hours");
+        assert_eq!(session_policy_state(weekend).label, "closed");
     }
 }

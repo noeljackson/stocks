@@ -234,6 +234,38 @@ export interface AutomationProof {
   strategy_config_hash?: string | null;
   result: string;
   blocked_reasons?: string[];
+  risk_result?: {
+    status?: string;
+    veto?: boolean;
+    reasons?: string[];
+    warnings?: string[];
+    size_mult?: number;
+    snapshot?: {
+      status?: string;
+      portfolio_demo?: boolean;
+    };
+  };
+  data_freshness?: {
+    status?: string;
+    latest_bar_at?: string | null;
+    max_age_days?: number;
+    stale?: boolean;
+  };
+  session_state?: {
+    is_open?: boolean;
+    label?: string;
+    reason?: string | null;
+  };
+  capital_allocation?: {
+    target_weight_pct?: number | null;
+    max_allocation_pct?: number | null;
+    target_notional_usd?: number | null;
+    max_notional_usd?: number | null;
+  };
+  broker_reconciliation?: {
+    status?: string;
+    mismatch?: boolean;
+  };
   evaluated_at?: string | null;
 }
 

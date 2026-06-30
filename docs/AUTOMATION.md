@@ -10,8 +10,8 @@ never creates broker orders directly.
 ```text
 strategy definition
   -> ticker+strategy permission
-  -> desired_strategy_position
   -> automation_proof
+  -> desired_strategy_position, when proof passes
   -> automation_execution_reconciliation
   -> broker adapter later
   -> fills attributed back to sleeves
@@ -37,9 +37,10 @@ manual sleeve. Each automated strategy permission gets its own strategy sleeve
 so attribution, allocation, and manual freeze behavior stay clear even when the
 broker reports only one net position.
 
-`automation_proof` freezes the deterministic gate result for a desired-position
-change: permission, data freshness, session state, risk, capital allocation,
-and broker reconciliation inputs.
+`automation_proof` freezes the deterministic gate result for a strategy
+evaluation: permission, data freshness, session state, risk, capital
+allocation, and broker reconciliation inputs. Blocked preflight evaluations are
+recorded even when no desired-position row is written.
 
 `automation_strategy_signal_observation` is the forward-only validation anchor
 for shadow strategy output. Every emitted desired position gets an observation
@@ -61,9 +62,9 @@ other condition that should freeze or block automation.
 Strategies write desired state only. They do not place orders, mutate broker
 state, or bypass risk.
 
-Proof is required before reconciliation can become executable. Missing,
-stale, failed, or under-scored inputs block the path and must produce concrete
-blocked reasons.
+Proof is required before desired exposure can be treated as executable input to
+reconciliation. Missing, stale, failed, or under-scored inputs block the path
+and must produce concrete blocked reasons.
 
 The existing risk overlay remains an independent hard gate. Automation proof
 may include risk output, but it does not replace the risk module.
@@ -97,6 +98,13 @@ pending, expired, frozen, non-shadow, stale, or technically invalid. Every
 emission records the strategy version and exact config hash in the desired
 position, proof, feature snapshot, and validation observation.
 
-The runner does not import broker adapters, does not create reconciliation
-orders, and marks its proof risk/broker sections as shadow-only placeholders
-until the policy engine and simulator issues are implemented.
+The runner now evaluates the proof policy before writing desired state. The
+policy records permission, kill-switch, data freshness, regular-session, risk,
+capital-cap, sleeve, and broker aggregate snapshots. If proof blocks, the
+runner writes only an `automation_proof` row with blocked reasons. If proof
+passes or warns, the runner may write a desired position and attaches the exact
+proof snapshots to that emission.
+
+The runner does not import broker adapters and does not create reconciliation
+orders. Broker reconciliation remains read-only aggregate state until the later
+paper/live simulator and adapter issues are implemented.

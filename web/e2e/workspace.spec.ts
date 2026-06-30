@@ -41,6 +41,42 @@ type MockWatchlistMember = {
   }[];
 };
 
+type MockTechnicalRead = {
+  stance: string;
+  label: string;
+  reason: string;
+  trend: string;
+  momentum: string;
+  relative_strength: string;
+  volume: string;
+  volatility: string;
+  source: string;
+};
+
+const technicalRead = (
+  stance: string,
+  label: string,
+  trend: string,
+  momentum: string,
+  relativeStrength: string,
+  volume: string,
+  volatility: string,
+): MockTechnicalRead => ({
+  stance,
+  label,
+  trend,
+  momentum,
+  relative_strength: relativeStrength,
+  volume,
+  volatility,
+  reason: `trend ${trend}; momentum ${momentum}; relative strength ${relativeStrength}; volume ${volume}; volatility ${volatility}`,
+  source: "cross_technical",
+});
+
+const constructiveRead = technicalRead("constructive", "constructive", "uptrend", "positive", "outperforming", "normal", "normal");
+const avoidChaseRead = technicalRead("avoid_chase", "avoid chase", "extended chase", "extended", "outperforming", "normal", "wide");
+const avoidBreakdownRead = technicalRead("avoid_breakdown", "avoid breakdown", "breakdown", "weak", "underperforming", "distribution", "expansion");
+
 function isoDate(offset: number): string {
   const d = new Date(Date.UTC(2025, 0, 1 + offset));
   return d.toISOString().slice(0, 10);
@@ -970,7 +1006,10 @@ async function mockApi(
             thesis_state: "actionable",
             thesis_direction: "up",
             technical_state: "constructive",
+            technical_setup_kind: "constructive_trend",
             entry_stance: "constructive",
+            technical_read: constructiveRead,
+            technical_panel_path: "/symbol/CRDO?p=technical",
             technical_pct_vs_200d: 3.2,
             freshness_status: "fresh",
             open_attention: 1,
@@ -988,7 +1027,10 @@ async function mockApi(
             thesis_state: "forming",
             thesis_direction: "up",
             technical_state: "extended",
+            technical_setup_kind: "extended_run",
             entry_stance: "avoid_chase",
+            technical_read: avoidChaseRead,
+            technical_panel_path: "/symbol/OKTA?p=technical",
             technical_pct_vs_200d: 26.5,
             freshness_status: "stale",
             open_attention: 1,
@@ -1007,7 +1049,10 @@ async function mockApi(
               thesis_state: "actionable",
               thesis_direction: "up",
               technical_state: "constructive",
+              technical_setup_kind: "constructive_trend",
               entry_stance: "constructive",
+              technical_read: constructiveRead,
+              technical_panel_path: "/symbol/CRDO?p=technical",
               technical_pct_vs_200d: 3.2,
               freshness_status: "fresh",
               open_attention: 1,
@@ -1029,7 +1074,10 @@ async function mockApi(
               thesis_state: "forming",
               thesis_direction: "up",
               technical_state: "extended",
+              technical_setup_kind: "extended_run",
               entry_stance: "avoid_chase",
+              technical_read: avoidChaseRead,
+              technical_panel_path: "/symbol/OKTA?p=technical",
               technical_pct_vs_200d: 26.5,
               freshness_status: "stale",
               open_attention: 1,
@@ -1050,9 +1098,12 @@ async function mockApi(
               thesis_id: "32ceaea3-9df3-416a-bfe5-107d3233dd59",
               thesis_state: "forming",
               thesis_direction: "up",
-              technical_state: "extended",
-              entry_stance: "avoid_chase",
-              technical_pct_vs_200d: 41.2,
+              technical_state: "deteriorating",
+              technical_setup_kind: "breakdown",
+              entry_stance: "avoid",
+              technical_read: avoidBreakdownRead,
+              technical_panel_path: "/symbol/AMD?p=technical",
+              technical_pct_vs_200d: -8.5,
               freshness_status: "blocked",
               open_attention: 2,
               review_packet_attention_id: null,
@@ -1061,7 +1112,7 @@ async function mockApi(
               due_source_tasks: 3,
               parent_themes: [],
               why_now: "Interesting AI infrastructure exposure.",
-              why_not: "Blocked data and extended technicals make it a no-trade today.",
+              why_not: "Blocked data and breakdown technicals make it a no-trade today.",
               risk_note: "Do not convert a stale thesis into action.",
               blockers: ["blocked analyst estimates", "extended vs 200D"],
             }],
@@ -1073,7 +1124,10 @@ async function mockApi(
               thesis_state: null,
               thesis_direction: null,
               technical_state: "constructive",
+              technical_setup_kind: "constructive_trend",
               entry_stance: "constructive",
+              technical_read: constructiveRead,
+              technical_panel_path: "/symbol/NVDA?p=technical",
               technical_pct_vs_200d: 8.4,
               freshness_status: "missing",
               open_attention: 1,
@@ -2529,12 +2583,17 @@ test("journal page shows daily history and routes symbol entries", async ({ page
   await expect(tradeDesk).toContainText(/would consider/i);
   await expect(tradeDesk).toContainText("CRDO");
   await expect(tradeDesk).toContainText("Actionable up thesis with constructive setup.");
+  await expect(tradeDesk).toContainText("constructive");
+  await expect(tradeDesk).toContainText("trend uptrend");
+  await expect(tradeDesk).toContainText("relative strength outperforming");
   await expect(tradeDesk).toContainText(/would wait/i);
   await expect(tradeDesk).toContainText("OKTA");
   await expect(tradeDesk).toContainText("Wait for pullback or refreshed context.");
+  await expect(tradeDesk).toContainText("avoid chase");
   await expect(tradeDesk).toContainText(/would avoid/i);
   await expect(tradeDesk).toContainText("AMD");
-  await expect(tradeDesk).toContainText("Blocked data and extended technicals make it a no-trade today.");
+  await expect(tradeDesk).toContainText("avoid breakdown");
+  await expect(tradeDesk).toContainText("Blocked data and breakdown technicals make it a no-trade today.");
   await expect(tradeDesk).toContainText(/research first/i);
   await expect(tradeDesk).toContainText("NVDA");
   await expect(tradeDesk).toContainText("No open thesis yet.");
@@ -2567,6 +2626,12 @@ test("journal page shows daily history and routes symbol entries", async ({ page
   await expect(page).toHaveURL(/\/symbol\/OKTA/);
   await expect(page.locator(".symbol-box input")).toHaveValue("OKTA");
   await expect(page.locator(".right .tabs button.active")).toHaveText("theses");
+
+  await page.goto("/journal/2026-06-01");
+  const tradeDeskAgain = page.locator("[data-testid='daily-trade-desk']");
+  await tradeDeskAgain.locator(".trade-section.wait").getByRole("button", { name: "Technical read" }).click();
+  await expect(page).toHaveURL(/\/symbol\/OKTA\?p=technical/);
+  await expect(page.getByRole("button", { name: "technical" })).toHaveClass(/active/);
 });
 
 test("journal daily trade desk opens the matching review packet", async ({ page }) => {

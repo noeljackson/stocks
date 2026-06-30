@@ -34,7 +34,10 @@ export interface Ticker {
   thesis_state?: string | null;
   thesis_direction?: string | null;
   technical_state?: string | null;
+  technical_setup_kind?: string | null;
   entry_stance?: string | null;
+  technical_read?: BrainJournalTechnicalRead | null;
+  technical_panel_path?: string | null;
   technical_pct_vs_200d?: number | null;
   freshness_status?: string | null;
   open_attention?: number;
@@ -942,7 +945,10 @@ export interface BrainJournalMemoSymbol {
   thesis_state?: string | null;
   thesis_direction?: string | null;
   technical_state?: string | null;
+  technical_setup_kind?: string | null;
   entry_stance?: string | null;
+  technical_read?: BrainJournalTechnicalRead | null;
+  technical_panel_path?: string | null;
   technical_pct_vs_200d?: number | null;
   freshness_status?: string | null;
   open_attention?: number;
@@ -954,6 +960,18 @@ export interface BrainJournalMemoSymbol {
   reason: string;
 }
 
+export interface BrainJournalTechnicalRead {
+  stance: string;
+  label: string;
+  reason: string;
+  trend: string;
+  momentum: string;
+  relative_strength: string;
+  volume: string;
+  volatility: string;
+  source: string;
+}
+
 export interface BrainJournalDecisionItem {
   symbol: string;
   tier?: number | null;
@@ -963,7 +981,10 @@ export interface BrainJournalDecisionItem {
   thesis_state?: string | null;
   thesis_direction?: string | null;
   technical_state?: string | null;
+  technical_setup_kind?: string | null;
   entry_stance?: string | null;
+  technical_read?: BrainJournalTechnicalRead | null;
+  technical_panel_path?: string | null;
   technical_pct_vs_200d?: number | null;
   freshness_status?: string | null;
   open_attention?: number;

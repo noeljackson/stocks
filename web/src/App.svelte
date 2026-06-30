@@ -650,9 +650,14 @@
     rightTab = entry.thesis_id ? "theses" : "overview";
   }
 
-  async function openJournalSymbol(symbol: string) {
+  async function openJournalSymbol(symbol: string, panel: RightTab = "overview") {
     routePage = "workspace";
+    rightTab = panel;
     await selectSymbol(symbol);
+    if (panel === "technical") {
+      syncSymbolRoute(symbol, true);
+      return;
+    }
     const item = attention.find((a) => a.symbol === symbol);
     if (item) {
       await openReviewPacketFor(item);

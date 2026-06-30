@@ -151,6 +151,124 @@ export async function fetchPriceAlertEvents(opts?: { symbol?: string }): Promise
   return ((await r.json()) as PriceAlertEvent[] | null) ?? [];
 }
 
+export interface AutomationStatus {
+  as_of: string;
+  kill_switch: {
+    enabled: boolean;
+    read_only: boolean;
+    source: string;
+    reason?: string | null;
+  };
+  summary: {
+    permissions_total: number;
+    approved: number;
+    pending: number;
+    frozen: number;
+    expired: number;
+    paper_only: number;
+    live_capable: number;
+    incidents_open: number;
+    blocked_strategies: number;
+  };
+  permissions: AutomationPermission[];
+}
+
+export interface AutomationPermission {
+  permission_id: string;
+  symbol: string;
+  strategy_id: string;
+  strategy_version: string;
+  strategy_display_name: string;
+  strategy_family: string;
+  strategy_status: string;
+  permission_status: string;
+  derived_status: string;
+  instrument_scope: string;
+  environment_scope: string;
+  manual_freeze: boolean;
+  freeze_reason?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  expires_at?: string | null;
+  max_allocation_pct?: number | null;
+  max_notional_usd?: number | null;
+  max_quantity?: number | null;
+  created_at: string;
+  updated_at: string;
+  sleeve?: AutomationSleeve | null;
+  desired_position?: AutomationDesiredPosition | null;
+  latest_proof?: AutomationProof | null;
+  reconciliation?: AutomationReconciliation | null;
+  broker_position?: AutomationBrokerPosition | null;
+  incidents?: AutomationIncident[];
+}
+
+export interface AutomationSleeve {
+  sleeve_id: string;
+  sleeve_kind: string;
+  status: string;
+  current_side: string;
+  current_quantity: number;
+  current_notional_usd: number;
+  allocated_notional_usd?: number | null;
+  realized_pnl: number;
+  opened_at?: string | null;
+  closed_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface AutomationDesiredPosition {
+  desired_position_id: string;
+  target_side: string;
+  target_quantity?: number | null;
+  target_notional_usd?: number | null;
+  target_weight_pct?: number | null;
+  rationale?: string | null;
+  reason_codes?: string[];
+  emitted_at?: string | null;
+}
+
+export interface AutomationProof {
+  proof_id: string;
+  result: string;
+  blocked_reasons?: string[];
+  evaluated_at?: string | null;
+}
+
+export interface AutomationReconciliation {
+  reconciliation_id: string;
+  status: string;
+  blocked_reasons?: string[];
+  updated_at?: string | null;
+}
+
+export interface AutomationBrokerPosition {
+  open_positions: number;
+  broker_positions: number;
+  net_quantity: number;
+  delta_notional: number;
+  premium_at_risk: number;
+  latest_sync_at?: string | null;
+}
+
+export interface AutomationIncident {
+  incident_id: string;
+  severity: string;
+  status: string;
+  kind: string;
+  title: string;
+  detail?: string | null;
+  created_at: string;
+}
+
+export async function fetchAutomationStatus(opts?: { symbol?: string | null }): Promise<AutomationStatus> {
+  const q = new URLSearchParams();
+  if (opts?.symbol) q.set("symbol", opts.symbol);
+  const r = await fetch(`/api/automation/status${q.size ? `?${q}` : ""}`);
+  if (!r.ok) throw new Error(`automation ${r.status}: ${await r.text()}`);
+  return (await r.json()) as AutomationStatus;
+}
+
 export async function fetchRegime(): Promise<MarketState> {
   const r = await fetch("/api/regime");
   if (!r.ok) throw new Error(`regime ${r.status}`);

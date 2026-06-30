@@ -505,6 +505,98 @@ async function mockApi(
     trigger_price: 89.5,
     rule_snapshot: priceAlertRules[1],
   }];
+  const automationStatus = {
+    as_of: "2026-06-01T12:00:00Z",
+    kill_switch: {
+      enabled: false,
+      read_only: true,
+      source: "not_configured",
+      reason: "Automation mutation endpoints are not wired yet.",
+    },
+    summary: {
+      permissions_total: 1,
+      approved: 1,
+      pending: 0,
+      frozen: 1,
+      expired: 0,
+      paper_only: 1,
+      live_capable: 0,
+      incidents_open: 1,
+      blocked_strategies: 1,
+    },
+    permissions: [{
+      permission_id: "39ad2b74-75e0-4a68-9e09-6e2b2f9b7f13",
+      symbol: "OKTA",
+      strategy_id: "technical_breakout",
+      strategy_version: "v1",
+      strategy_display_name: "Technical Breakout",
+      strategy_family: "technical_timing",
+      strategy_status: "paper",
+      permission_status: "approved",
+      derived_status: "frozen",
+      instrument_scope: "equity_long_short",
+      environment_scope: "paper",
+      manual_freeze: true,
+      freeze_reason: "operator reviewing first paper fills",
+      approved_by: "operator",
+      approved_at: "2026-06-01T08:00:00Z",
+      expires_at: "2026-09-01T08:00:00Z",
+      max_allocation_pct: 0.04,
+      max_notional_usd: 5000,
+      max_quantity: null,
+      created_at: "2026-06-01T07:30:00Z",
+      updated_at: "2026-06-01T09:00:00Z",
+      sleeve: {
+        sleeve_id: "cb8c78cb-3dac-43ee-abaf-062f049d61bd",
+        sleeve_kind: "strategy",
+        status: "frozen",
+        current_side: "flat",
+        current_quantity: 0,
+        current_notional_usd: 0,
+        allocated_notional_usd: 5000,
+        realized_pnl: 0,
+        updated_at: "2026-06-01T09:00:00Z",
+      },
+      desired_position: {
+        desired_position_id: "e965661b-7d72-4914-b315-27d7bd5a202c",
+        target_side: "long",
+        target_quantity: 20,
+        target_notional_usd: 1900,
+        target_weight_pct: 0.02,
+        rationale: "Breakout retest held above rising 50-day.",
+        reason_codes: ["breakout_retest"],
+        emitted_at: "2026-06-01T09:10:00Z",
+      },
+      latest_proof: {
+        proof_id: "be432d6f-b7db-454a-a6f1-5154f1a3b7b2",
+        result: "blocked",
+        blocked_reasons: ["permission frozen", "market data stale"],
+        evaluated_at: "2026-06-01T09:11:00Z",
+      },
+      reconciliation: {
+        reconciliation_id: "7b8e42b8-33b0-49e2-bf59-970be41750db",
+        status: "blocked",
+        blocked_reasons: ["permission frozen"],
+        updated_at: "2026-06-01T09:12:00Z",
+      },
+      broker_position: {
+        open_positions: 1,
+        broker_positions: 1,
+        net_quantity: 12,
+        delta_notional: 1056,
+        premium_at_risk: 0,
+        latest_sync_at: "2026-06-01T09:00:00Z",
+      },
+      incidents: [{
+        incident_id: "f453d51a-fb4f-4cb4-bb7e-6254da39c733",
+        severity: "warning",
+        status: "open",
+        kind: "stale_market_data",
+        title: "Market data stale",
+        created_at: "2026-06-01T09:12:00Z",
+      }],
+    }],
+  };
 
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -597,6 +689,13 @@ async function mockApi(
     if (path === "/api/price-alert-events") {
       const symbol = url.searchParams.get("symbol");
       await json(route, priceAlertEvents.filter((event) => !symbol || event.symbol === symbol.toUpperCase()));
+      return;
+    }
+    if (path === "/api/automation/status") {
+      const symbol = url.searchParams.get("symbol");
+      await json(route, symbol
+        ? { ...automationStatus, permissions: automationStatus.permissions.filter((p) => p.symbol === symbol.toUpperCase()) }
+        : automationStatus);
       return;
     }
     if (path === "/api/regime") {
@@ -2567,6 +2666,23 @@ test("diagnostics tab shows source task backlog state", async ({ page }) => {
   const sourceHealth = page.locator(".diag").filter({ hasText: "Source health" });
   await expect(sourceHealth).toContainText("started");
   await expect(sourceHealth).toContainText("stale running");
+});
+
+test("automation tab shows permissioned strategies read-only", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/symbol/OKTA");
+
+  await page.getByRole("button", { name: "automation" }).click();
+
+  const panel = page.getByTestId("automation-cockpit");
+  await expect(panel).toContainText("Technical Breakout");
+  await expect(panel).toContainText("OKTA");
+  await expect(panel).toContainText("frozen");
+  await expect(panel).toContainText("permission frozen");
+  await expect(panel).toContainText("market data stale");
+  await expect(panel).toContainText("paper");
+  await expect(panel.getByRole("button", { name: "freeze", exact: true })).toBeDisabled();
+  await expect(panel.getByRole("button", { name: "kill switch" })).toBeDisabled();
 });
 
 test("discovery tab shows candidate ranking reasons", async ({ page }) => {

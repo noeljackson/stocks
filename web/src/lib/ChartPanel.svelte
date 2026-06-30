@@ -46,6 +46,31 @@
   type Range = "1D" | "5D" | "1M" | "3M" | "6M" | "200D" | "1Y" | "2Y" | "ALL";
   type ChartState = { interval: Interval; range: Range };
   type LiveStatus = "disconnected" | "listening" | "live" | "delayed" | "market_closed" | "entitlement_blocked" | "rate_limited";
+  type DrawingTool = "select" | "trendline" | "horizontal" | "ray" | "text" | "measure";
+  type DrawingKind = Exclude<DrawingTool, "select">;
+  type DrawingPoint = { time: number; price: number };
+  type ChartDrawing = {
+    id: string;
+    kind: DrawingKind;
+    symbol: string;
+    interval: Interval;
+    points: DrawingPoint[];
+    text?: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+  type DrawingView = {
+    drawing: ChartDrawing;
+    selected: boolean;
+    points: { x: number; y: number }[];
+    path?: string;
+    label?: { x: number; y: number; text: string };
+  };
+  type DragState = {
+    id: string;
+    start: DrawingPoint;
+    original: ChartDrawing;
+  };
   let {
     symbol = null as string | null,
     liveEvents = [] as StreamEvent[],
@@ -68,9 +93,17 @@
     20: "#fab387",
     50: "#74c7ec",
   };
+  const DRAWING_STORAGE_KEY = "stocks.chart.drawings.v1";
   let interval = $state<Interval>("1D");
   let range = $state<Range>("ALL");
   let crosshairMode = $state<"magnet" | "free" | "hidden">("magnet");
+  let drawingTool = $state<DrawingTool>("select");
+  let drawings = $state<ChartDrawing[]>([]);
+  let selectedDrawingId = $state<string | null>(null);
+  let draftPoint = $state<DrawingPoint | null>(null);
+  let dragState = $state<DragState | null>(null);
+  let drawingStatus = $state<string | null>(null);
+  let overlayTick = $state(0);
   let indicatorsOpen = $state(false);
   let showVolume = $state(true);
   let showRsi = $state(true);
@@ -87,6 +120,7 @@
   let alertError = $state<string | null>(null);
 
   let container: HTMLDivElement | null = null;
+  let drawingImportInput: HTMLInputElement | null = null;
   let chart: IChartApi | null = null;
   let priceSeries: ISeriesApi<"Candlestick"> | null = null;
   let volSeries: ISeriesApi<"Histogram"> | null = null;
@@ -109,11 +143,370 @@
   let loadSeq = 0;
   let liveScope = "";
   let seenLiveEventKeys = new Set<string>();
+  let resizeObserver: ResizeObserver | null = null;
+
+  let drawingViews = $derived.by<DrawingView[]>(() => {
+    overlayTick;
+    return drawings.flatMap((drawing) => {
+      const view = drawingView(drawing);
+      return view ? [view] : [];
+    });
+  });
+  let draftView = $derived.by<{ x: number; y: number } | null>(() => {
+    overlayTick;
+    return draftPoint ? pointToCoordinate(draftPoint) : null;
+  });
 
   function toUtc(time: string): UTCTimestamp {
     // lightweight-charts wants seconds since epoch for time-based charts.
     const stamp = time.includes("T") ? time : `${time}T00:00:00Z`;
     return Math.floor(new Date(stamp).getTime() / 1000) as UTCTimestamp;
+  }
+
+  function timeToNumber(time: Time): number {
+    if (typeof time === "number") return time;
+    if (typeof time === "string") return toUtc(time) as number;
+    return Math.floor(Date.UTC(time.year, time.month - 1, time.day) / 1000);
+  }
+
+  function newDrawingId(): string {
+    return typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `drawing-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function drawingScope(sym = symbol, intv = interval): string | null {
+    return sym ? `${sym.toUpperCase()}|${intv}` : null;
+  }
+
+  function readDrawingStore(): Record<string, ChartDrawing[]> {
+    if (typeof localStorage === "undefined") return {};
+    try {
+      const parsed = JSON.parse(localStorage.getItem(DRAWING_STORAGE_KEY) ?? "{}");
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as Record<string, ChartDrawing[]>
+        : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function sanitizeDrawings(value: unknown): ChartDrawing[] {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((drawing) => {
+      if (!drawing || typeof drawing !== "object") return [];
+      const row = drawing as Partial<ChartDrawing>;
+      if (!row.id || !row.kind || !row.symbol || !row.interval || !Array.isArray(row.points)) return [];
+      if (!["trendline", "horizontal", "ray", "text", "measure"].includes(row.kind)) return [];
+      const points = row.points.filter((point): point is DrawingPoint =>
+        typeof point?.time === "number"
+        && Number.isFinite(point.time)
+        && typeof point.price === "number"
+        && Number.isFinite(point.price)
+      );
+      if (points.length === 0) return [];
+      return [{
+        id: String(row.id),
+        kind: row.kind,
+        symbol: String(row.symbol).toUpperCase(),
+        interval: row.interval,
+        points,
+        text: typeof row.text === "string" ? row.text : undefined,
+        createdAt: typeof row.createdAt === "string" ? row.createdAt : new Date().toISOString(),
+        updatedAt: typeof row.updatedAt === "string" ? row.updatedAt : new Date().toISOString(),
+      }];
+    });
+  }
+
+  function loadScopedDrawings(scope: string | null) {
+    selectedDrawingId = null;
+    draftPoint = null;
+    dragState = null;
+    drawings = scope ? sanitizeDrawings(readDrawingStore()[scope] ?? []) : [];
+  }
+
+  function persistScopedDrawings(next: ChartDrawing[]) {
+    const scope = drawingScope();
+    if (!scope || typeof localStorage === "undefined") return;
+    const store = readDrawingStore();
+    store[scope] = next;
+    localStorage.setItem(DRAWING_STORAGE_KEY, JSON.stringify(store));
+  }
+
+  function updateDrawings(next: ChartDrawing[]) {
+    drawings = next;
+    persistScopedDrawings(next);
+    refreshDrawingOverlay();
+  }
+
+  function pointToCoordinate(point: DrawingPoint): { x: number; y: number } | null {
+    const x = chart?.timeScale().timeToCoordinate(point.time as UTCTimestamp);
+    const y = priceSeries?.priceToCoordinate(point.price);
+    if (x === null || x === undefined || y === null || y === undefined) return null;
+    return { x, y };
+  }
+
+  function pointFromCoordinate(x: number, y: number): DrawingPoint | null {
+    const time = chart?.timeScale().coordinateToTime(x);
+    const price = priceSeries?.coordinateToPrice(y);
+    if (time === null || time === undefined || price === null || price === undefined) return null;
+    return { time: timeToNumber(time), price };
+  }
+
+  function drawingSvg(event: PointerEvent): SVGSVGElement | null {
+    const current = event.currentTarget;
+    if (current instanceof SVGSVGElement) return current;
+    if (current instanceof SVGElement) return current.ownerSVGElement;
+    return null;
+  }
+
+  function drawingPointFromPointer(event: PointerEvent): DrawingPoint | null {
+    const svg = drawingSvg(event);
+    if (!svg) return null;
+    const rect = svg.getBoundingClientRect();
+    return pointFromCoordinate(event.clientX - rect.left, event.clientY - rect.top);
+  }
+
+  function pointerOffset(event: PointerEvent): { x: number; y: number } {
+    const svg = drawingSvg(event);
+    const rect = svg?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  }
+
+  function drawingView(drawing: ChartDrawing): DrawingView | null {
+    const points = drawing.points.flatMap((point) => {
+      const coord = pointToCoordinate(point);
+      return coord ? [coord] : [];
+    });
+    if (points.length === 0) return null;
+    const selected = drawing.id === selectedDrawingId;
+    if (drawing.kind === "horizontal") {
+      const y = points[0].y;
+      const width = container?.clientWidth ?? 0;
+      return { drawing, selected, points: [{ x: 0, y }, { x: width, y }], path: `M 0 ${y} L ${width} ${y}` };
+    }
+    if (drawing.kind === "text") {
+      return { drawing, selected, points, label: { x: points[0].x, y: points[0].y, text: drawing.text ?? "Note" } };
+    }
+    if (points.length < 2) return null;
+    const [a, b] = points;
+    if (drawing.kind === "ray") {
+      const width = container?.clientWidth ?? b.x;
+      const dx = b.x - a.x;
+      const end = dx > 1
+        ? { x: width, y: a.y + ((width - a.x) * (b.y - a.y)) / dx }
+        : b;
+      return { drawing, selected, points: [a, end], path: `M ${a.x} ${a.y} L ${end.x} ${end.y}` };
+    }
+    if (drawing.kind === "measure") {
+      const pct = drawing.points[0].price
+        ? ((drawing.points[1].price - drawing.points[0].price) / drawing.points[0].price) * 100
+        : 0;
+      const bars = Math.round((drawing.points[1].time - drawing.points[0].time) / 86_400);
+      return {
+        drawing,
+        selected,
+        points,
+        path: `M ${a.x} ${a.y} L ${b.x} ${b.y}`,
+        label: {
+          x: (a.x + b.x) / 2,
+          y: (a.y + b.y) / 2 - 8,
+          text: `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}% · ${bars} bars`,
+        },
+      };
+    }
+    return { drawing, selected, points, path: `M ${a.x} ${a.y} L ${b.x} ${b.y}` };
+  }
+
+  function refreshDrawingOverlay() {
+    overlayTick += 1;
+  }
+
+  function drawingModel(drawing: ChartDrawing): string {
+    return JSON.stringify({ kind: drawing.kind, points: drawing.points, text: drawing.text ?? null });
+  }
+
+  function cloneDrawing(drawing: ChartDrawing): ChartDrawing {
+    return {
+      ...drawing,
+      points: drawing.points.map((point) => ({ ...point })),
+    };
+  }
+
+  function distanceToSegment(point: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }): number {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    if (dx === 0 && dy === 0) return Math.hypot(point.x - a.x, point.y - a.y);
+    const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy)));
+    return Math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy));
+  }
+
+  function hitTestDrawing(x: number, y: number): ChartDrawing | null {
+    const point = { x, y };
+    for (const drawing of [...drawings].reverse()) {
+      const view = drawingView(drawing);
+      if (!view) continue;
+      if (drawing.kind === "text") {
+        const anchor = view.points[0];
+        if (Math.hypot(point.x - anchor.x, point.y - anchor.y) <= 22) return drawing;
+      } else if (view.points.length >= 2 && distanceToSegment(point, view.points[0], view.points[1]) <= 8) {
+        return drawing;
+      }
+    }
+    return null;
+  }
+
+  function createDrawing(kind: DrawingKind, points: DrawingPoint[], text?: string) {
+    if (!symbol) return;
+    const now = new Date().toISOString();
+    const drawing: ChartDrawing = {
+      id: newDrawingId(),
+      kind,
+      symbol: symbol.toUpperCase(),
+      interval,
+      points,
+      text,
+      createdAt: now,
+      updatedAt: now,
+    };
+    selectedDrawingId = drawing.id;
+    draftPoint = null;
+    updateDrawings([...drawings, drawing]);
+  }
+
+  function setDrawingTool(next: DrawingTool) {
+    drawingTool = next;
+    draftPoint = null;
+    drawingStatus = null;
+  }
+
+  function deleteSelectedDrawing() {
+    if (!selectedDrawingId) return;
+    updateDrawings(drawings.filter((drawing) => drawing.id !== selectedDrawingId));
+    selectedDrawingId = null;
+  }
+
+  function clearDrawings() {
+    updateDrawings([]);
+    selectedDrawingId = null;
+    draftPoint = null;
+    drawingStatus = "Cleared";
+  }
+
+  function beginDrawingSelection(event: PointerEvent, forced: ChartDrawing | null = null) {
+    const { x, y } = pointerOffset(event);
+    const hit = forced ?? hitTestDrawing(x, y);
+    selectedDrawingId = hit?.id ?? null;
+    const start = hit ? drawingPointFromPointer(event) : null;
+    dragState = hit && start ? { id: hit.id, start, original: cloneDrawing(hit) } : null;
+    if (dragState && event.currentTarget instanceof Element) {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    refreshDrawingOverlay();
+  }
+
+  function handleDrawingPointerDown(event: PointerEvent) {
+    if (!symbol || !chart || !priceSeries) return;
+    if (drawingTool === "select") {
+      beginDrawingSelection(event);
+      return;
+    }
+
+    const point = drawingPointFromPointer(event);
+    if (!point) return;
+    if (drawingTool === "horizontal") {
+      createDrawing("horizontal", [point]);
+      drawingTool = "select";
+      return;
+    }
+    if (drawingTool === "text") {
+      const text = window.prompt("Text note", "Note")?.trim();
+      if (text) createDrawing("text", [point], text);
+      drawingTool = "select";
+      return;
+    }
+    if (!draftPoint) {
+      draftPoint = point;
+      refreshDrawingOverlay();
+      return;
+    }
+    createDrawing(drawingTool, [draftPoint, point]);
+    drawingTool = "select";
+  }
+
+  function handleExistingDrawingPointerDown(event: PointerEvent, drawing: ChartDrawing) {
+    if (drawingTool !== "select") return;
+    event.stopPropagation();
+    beginDrawingSelection(event, drawing);
+  }
+
+  function handleDrawingPointerMove(event: PointerEvent) {
+    if (!dragState) return;
+    const current = drawingPointFromPointer(event);
+    if (!current) return;
+    const timeDelta = current.time - dragState.start.time;
+    const priceDelta = current.price - dragState.start.price;
+    const now = new Date().toISOString();
+    const next = drawings.map((drawing) => drawing.id === dragState?.id
+      ? {
+          ...dragState.original,
+          points: dragState.original.points.map((point) => ({
+            time: point.time + timeDelta,
+            price: point.price + priceDelta,
+          })),
+          updatedAt: now,
+        }
+      : drawing);
+    updateDrawings(next);
+  }
+
+  function handleDrawingPointerUp(event: PointerEvent) {
+    if (dragState) {
+      (event.currentTarget as SVGSVGElement).releasePointerCapture(event.pointerId);
+      dragState = null;
+    }
+  }
+
+  function editableTarget(target: EventTarget | null): boolean {
+    return target instanceof HTMLInputElement
+      || target instanceof HTMLTextAreaElement
+      || target instanceof HTMLSelectElement
+      || (target instanceof HTMLElement && target.isContentEditable);
+  }
+
+  function exportDrawings() {
+    const scope = drawingScope();
+    if (!scope) return;
+    const payload = JSON.stringify({ version: 1, scope, drawings }, null, 2);
+    const blob = new Blob([payload], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${scope.replace(/[^A-Z0-9|.-]/gi, "_")}-drawings.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    drawingStatus = "Exported";
+  }
+
+  async function importDrawings(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text());
+      const imported = sanitizeDrawings(Array.isArray(parsed) ? parsed : parsed.drawings);
+      updateDrawings(imported.map((drawing) => ({
+        ...drawing,
+        symbol: symbol?.toUpperCase() ?? drawing.symbol,
+        interval,
+        updatedAt: new Date().toISOString(),
+      })));
+      drawingStatus = `Imported ${imported.length}`;
+    } catch (e) {
+      drawingStatus = e instanceof Error ? e.message : String(e);
+    }
   }
 
   function normalizeInterval(value: string | null | undefined): Interval | null {
@@ -808,6 +1201,9 @@
     chart.panes()[1]?.setStretchFactor(1);
     chart.panes()[2]?.setStretchFactor(1);
     markersApi = createSeriesMarkers(priceSeries, []);
+    chart.timeScale().subscribeVisibleTimeRangeChange(() => refreshDrawingOverlay());
+    resizeObserver = new ResizeObserver(() => refreshDrawingOverlay());
+    resizeObserver.observe(container);
   }
 
   function render() {
@@ -839,6 +1235,7 @@
     applyMarkers();
     applyPriceAlertLines();
     if (cs.length > 0) chart.timeScale().fitContent();
+    refreshDrawingOverlay();
   }
 
   $effect(() => {
@@ -848,6 +1245,10 @@
   $effect(() => {
     onStateChange({ interval, range });
     if (symbol) load(symbol, range, interval);
+  });
+
+  $effect(() => {
+    loadScopedDrawings(drawingScope());
   });
 
   $effect(() => {
@@ -870,7 +1271,24 @@
   });
 
   onMount(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (editableTarget(event.target)) return;
+      if ((event.key === "Delete" || event.key === "Backspace") && selectedDrawingId) {
+        event.preventDefault();
+        deleteSelectedDrawing();
+      }
+      if (event.key === "Escape") {
+        draftPoint = null;
+        dragState = null;
+        drawingTool = "select";
+        refreshDrawingOverlay();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
     return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      resizeObserver?.disconnect();
+      resizeObserver = null;
       chart?.remove();
       chart = null;
       priceSeries = null;
@@ -936,6 +1354,25 @@
         Alert <span>{priceAlerts.filter((rule) => rule.status === "active").length}</span>
       </button>
       <button type="button" class="toolbar-button" onclick={fitVisibleRange}>Fit</button>
+      <button
+        type="button"
+        class="toolbar-button"
+        disabled={drawings.length === 0}
+        data-testid="draw-export"
+        onclick={exportDrawings}
+      >
+        Export <span>{drawings.length}</span>
+      </button>
+      <button type="button" class="toolbar-button" data-testid="draw-import" onclick={() => drawingImportInput?.click()}>
+        Import
+      </button>
+      <input
+        class="sr-only"
+        type="file"
+        accept="application/json"
+        bind:this={drawingImportInput}
+        onchange={importDrawings}
+      />
     </div>
 
     <span class="meta sr-status" data-testid="chart-interval-status">
@@ -1045,6 +1482,72 @@
       <button type="button" title="Fit content" aria-label="Fit content" onclick={fitVisibleRange}>
         <span class="tool-icon icon-fit"></span>
       </button>
+      <span class="tool-separator"></span>
+      <button
+        type="button"
+        class:active={drawingTool === "select"}
+        title="Select drawing"
+        aria-label="Select drawing"
+        data-testid="draw-tool-select"
+        onclick={() => setDrawingTool("select")}
+      ><span class="tool-icon icon-draw-select"></span></button>
+      <button
+        type="button"
+        class:active={drawingTool === "trendline"}
+        title="Trendline"
+        aria-label="Trendline"
+        data-testid="draw-tool-trendline"
+        onclick={() => setDrawingTool("trendline")}
+      ><span class="tool-icon icon-trendline"></span></button>
+      <button
+        type="button"
+        class:active={drawingTool === "horizontal"}
+        title="Horizontal line"
+        aria-label="Horizontal line"
+        data-testid="draw-tool-horizontal"
+        onclick={() => setDrawingTool("horizontal")}
+      ><span class="tool-icon icon-horizontal"></span></button>
+      <button
+        type="button"
+        class:active={drawingTool === "ray"}
+        title="Ray"
+        aria-label="Ray"
+        data-testid="draw-tool-ray"
+        onclick={() => setDrawingTool("ray")}
+      ><span class="tool-icon icon-ray"></span></button>
+      <button
+        type="button"
+        class:active={drawingTool === "text"}
+        title="Text note"
+        aria-label="Text note"
+        data-testid="draw-tool-text"
+        onclick={() => setDrawingTool("text")}
+      ><span class="tool-icon icon-text-note"></span></button>
+      <button
+        type="button"
+        class:active={drawingTool === "measure"}
+        title="Measure"
+        aria-label="Measure"
+        data-testid="draw-tool-measure"
+        onclick={() => setDrawingTool("measure")}
+      ><span class="tool-icon icon-measure"></span></button>
+      <span class="tool-separator"></span>
+      <button
+        type="button"
+        title="Delete selected drawing"
+        aria-label="Delete selected drawing"
+        disabled={!selectedDrawingId}
+        data-testid="draw-delete"
+        onclick={deleteSelectedDrawing}
+      ><span class="tool-icon icon-delete"></span></button>
+      <button
+        type="button"
+        title="Clear drawings"
+        aria-label="Clear drawings"
+        disabled={drawings.length === 0}
+        data-testid="draw-clear"
+        onclick={clearDrawings}
+      ><span class="tool-icon icon-clear"></span></button>
     </aside>
 
     <section class="chart-shell">
@@ -1062,6 +1565,12 @@
           {/if}
           {#if events.length > 0}
             <span>{events.length} events</span>
+          {/if}
+          {#if drawings.length > 0}
+            <span>{drawings.length} drawings</span>
+          {/if}
+          {#if drawingStatus}
+            <span>{drawingStatus}</span>
           {/if}
         </div>
         <div class="study-legend">
@@ -1104,6 +1613,63 @@
             Run <code>make run-ingest</code> to backfill.
           </div>
         {/if}
+        <svg
+          class="drawing-layer"
+          class:armed={drawingTool !== "select"}
+          class:selectable={drawingTool === "select" && drawings.length > 0}
+          data-testid="chart-drawing-layer"
+          role="application"
+          aria-label="Chart drawings"
+          onpointerdown={handleDrawingPointerDown}
+          onpointermove={handleDrawingPointerMove}
+          onpointerup={handleDrawingPointerUp}
+          onpointercancel={handleDrawingPointerUp}
+        >
+          {#each drawingViews as view (view.drawing.id)}
+            <g
+              class:selected={view.selected}
+              data-testid={`chart-drawing-${view.drawing.kind}`}
+              data-selected={view.selected ? "true" : "false"}
+              data-model={drawingModel(view.drawing)}
+              role="button"
+              tabindex="0"
+              aria-label={`${view.drawing.kind.replace(/_/g, " ")} drawing`}
+              onpointerdown={(event) => handleExistingDrawingPointerDown(event, view.drawing)}
+            >
+              {#if view.path}
+                <path
+                  class="drawing-hit"
+                  d={view.path}
+                />
+              {/if}
+              {#if view.path}
+                <path class={`drawing-shape drawing-${view.drawing.kind}`} d={view.path} />
+              {/if}
+              {#if view.drawing.kind === "measure" && view.points.length >= 2}
+                <line class="drawing-measure-guide" x1={view.points[0].x} y1={view.points[0].y} x2={view.points[1].x} y2={view.points[1].y} />
+              {/if}
+              {#if view.label}
+                <text class={`drawing-label drawing-label-${view.drawing.kind}`} x={view.label.x} y={view.label.y}>
+                  {view.label.text}
+                </text>
+              {/if}
+              {#each view.points as point}
+                <circle
+                  class="drawing-hit-point"
+                  cx={point.x}
+                  cy={point.y}
+                  r="18"
+                />
+              {/each}
+              {#each view.points as point}
+                <circle class="drawing-anchor" cx={point.x} cy={point.y} r="3.5" />
+              {/each}
+            </g>
+          {/each}
+          {#if draftView}
+            <circle class="drawing-draft" cx={draftView.x} cy={draftView.y} r="4" />
+          {/if}
+        </svg>
       </div>
     </section>
   </div>
@@ -1152,6 +1718,9 @@
     border-top: 1px solid #1f2733;
     border-bottom: none;
     justify-content: space-between;
+    position: relative;
+    z-index: 4;
+    background: #0b0e14;
   }
 
   .symbol-cluster,
@@ -1239,6 +1808,11 @@
     display: inline-flex;
     align-items: center;
     gap: .35rem;
+  }
+
+  .toolbar-button:disabled {
+    opacity: .45;
+    cursor: not-allowed;
   }
 
   .toolbar-button span {
@@ -1373,6 +1947,9 @@
     grid-template-columns: 42px minmax(0, 1fr);
     flex: 1 1 auto;
     min-height: 0;
+    overflow: hidden;
+    position: relative;
+    z-index: 1;
   }
 
   .tool-rail {
@@ -1404,6 +1981,24 @@
     border-color: #344159;
   }
 
+  .tool-rail button:disabled {
+    opacity: .35;
+    cursor: not-allowed;
+  }
+
+  .tool-rail button:disabled:hover {
+    color: #9aa3b8;
+    background: transparent;
+    border-color: transparent;
+  }
+
+  .tool-separator {
+    width: 22px;
+    height: 1px;
+    background: #263143;
+    margin: .12rem 0;
+  }
+
   .tool-icon {
     width: 16px;
     height: 16px;
@@ -1417,7 +2012,20 @@
   .icon-magnet::after,
   .icon-pointer::before,
   .icon-fit::before,
-  .icon-fit::after {
+  .icon-fit::after,
+  .icon-draw-select::before,
+  .icon-draw-select::after,
+  .icon-trendline::before,
+  .icon-horizontal::before,
+  .icon-ray::before,
+  .icon-ray::after,
+  .icon-text-note::before,
+  .icon-measure::before,
+  .icon-measure::after,
+  .icon-delete::before,
+  .icon-delete::after,
+  .icon-clear::before,
+  .icon-clear::after {
     content: "";
     position: absolute;
     background: currentColor;
@@ -1479,6 +2087,93 @@
     height: 1px;
     top: 7px;
     left: 4px;
+  }
+
+  .icon-draw-select::before {
+    width: 12px;
+    height: 12px;
+    clip-path: polygon(0 0, 12px 8px, 7px 10px, 5px 16px, 3px 15px, 5px 9px, 0 12px);
+    left: 2px;
+    top: 0;
+  }
+
+  .icon-draw-select::after {
+    width: 5px;
+    height: 5px;
+    border: 1px solid currentColor;
+    background: transparent;
+    right: 0;
+    bottom: 0;
+  }
+
+  .icon-trendline::before,
+  .icon-ray::before,
+  .icon-measure::before {
+    width: 18px;
+    height: 2px;
+    left: -1px;
+    top: 8px;
+    transform: rotate(-32deg);
+    transform-origin: center;
+  }
+
+  .icon-horizontal::before {
+    width: 16px;
+    height: 2px;
+    left: 0;
+    top: 7px;
+  }
+
+  .icon-ray::after {
+    width: 0;
+    height: 0;
+    right: -1px;
+    top: 3px;
+    background: transparent;
+    border-left: 5px solid currentColor;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    transform: rotate(-32deg);
+  }
+
+  .icon-text-note::before {
+    content: "T";
+    background: transparent;
+    font-weight: 800;
+    font-size: 15px;
+    line-height: 16px;
+    left: 3px;
+    top: -1px;
+  }
+
+  .icon-measure::after {
+    width: 12px;
+    height: 6px;
+    border-left: 1px solid currentColor;
+    border-right: 1px solid currentColor;
+    background: transparent;
+    left: 2px;
+    top: 5px;
+  }
+
+  .icon-delete::before,
+  .icon-delete::after,
+  .icon-clear::before,
+  .icon-clear::after {
+    width: 16px;
+    height: 2px;
+    top: 7px;
+    left: 0;
+  }
+
+  .icon-delete::before,
+  .icon-clear::before {
+    transform: rotate(45deg);
+  }
+
+  .icon-delete::after,
+  .icon-clear::after {
+    transform: rotate(-45deg);
   }
 
   .chart-shell {
@@ -1596,6 +2291,102 @@
     flex: 1 1 auto;
     min-height: 0;
     position: relative;
+  }
+
+  .drawing-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    overflow: visible;
+  }
+
+  .drawing-layer.armed {
+    pointer-events: auto;
+  }
+
+  .drawing-hit {
+    fill: none;
+    stroke: transparent;
+    stroke-width: 18;
+    pointer-events: none;
+  }
+
+  .drawing-layer.selectable .drawing-hit {
+    pointer-events: stroke;
+  }
+
+  .drawing-hit-point {
+    fill: transparent;
+    stroke: transparent;
+    pointer-events: none;
+  }
+
+  .drawing-layer.selectable .drawing-hit-point {
+    pointer-events: fill;
+  }
+
+  .drawing-shape {
+    fill: none;
+    stroke: #f9e2af;
+    stroke-width: 1.6;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+  }
+
+  .drawing-ray {
+    stroke-dasharray: 7 4;
+  }
+
+  .drawing-horizontal {
+    stroke: #89b4fa;
+  }
+
+  .drawing-measure {
+    stroke: #cba6f7;
+  }
+
+  .drawing-measure-guide {
+    stroke: rgba(203, 166, 247, .2);
+    stroke-width: 18;
+  }
+
+  .drawing-label {
+    fill: #f5f7fb;
+    stroke: rgba(11, 14, 20, .9);
+    stroke-width: 3px;
+    paint-order: stroke;
+    font-size: 12px;
+    font-weight: 700;
+    pointer-events: none;
+  }
+
+  .drawing-label-text {
+    fill: #f9e2af;
+  }
+
+  .drawing-anchor {
+    fill: #0b0e14;
+    stroke: #f5f7fb;
+    stroke-width: 1.4;
+    opacity: 0;
+  }
+
+  .drawing-layer g.selected .drawing-shape {
+    stroke-width: 2.4;
+    filter: drop-shadow(0 0 5px rgba(249, 226, 175, .35));
+  }
+
+  .drawing-layer g.selected .drawing-anchor {
+    opacity: 1;
+  }
+
+  .drawing-draft {
+    fill: #f9e2af;
+    stroke: #0b0e14;
+    stroke-width: 2;
   }
 
   .empty {

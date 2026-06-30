@@ -14,6 +14,11 @@ use sqlx::{
 };
 use std::time::Duration;
 
+use crate::automation::{
+    AutomationStrategyCandidate, BuiltinStrategyDefinition, DesiredPositionReceipt,
+    DesiredPositionWrite, LatestDesiredPosition, StrategyDefinitionInput, TargetSide,
+    TradePermissionInput,
+};
 use crate::llm::prompts::{InvocationRecorder, InvocationRow};
 use crate::platform::domain::{
     Alert, AlertKind, Condition, MarketStateRow, ThesisDetail, ThesisFreshnessComponent,
@@ -4137,6 +4142,331 @@ impl Store {
         rows.into_iter().map(decode_price_alert_rule).collect()
     }
 
+    pub async fn ensure_builtin_automation_strategies(
+        &self,
+        definitions: &[BuiltinStrategyDefinition],
+    ) -> Result<()> {
+        for definition in definitions {
+            sqlx::query(
+                r#"INSERT INTO automation_strategy_definition
+                     (strategy_id, strategy_version, family, display_name,
+                      description, config_hash, config, status)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+                   ON CONFLICT (strategy_id, strategy_version) DO NOTHING"#,
+            )
+            .bind(definition.strategy_id)
+            .bind(definition.strategy_version)
+            .bind(definition.family)
+            .bind(definition.display_name)
+            .bind(definition.description)
+            .bind(definition.config_hash())
+            .bind(&definition.config)
+            .bind(definition.status)
+            .execute(&self.pool)
+            .await
+            .with_context(|| {
+                format!(
+                    "ensure automation strategy {} {}",
+                    definition.strategy_id, definition.strategy_version
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    pub async fn automation_strategy_candidates(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<AutomationStrategyCandidate>> {
+        let rows = sqlx::query(
+            r#"SELECT p.permission_id,
+                      p.symbol,
+                      p.strategy_id,
+                      p.strategy_version,
+                      p.status AS permission_status,
+                      p.instrument_scope,
+                      p.environment_scope,
+                      p.manual_freeze,
+                      p.expires_at,
+                      p.max_allocation_pct::float8 AS max_allocation_pct,
+                      p.max_notional_usd::float8 AS max_notional_usd,
+                      p.max_quantity::float8 AS max_quantity,
+                      s.family,
+                      s.display_name,
+                      s.status AS strategy_status,
+                      s.config_hash,
+                      s.config,
+                      latest.desired_position_id AS latest_desired_position_id,
+                      latest.target_side AS latest_target_side,
+                      latest.target_weight_pct::float8 AS latest_target_weight_pct,
+                      latest.emitted_at AS latest_emitted_at
+                 FROM automation_trade_permission p
+                 JOIN automation_strategy_definition s
+                   ON s.strategy_id = p.strategy_id
+                  AND s.strategy_version = p.strategy_version
+            LEFT JOIN LATERAL (
+                    SELECT desired_position_id, target_side, target_weight_pct, emitted_at
+                      FROM desired_strategy_position d
+                     WHERE d.permission_id = p.permission_id
+                  ORDER BY emitted_at DESC
+                     LIMIT 1
+                 ) latest ON TRUE
+                WHERE s.status = 'shadow'
+                  AND p.environment_scope = 'shadow'
+                  AND p.status IN ('approved', 'pending', 'expired')
+             ORDER BY p.updated_at ASC, p.symbol, p.strategy_id
+                LIMIT $1"#,
+        )
+        .bind(limit.clamp(1, 500))
+        .fetch_all(&self.pool)
+        .await
+        .context("automation_strategy_candidates")?;
+
+        rows.into_iter()
+            .map(|row| {
+                let latest_target_side: Option<String> = row.try_get("latest_target_side")?;
+                let latest_desired = match (
+                    row.try_get::<Option<uuid::Uuid>, _>("latest_desired_position_id")?,
+                    latest_target_side,
+                ) {
+                    (Some(desired_position_id), Some(side)) => Some(LatestDesiredPosition {
+                        desired_position_id,
+                        target_side: TargetSide::try_from(side.as_str())?,
+                        target_weight_pct: row.try_get("latest_target_weight_pct")?,
+                        emitted_at: row.try_get("latest_emitted_at")?,
+                    }),
+                    _ => None,
+                };
+                Ok(AutomationStrategyCandidate {
+                    definition: StrategyDefinitionInput {
+                        strategy_id: row.try_get("strategy_id")?,
+                        strategy_version: row.try_get("strategy_version")?,
+                        family: row.try_get("family")?,
+                        display_name: row.try_get("display_name")?,
+                        status: row.try_get("strategy_status")?,
+                        config_hash: row.try_get("config_hash")?,
+                        config: row.try_get("config")?,
+                    },
+                    permission: TradePermissionInput {
+                        permission_id: row.try_get("permission_id")?,
+                        symbol: row.try_get("symbol")?,
+                        strategy_id: row.try_get("strategy_id")?,
+                        strategy_version: row.try_get("strategy_version")?,
+                        status: row.try_get("permission_status")?,
+                        instrument_scope: row.try_get("instrument_scope")?,
+                        environment_scope: row.try_get("environment_scope")?,
+                        manual_freeze: row.try_get("manual_freeze")?,
+                        expires_at: row.try_get("expires_at")?,
+                        max_allocation_pct: row.try_get("max_allocation_pct")?,
+                        max_notional_usd: row.try_get("max_notional_usd")?,
+                        max_quantity: row.try_get("max_quantity")?,
+                    },
+                    latest_desired,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn insert_desired_strategy_position(
+        &self,
+        write: &DesiredPositionWrite,
+    ) -> Result<DesiredPositionReceipt> {
+        let mut tx = self.pool.begin().await.context("begin automation tx")?;
+        let inserted_sleeve: Option<uuid::Uuid> = sqlx::query_scalar(
+            r#"INSERT INTO automation_strategy_sleeve
+                 (sleeve_kind, permission_id, symbol, strategy_id, strategy_version, status, source_ref)
+               SELECT 'strategy', $1, $2, $3, $4, 'active',
+                      jsonb_build_object('created_by', 'shadow_strategy_runner')
+                WHERE NOT EXISTS (
+                      SELECT 1
+                        FROM automation_strategy_sleeve
+                       WHERE permission_id = $1
+                         AND closed_at IS NULL
+                )
+            RETURNING sleeve_id"#,
+        )
+        .bind(write.permission_id)
+        .bind(&write.symbol)
+        .bind(&write.strategy_id)
+        .bind(&write.strategy_version)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("insert automation sleeve")?;
+
+        let sleeve_id = match inserted_sleeve {
+            Some(sleeve_id) => sleeve_id,
+            None => sqlx::query_scalar(
+                r#"SELECT sleeve_id
+                         FROM automation_strategy_sleeve
+                        WHERE permission_id = $1
+                          AND closed_at IS NULL
+                     ORDER BY updated_at DESC
+                        LIMIT 1"#,
+            )
+            .bind(write.permission_id)
+            .fetch_one(&mut *tx)
+            .await
+            .context("select automation sleeve")?,
+        };
+
+        let supersedes_desired_position_id: Option<uuid::Uuid> = sqlx::query_scalar(
+            r#"SELECT desired_position_id
+                 FROM desired_strategy_position
+                WHERE permission_id = $1
+             ORDER BY emitted_at DESC
+                LIMIT 1"#,
+        )
+        .bind(write.permission_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("latest desired position")?;
+
+        let reason_codes = serde_json::json!(write.reason_codes);
+        let desired_position_id: uuid::Uuid = sqlx::query_scalar(
+            r#"INSERT INTO desired_strategy_position
+                 (permission_id, sleeve_id, symbol, thesis_id, strategy_id,
+                  strategy_version, strategy_config_hash, target_side,
+                  target_weight_pct, rationale, reason_codes, feature_snapshot,
+                  signal_ref, supersedes_desired_position_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                       NULLIF($10, ''), $11::jsonb, $12::jsonb, $13::jsonb, $14)
+            RETURNING desired_position_id"#,
+        )
+        .bind(write.permission_id)
+        .bind(sleeve_id)
+        .bind(&write.symbol)
+        .bind(write.thesis_id)
+        .bind(&write.strategy_id)
+        .bind(&write.strategy_version)
+        .bind(&write.strategy_config_hash)
+        .bind(write.target_side.as_str())
+        .bind(write.target_weight_pct)
+        .bind(&write.rationale)
+        .bind(&reason_codes)
+        .bind(&write.feature_snapshot)
+        .bind(&write.signal_ref)
+        .bind(supersedes_desired_position_id)
+        .fetch_one(&mut *tx)
+        .await
+        .context("insert desired strategy position")?;
+
+        sqlx::query(
+            r#"INSERT INTO automation_sleeve_event
+                 (sleeve_id, event_kind, source_ref)
+               VALUES ($1, 'desired_position',
+                       jsonb_build_object(
+                         'desired_position_id', $2::uuid,
+                         'target_side', $3::text,
+                         'reason_codes', $4::jsonb
+                       ))"#,
+        )
+        .bind(sleeve_id)
+        .bind(desired_position_id)
+        .bind(write.target_side.as_str())
+        .bind(&reason_codes)
+        .execute(&mut *tx)
+        .await
+        .context("insert automation sleeve event")?;
+
+        let permission_snapshot = write
+            .feature_snapshot
+            .get("permission")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let data_freshness = serde_json::json!({
+            "technical": write.feature_snapshot.get("technical").cloned().unwrap_or_else(|| serde_json::json!(null))
+        });
+        let proof_id: uuid::Uuid = sqlx::query_scalar(
+            r#"INSERT INTO automation_proof
+                 (desired_position_id, permission_id, sleeve_id, symbol,
+                  strategy_id, strategy_version, strategy_config_hash,
+                  environment_scope, result, blocked_reasons, input_snapshot,
+                  permission_snapshot, risk_result, data_freshness, session_state,
+                  capital_allocation, broker_reconciliation)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'passed', '[]'::jsonb,
+                       $9::jsonb, $10::jsonb, $11::jsonb, $12::jsonb, $13::jsonb,
+                       $14::jsonb, $15::jsonb)
+            RETURNING proof_id"#,
+        )
+        .bind(desired_position_id)
+        .bind(write.permission_id)
+        .bind(sleeve_id)
+        .bind(&write.symbol)
+        .bind(&write.strategy_id)
+        .bind(&write.strategy_version)
+        .bind(&write.strategy_config_hash)
+        .bind(&write.environment_scope)
+        .bind(&write.feature_snapshot)
+        .bind(&permission_snapshot)
+        .bind(serde_json::json!({
+            "status": "not_evaluated",
+            "reason": "shadow strategy runner does not execute orders"
+        }))
+        .bind(&data_freshness)
+        .bind(serde_json::json!({
+            "mode": "shadow",
+            "order_submission": "disabled"
+        }))
+        .bind(serde_json::json!({
+            "target_weight_pct": write.target_weight_pct,
+            "source": "permission_or_strategy_config"
+        }))
+        .bind(serde_json::json!({
+            "status": "not_applicable",
+            "reason": "shadow runner does not reconcile broker state"
+        }))
+        .fetch_one(&mut *tx)
+        .await
+        .context("insert automation proof")?;
+
+        let validation_snapshot =
+            serde_json::to_value(&write.validation).context("serialize validation plan")?;
+        let signal_key = format!(
+            "{}:{}:{}:{}:{}",
+            write.symbol,
+            write.strategy_id,
+            write.strategy_version,
+            write.target_side.as_str(),
+            write.validation.evaluation_due_at.to_rfc3339()
+        );
+        let observation_id: uuid::Uuid = sqlx::query_scalar(
+            r#"INSERT INTO automation_strategy_signal_observation
+                 (desired_position_id, proof_id, permission_id, sleeve_id, symbol,
+                  strategy_id, strategy_version, strategy_config_hash, signal_key,
+                  target_side, prior_target_side, churn_event, reason_codes,
+                  feature_snapshot, validation_snapshot, evaluation_due_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                       $10, $11, $12, $13::jsonb, $14::jsonb, $15::jsonb, $16)
+            RETURNING observation_id"#,
+        )
+        .bind(desired_position_id)
+        .bind(proof_id)
+        .bind(write.permission_id)
+        .bind(sleeve_id)
+        .bind(&write.symbol)
+        .bind(&write.strategy_id)
+        .bind(&write.strategy_version)
+        .bind(&write.strategy_config_hash)
+        .bind(signal_key)
+        .bind(write.target_side.as_str())
+        .bind(write.prior_target_side.map(TargetSide::as_str))
+        .bind(write.validation.churn_event)
+        .bind(&reason_codes)
+        .bind(&write.feature_snapshot)
+        .bind(&validation_snapshot)
+        .bind(write.validation.evaluation_due_at)
+        .fetch_one(&mut *tx)
+        .await
+        .context("insert automation signal observation")?;
+
+        tx.commit().await.context("commit automation tx")?;
+        Ok(DesiredPositionReceipt {
+            desired_position_id,
+            proof_id,
+            observation_id,
+        })
+    }
+
     pub async fn automation_status(&self, symbol: Option<&str>) -> Result<serde_json::Value> {
         let rows = sqlx::query(
             r#"SELECT p.status AS permission_status,
@@ -4206,6 +4536,7 @@ impl Store {
                     SELECT d.desired_position_id,
                            jsonb_build_object(
                              'desired_position_id', d.desired_position_id,
+                             'strategy_config_hash', d.strategy_config_hash,
                              'target_side', d.target_side,
                              'target_quantity', d.target_quantity::float8,
                              'target_notional_usd', d.target_notional_usd::float8,
@@ -4225,6 +4556,7 @@ impl Store {
                     SELECT ap.result,
                            jsonb_build_object(
                              'proof_id', ap.proof_id,
+                             'strategy_config_hash', ap.strategy_config_hash,
                              'result', ap.result,
                              'blocked_reasons', ap.blocked_reasons,
                              'risk_result', ap.risk_result,

@@ -187,7 +187,7 @@ web-e2e: ## Playwright UI workflow tests (mocked API, no DB mutation)
 # ---- run (local dev; build once with `make build`, then ./target/release/<bin>) ----
 # $(RUN) injects infisical when installed (see top of file). Override with
 # `make RUN= run-gateway` to bypass.
-.PHONY: run-gateway run-ingest run-regime run-router run-risk run-goalpost run-price-alerts llmsmoke
+.PHONY: run-gateway run-ingest run-regime run-router run-risk run-goalpost run-price-alerts run-strategy-runner run-strategy-runner-once llmsmoke
 run-gateway: ## Run the gateway
 	$(RUN) cargo run --release --bin gateway
 
@@ -224,6 +224,12 @@ run-reflection: ## Run the reflection service (predictions → outcomes → cali
 run-price-alerts: ## Run the price alert evaluator (manual + AI price levels)
 	$(RUN) cargo run --release --bin price-alerts
 
+run-strategy-runner: ## Run shadow automation strategies (desired state only)
+	$(RUN) cargo run --release --bin strategy-runner
+
+run-strategy-runner-once: ## Run one shadow automation strategy pass and print summary
+	$(RUN) env AUTOMATION_STRATEGY_ONCE=1 cargo run --release --bin strategy-runner
+
 llmsmoke: ## One-shot LLM round-trip — picks transport from env (mock if no key)
 	$(RUN) cargo run --release --bin llmsmoke -- "$(MSG)"
 
@@ -259,6 +265,7 @@ watch-all: ## Show how to run all services in watch mode
 	@echo "  make watch-risk"
 	@echo "  make watch-goalpost"
 	@echo "  make watch-ingest    # only when actively iterating on adapter code"
+	@echo "  make run-strategy-runner"
 
 # ---- Python ----
 .PHONY: py-setup py-check run-context research sync-ibkr run-ibkr-sync

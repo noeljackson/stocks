@@ -79,6 +79,8 @@ x-rust-common: &rust-common
     - CONSENSUS_INTERVAL_SECS=30
     - DISCOVERY_INTERVAL_SECS=60
     - PRICE_ALERT_INTERVAL_SECS=${PRICE_ALERT_INTERVAL_SECS:-60}
+    - AUTOMATION_STRATEGY_INTERVAL_SECS=${AUTOMATION_STRATEGY_INTERVAL_SECS:-60}
+    - AUTOMATION_STRATEGY_MAX_PER_PASS=${AUTOMATION_STRATEGY_MAX_PER_PASS:-100}
     - RUST_LOG=info,sqlx=warn
     # cargo-watch occasionally hits "could not find Cargo.toml" if the bind
     # mount isn't ready; small delay tolerates the race on first start.
@@ -176,6 +178,13 @@ services:
     command: >-
       cargo watch -w src -w Cargo.toml
         -x 'run --bin price-alerts'
+
+  strategy-runner:
+    <<: *rust-common
+    container_name: stocks-strategy-runner
+    command: >-
+      cargo watch -w src -w Cargo.toml
+        -x 'run --bin strategy-runner'
 
   # Vite dev server with HMR. Browser hits :5173 directly during dev; vite's
   # proxy forwards /api/* and /healthz + /api/stream (SSE) to the gateway

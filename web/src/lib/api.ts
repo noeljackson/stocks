@@ -219,6 +219,7 @@ export interface AutomationSleeve {
 
 export interface AutomationDesiredPosition {
   desired_position_id: string;
+  strategy_config_hash?: string | null;
   target_side: string;
   target_quantity?: number | null;
   target_notional_usd?: number | null;
@@ -230,6 +231,7 @@ export interface AutomationDesiredPosition {
 
 export interface AutomationProof {
   proof_id: string;
+  strategy_config_hash?: string | null;
   result: string;
   blocked_reasons?: string[];
   evaluated_at?: string | null;

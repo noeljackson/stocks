@@ -66,6 +66,10 @@ name = "price-alerts"
 path = "src/bin/price_alerts.rs"
 
 [[bin]]
+name = "technical-timing-validator"
+path = "src/bin/technical_timing_validator.rs"
+
+[[bin]]
 name = "strategy-runner"
 path = "src/bin/strategy_runner.rs"
 

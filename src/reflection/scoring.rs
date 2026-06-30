@@ -38,6 +38,7 @@ pub struct CalibrationSummary {
     pub mean_lead_time_days: Option<f64>,
     pub median_lead_time_days: Option<f64>,
     pub parent_themes: Vec<ParentThemeCalibration>,
+    pub technical_timing: Vec<TechnicalTimingCalibration>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -50,6 +51,22 @@ pub struct ParentThemeCalibration {
     pub outcomes_scored: i64,
     pub mean_brier: Option<f64>,
     pub mean_lead_time_days: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct TechnicalTimingCalibration {
+    pub technical_state: String,
+    pub setup_kind: String,
+    pub entry_stance: String,
+    pub benchmark_symbol: String,
+    pub observations_total: i64,
+    pub outcomes_scored: i64,
+    pub mean_forward_return_pct: Option<f64>,
+    pub mean_max_drawdown_pct: Option<f64>,
+    pub mean_benchmark_return_pct: Option<f64>,
+    pub mean_excess_return_pct: Option<f64>,
+    pub positive_return_rate: Option<f64>,
+    pub outperform_rate: Option<f64>,
 }
 
 #[cfg(test)]

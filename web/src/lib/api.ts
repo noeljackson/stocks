@@ -1297,6 +1297,20 @@ export interface Calibration {
     mean_brier: number | null;
     mean_lead_time_days: number | null;
   }[];
+  technical_timing?: {
+    technical_state: string;
+    setup_kind: string;
+    entry_stance: string;
+    benchmark_symbol: string;
+    observations_total: number;
+    outcomes_scored: number;
+    mean_forward_return_pct: number | null;
+    mean_max_drawdown_pct: number | null;
+    mean_benchmark_return_pct: number | null;
+    mean_excess_return_pct: number | null;
+    positive_return_rate: number | null;
+    outperform_rate: number | null;
+  }[];
 }
 
 export async function fetchCalibration(days = 90): Promise<Calibration> {

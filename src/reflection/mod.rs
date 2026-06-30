@@ -6,3 +6,4 @@
 
 pub mod scoring;
 pub mod service;
+pub mod technical_timing;

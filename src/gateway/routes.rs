@@ -811,12 +811,15 @@ async fn technical_state_for(gw: &Gateway, symbol: &str) -> AnyResult<TechnicalS
             }
         }
     }
-    Ok(build_technical_state_with_benchmarks(
-        symbol,
-        &daily,
-        &intraday,
-        &benchmarks,
-    ))
+    let state = build_technical_state_with_benchmarks(symbol, &daily, &intraday, &benchmarks);
+    if let Err(e) = gw
+        .store
+        .record_technical_timing_observations(&state, &benchmarks)
+        .await
+    {
+        warn!(symbol = %symbol, error = %e, "record technical timing observation failed");
+    }
+    Ok(state)
 }
 
 async fn maybe_backfill_intraday(

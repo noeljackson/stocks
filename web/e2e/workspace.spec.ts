@@ -732,6 +732,20 @@ async function mockApi(
           mean_brier: 0.18,
           mean_lead_time_days: 10.0,
         }],
+        technical_timing: [{
+          technical_state: "pullback_watch",
+          setup_kind: "pullback_watch",
+          entry_stance: "wait_reversal",
+          benchmark_symbol: "QQQ",
+          observations_total: 4,
+          outcomes_scored: 3,
+          mean_forward_return_pct: 6.2,
+          mean_max_drawdown_pct: -3.1,
+          mean_benchmark_return_pct: 2.0,
+          mean_excess_return_pct: 4.2,
+          positive_return_rate: 0.67,
+          outperform_rate: 0.67,
+        }],
       });
       return;
     }
@@ -2554,12 +2568,16 @@ test("calibration tab shows parent theme expression results", async ({ page }) =
 
   await page.getByRole("button", { name: "calibration" }).click();
 
-  const calibration = page.locator(".calibration-themes");
-  await expect(calibration).toContainText("Parent Theme Calibration");
-  await expect(calibration).toContainText("AI Compute Infrastructure");
-  await expect(calibration).toContainText("supplier");
-  await expect(calibration).toContainText("1/2");
-  await expect(calibration).toContainText("brier 0.180");
+  const parentCalibration = page.locator(".calibration-themes").filter({ hasText: "Parent Theme Calibration" });
+  await expect(parentCalibration).toContainText("AI Compute Infrastructure");
+  await expect(parentCalibration).toContainText("supplier");
+  await expect(parentCalibration).toContainText("1/2");
+  await expect(parentCalibration).toContainText("brier 0.180");
+
+  const technicalCalibration = page.locator(".calibration-themes").filter({ hasText: "Technical Timing Calibration" });
+  await expect(technicalCalibration).toContainText("pullback watch");
+  await expect(technicalCalibration).toContainText("3/4");
+  await expect(technicalCalibration).toContainText("outperform 67%");
 });
 
 test("overview shows selected symbol parent brain context", async ({ page }) => {

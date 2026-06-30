@@ -204,7 +204,8 @@ contract; it does not replace the contract.
 
 ```text
 operator approves symbol + strategy + version
-  -> strategy emits desired_strategy_position for its sleeve
+  -> strategy evaluates automation_proof for its sleeve
+  -> passing/warning proof may emit desired_strategy_position
   -> automation_strategy_signal_observation anchors forward-only validation
   -> automation_proof freezes permission/data/session/risk/capital/broker gates
   -> automation_execution_reconciliation compares desired state with broker state
@@ -216,7 +217,8 @@ The key invariant is:
 ```text
 strategy output is desired exposure
   -> validation observation records future scoring/churn input
-  -> proof decides whether the desired exposure is allowed
+  -> proof decides whether the desired exposure is allowed, and blocked
+     preflights are recorded without desired exposure
   -> reconciliation decides what execution delta would be needed
   -> only a later broker adapter can submit orders
 ```

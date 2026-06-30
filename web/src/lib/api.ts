@@ -253,6 +253,20 @@ export interface AutomationProof {
     latest_bar_at?: string | null;
     max_age_days?: number;
     stale?: boolean;
+    market_readiness_status?: string;
+    market_readiness?: {
+      status?: string;
+      blocked_reasons?: string[];
+      latest_price?: number | null;
+      previous_close?: number | null;
+      gap_pct?: number | null;
+      max_gap_pct?: number | null;
+      session_open?: boolean;
+      session_label?: string;
+      halt_state?: string;
+      corporate_actions_adjusted?: boolean;
+      active_no_trade_window?: string | null;
+    };
   };
   session_state?: {
     is_open?: boolean;

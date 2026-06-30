@@ -126,6 +126,14 @@ If proof passes or warns, the runner may write a desired position, attaches the
 exact proof snapshots to that emission, and updates that strategy sleeve's
 allocated notional from the proof target.
 
+Market readiness is part of the data-freshness proof snapshot. It blocks on
+missing/latest invalid prices, stale bars, configured close-to-close gap
+anomalies, closed sessions, explicit halt/suspension indicators, unsupported
+corporate-action handling, and configured UTC no-trade windows. Current daily
+equity bars are trusted from FMP adjusted EOD data; halt/suspension inputs are
+defined in the proof contract but default to `not_halted` until a first-class
+provider is wired.
+
 The runner does not import real broker adapters and does not place paper or live
 orders. After a passing desired state is written, it calls the digital broker
 simulator to append an idempotent reconciliation row, simulated broker fill,

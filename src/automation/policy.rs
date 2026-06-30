@@ -16,6 +16,9 @@ pub struct DataFreshnessPolicyState {
     pub latest_bar_at: Option<DateTime<Utc>>,
     pub max_age_days: i64,
     pub stale: bool,
+    pub market_readiness_status: String,
+    pub market_readiness_blocked_reasons: Vec<String>,
+    pub market_readiness_snapshot: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +134,13 @@ pub fn evaluate_proof_policy(input: &ProofPolicyInput) -> ProofPolicyDecision {
     if input.data_freshness.status == "missing" {
         blocked_reasons.push("data_freshness_missing".to_string());
     }
+    blocked_reasons.extend(
+        input
+            .data_freshness
+            .market_readiness_blocked_reasons
+            .iter()
+            .cloned(),
+    );
     if !input.session.is_open {
         blocked_reasons.push("session_closed".to_string());
     }
@@ -218,6 +228,8 @@ pub fn evaluate_proof_policy(input: &ProofPolicyInput) -> ProofPolicyDecision {
             "latest_bar_at": input.data_freshness.latest_bar_at,
             "max_age_days": input.data_freshness.max_age_days,
             "stale": input.data_freshness.stale,
+            "market_readiness_status": input.data_freshness.market_readiness_status,
+            "market_readiness": input.data_freshness.market_readiness_snapshot,
         }),
         session_state: json!({
             "is_open": input.session.is_open,
@@ -333,6 +345,9 @@ mod tests {
                 latest_bar_at: Some(now() - ChronoDuration::hours(1)),
                 max_age_days: 5,
                 stale: false,
+                market_readiness_status: "ready".to_string(),
+                market_readiness_blocked_reasons: vec![],
+                market_readiness_snapshot: json!({"status": "ready"}),
             },
             session: SessionPolicyState {
                 is_open: true,
@@ -386,6 +401,15 @@ mod tests {
         input.data_freshness.stale = true;
         input.data_freshness.status = "stale".to_string();
         assert_blocked(input, "data_freshness_stale");
+    }
+
+    #[test]
+    fn market_readiness_blockers_block_proof() {
+        let mut input = base_input();
+        input.data_freshness.market_readiness_status = "blocked".to_string();
+        input.data_freshness.market_readiness_blocked_reasons =
+            vec!["market_bar_gap_anomaly".to_string()];
+        assert_blocked(input, "market_bar_gap_anomaly");
     }
 
     #[test]

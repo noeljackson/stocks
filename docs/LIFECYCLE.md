@@ -207,7 +207,7 @@ operator approves symbol + strategy + version
   -> strategy evaluates automation_proof for its sleeve
   -> passing/warning proof may emit desired_strategy_position
   -> automation_strategy_signal_observation anchors forward-only validation
-  -> automation_proof freezes permission/data/session/risk/capital/broker gates
+  -> automation_proof freezes permission/market/session/risk/capital/broker gates
   -> automation_execution_reconciliation compares desired state with broker state
   -> digital broker simulator updates shadow sleeves/fills
   -> broker order adapter may act later, only after proof passes
@@ -233,6 +233,11 @@ The capital allocator uses those sleeves as the ownership boundary. A strategy
 can resize its own reserved notional, but other sleeves on the same symbol still
 count against symbol and portfolio caps, so one strategy cannot silently consume
 another strategy's allocation.
+
+Market readiness is a hard proof gate. Stale or missing bars, suspicious
+close-to-close gaps, closed sessions, explicit halts/suspensions, unsupported
+corporate-action handling, and configured no-trade windows block automation
+before desired exposure changes.
 
 The digital broker simulator is the rehearsal path for paper/live execution. It
 uses the same desired-position, proof, reconciliation, incident, position-fill,

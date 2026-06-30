@@ -72,6 +72,15 @@
     return reasons.length > 0 ? "blocked" : "ok";
   }
 
+  function simOrderCount(row: AutomationPermission): number {
+    return row.reconciliation?.order_plan?.orders?.length ?? 0;
+  }
+
+  function simFilledCount(row: AutomationPermission): number {
+    const orders = row.reconciliation?.order_plan?.orders ?? [];
+    return orders.filter((order) => order.status === "filled" || order.status === "partially_filled").length;
+  }
+
   $effect(() => {
     const key = symbol ?? "";
     if (key === lastKey) return;
@@ -211,6 +220,17 @@
                   <dt>positions</dt><dd>{row.broker_position?.open_positions ?? 0}</dd>
                   <dt>broker</dt><dd>{row.broker_position?.broker_positions ?? 0}</dd>
                   <dt>delta</dt><dd>{money(row.broker_position?.delta_notional)}</dd>
+                </dl>
+              </section>
+
+              <section>
+                <h5>Simulator</h5>
+                <dl>
+                  <dt>status</dt><dd>{titleize(row.reconciliation?.status ?? "missing")}</dd>
+                  <dt>orders</dt><dd>{simOrderCount(row)}</dd>
+                  <dt>fills</dt><dd>{simFilledCount(row)}</dd>
+                  <dt>delta</dt><dd>{money(row.reconciliation?.delta_snapshot?.notional_delta_usd)}</dd>
+                  <dt>rPnL</dt><dd>{money(row.reconciliation?.delta_snapshot?.realized_pnl_delta)}</dd>
                 </dl>
               </section>
 

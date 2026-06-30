@@ -17,8 +17,9 @@ use std::time::Duration;
 use crate::automation::{
     AllocationLimits, AutomationControlState, AutomationStrategyCandidate, BlockedProofWrite,
     BrokerPolicyState, BuiltinStrategyDefinition, DesiredPositionReceipt, DesiredPositionWrite,
-    LatestDesiredPosition, SleeveAllocation, SleevePolicyState, StrategyDefinitionInput,
-    TargetSide, TradePermissionInput,
+    LatestDesiredPosition, ReconciliationInput, SimulatedPosition, SimulatedReconciliationReceipt,
+    SimulationConfig, SleeveAllocation, SleevePolicyState, StrategyDefinitionInput, TargetSide,
+    TradePermissionInput, reconcile_simulated,
 };
 use crate::llm::prompts::{InvocationRecorder, InvocationRow};
 use crate::platform::domain::{
@@ -4672,6 +4673,439 @@ impl Store {
             desired_position_id,
             proof_id,
             observation_id,
+        })
+    }
+
+    pub async fn simulate_desired_reconciliation(
+        &self,
+        desired_position_id: uuid::Uuid,
+    ) -> Result<SimulatedReconciliationReceipt> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("begin simulator reconciliation tx")?;
+        let row = sqlx::query(
+            r#"SELECT d.desired_position_id,
+                      d.permission_id,
+                      d.sleeve_id,
+                      d.symbol,
+                      d.thesis_id,
+                      d.target_side,
+                      d.target_notional_usd::float8 AS target_notional_usd,
+                      p.environment_scope,
+                      ap.proof_id,
+                      sl.current_side,
+                      sl.current_quantity::float8 AS current_quantity,
+                      sl.current_notional_usd::float8 AS current_notional_usd
+                 FROM desired_strategy_position d
+                 JOIN automation_trade_permission p
+                   ON p.permission_id = d.permission_id
+                 JOIN automation_strategy_sleeve sl
+                   ON sl.sleeve_id = d.sleeve_id
+                 JOIN LATERAL (
+                    SELECT proof_id
+                      FROM automation_proof ap
+                     WHERE ap.desired_position_id = d.desired_position_id
+                  ORDER BY ap.evaluated_at DESC
+                     LIMIT 1
+                 ) ap ON TRUE
+                WHERE d.desired_position_id = $1
+                FOR UPDATE OF sl"#,
+        )
+        .bind(desired_position_id)
+        .fetch_one(&mut *tx)
+        .await
+        .context("load desired position for simulator reconciliation")?;
+
+        let symbol: String = row.try_get("symbol")?;
+        let market_price = sqlx::query_scalar::<_, Option<f64>>(
+            r#"SELECT close::float8
+                 FROM price_bar
+                WHERE symbol = $1
+                  AND close IS NOT NULL
+             ORDER BY ts DESC
+                LIMIT 1"#,
+        )
+        .bind(&symbol)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("latest price for simulator reconciliation")?
+        .flatten()
+        .unwrap_or(0.0);
+
+        let proof_id: uuid::Uuid = row.try_get("proof_id")?;
+        let permission_id: uuid::Uuid = row.try_get("permission_id")?;
+        let sleeve_id: uuid::Uuid = row.try_get("sleeve_id")?;
+        let thesis_id: Option<uuid::Uuid> = row.try_get("thesis_id")?;
+        let current_side_raw: String = row.try_get("current_side")?;
+        let current_side =
+            TargetSide::try_from(current_side_raw.as_str()).unwrap_or(TargetSide::Flat);
+        let current_quantity: f64 = row.try_get("current_quantity")?;
+        let current_notional_usd: f64 = row.try_get("current_notional_usd")?;
+        let current_avg_price = if current_quantity > 0.000_001 {
+            current_notional_usd / current_quantity
+        } else {
+            0.0
+        };
+        let target_side_raw: String = row.try_get("target_side")?;
+        let target_side = TargetSide::try_from(target_side_raw.as_str())?;
+        let input = ReconciliationInput {
+            desired_position_id,
+            proof_id,
+            sleeve_id,
+            symbol: symbol.clone(),
+            environment_scope: row.try_get("environment_scope")?,
+            target_side,
+            target_notional_usd: row
+                .try_get::<Option<f64>, _>("target_notional_usd")?
+                .unwrap_or(0.0),
+            market_price,
+            current_position: SimulatedPosition {
+                side: current_side,
+                quantity: current_quantity,
+                avg_price: current_avg_price,
+            },
+            now: Utc::now(),
+            config: SimulationConfig::default(),
+        };
+        let outcome = reconcile_simulated(&input);
+        let blocked_reasons = serde_json::json!(outcome.blocked_reasons);
+        let source_ref = serde_json::json!({
+            "source": "digital_broker_simulator",
+            "desired_position_id": desired_position_id,
+            "proof_id": proof_id,
+        });
+        let reconciliation_id: Option<uuid::Uuid> = sqlx::query_scalar(
+            r#"INSERT INTO automation_execution_reconciliation
+                 (desired_position_id, proof_id, sleeve_id, symbol, environment_scope,
+                  status, idempotency_key, target_snapshot, broker_snapshot,
+                  delta_snapshot, order_plan, blocked_reasons, source_ref)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb,
+                       $10::jsonb, $11::jsonb, $12::jsonb, $13::jsonb)
+            ON CONFLICT (idempotency_key) DO NOTHING
+            RETURNING reconciliation_id"#,
+        )
+        .bind(desired_position_id)
+        .bind(proof_id)
+        .bind(sleeve_id)
+        .bind(&symbol)
+        .bind(&input.environment_scope)
+        .bind(&outcome.status)
+        .bind(&outcome.idempotency_key)
+        .bind(&outcome.target_snapshot)
+        .bind(&outcome.broker_snapshot)
+        .bind(&outcome.delta_snapshot)
+        .bind(&outcome.order_plan)
+        .bind(&blocked_reasons)
+        .bind(&source_ref)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("insert simulator reconciliation")?;
+
+        let Some(reconciliation_id) = reconciliation_id else {
+            let existing = sqlx::query(
+                r#"SELECT reconciliation_id, status
+                     FROM automation_execution_reconciliation
+                    WHERE idempotency_key = $1"#,
+            )
+            .bind(&outcome.idempotency_key)
+            .fetch_one(&mut *tx)
+            .await
+            .context("select duplicate simulator reconciliation")?;
+            tx.commit()
+                .await
+                .context("commit duplicate simulator reconciliation")?;
+            return Ok(SimulatedReconciliationReceipt {
+                reconciliation_id: existing.try_get("reconciliation_id")?,
+                status: existing.try_get("status")?,
+                duplicate: true,
+                fills: 0,
+                incident: false,
+            });
+        };
+
+        if let Some(incident) = outcome.incident.as_ref() {
+            sqlx::query(
+                r#"INSERT INTO automation_incident
+                     (severity, kind, symbol, permission_id, sleeve_id,
+                      desired_position_id, proof_id, reconciliation_id,
+                      title, detail, source_ref)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)"#,
+            )
+            .bind(&incident.severity)
+            .bind(&incident.kind)
+            .bind(&symbol)
+            .bind(permission_id)
+            .bind(sleeve_id)
+            .bind(desired_position_id)
+            .bind(proof_id)
+            .bind(reconciliation_id)
+            .bind(&incident.title)
+            .bind(&incident.detail)
+            .bind(&source_ref)
+            .execute(&mut *tx)
+            .await
+            .context("insert simulator incident")?;
+        }
+
+        let mut inserted_fills = 0_usize;
+        for (idx, fill) in outcome.fills.iter().enumerate() {
+            let position_row = sqlx::query(
+                r#"SELECT position_id,
+                          qty::float8 AS qty,
+                          avg_price::float8 AS avg_price
+                     FROM position
+                    WHERE source = 'broker'
+                      AND broker = 'simulator'
+                      AND broker_account = 'digital'
+                      AND symbol = $1
+                      AND side = $2
+                      AND instrument = 'equity'
+                      AND closed_at IS NULL
+                 ORDER BY opened_at DESC
+                    LIMIT 1
+                    FOR UPDATE"#,
+            )
+            .bind(&symbol)
+            .bind(fill.side.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .context("select simulator broker position")?;
+
+            let is_entry = matches!(fill.leg_kind.as_str(), "enter" | "increase");
+            let position_id = if is_entry {
+                if let Some(position_row) = position_row {
+                    let position_id: uuid::Uuid = position_row.try_get("position_id")?;
+                    let old_qty: f64 = position_row.try_get("qty")?;
+                    let old_avg: f64 = position_row.try_get("avg_price")?;
+                    let new_qty = old_qty + fill.quantity;
+                    let new_avg = if new_qty > 0.000_001 {
+                        ((old_qty * old_avg) + (fill.quantity * fill.price)) / new_qty
+                    } else {
+                        0.0
+                    };
+                    sqlx::query(
+                        r#"UPDATE position
+                              SET qty = $2,
+                                  avg_price = $3,
+                                  delta_notional = $4,
+                                  broker_last_sync_at = now()
+                            WHERE position_id = $1"#,
+                    )
+                    .bind(position_id)
+                    .bind(new_qty)
+                    .bind(new_avg)
+                    .bind(new_qty * fill.price)
+                    .execute(&mut *tx)
+                    .await
+                    .context("update simulator broker position")?;
+                    position_id
+                } else {
+                    sqlx::query_scalar(
+                        r#"INSERT INTO position
+                             (thesis_id, symbol, side, instrument, qty, avg_price,
+                              delta_notional, premium_at_risk, opened_at, source,
+                              broker, broker_account, broker_contract, broker_last_sync_at)
+                           VALUES ($1, $2, $3, 'equity', $4, $5, $6, 0,
+                                   now(), 'broker', 'simulator', 'digital',
+                                   $7::jsonb, now())
+                        RETURNING position_id"#,
+                    )
+                    .bind(thesis_id)
+                    .bind(&symbol)
+                    .bind(fill.side.as_str())
+                    .bind(fill.quantity)
+                    .bind(fill.price)
+                    .bind(fill.notional_usd)
+                    .bind(serde_json::json!({
+                        "source": "digital_broker_simulator",
+                        "reconciliation_id": reconciliation_id,
+                    }))
+                    .fetch_one(&mut *tx)
+                    .await
+                    .context("insert simulator broker position")?
+                }
+            } else if let Some(position_row) = position_row {
+                let position_id: uuid::Uuid = position_row.try_get("position_id")?;
+                let old_qty: f64 = position_row.try_get("qty")?;
+                let remaining_qty = (old_qty - fill.quantity).max(0.0);
+                if remaining_qty > 0.000_001 {
+                    sqlx::query(
+                        r#"UPDATE position
+                              SET qty = $2,
+                                  delta_notional = $3,
+                                  realized_pnl = COALESCE(realized_pnl, 0) + $4,
+                                  broker_last_sync_at = now()
+                            WHERE position_id = $1"#,
+                    )
+                    .bind(position_id)
+                    .bind(remaining_qty)
+                    .bind(remaining_qty * fill.price)
+                    .bind(fill.realized_pnl_delta)
+                    .execute(&mut *tx)
+                    .await
+                    .context("reduce simulator broker position")?;
+                } else {
+                    sqlx::query(
+                        r#"UPDATE position
+                              SET qty = 0,
+                                  delta_notional = 0,
+                                  closed_at = now(),
+                                  realized_pnl = COALESCE(realized_pnl, 0) + $2,
+                                  broker_last_sync_at = now()
+                            WHERE position_id = $1"#,
+                    )
+                    .bind(position_id)
+                    .bind(fill.realized_pnl_delta)
+                    .execute(&mut *tx)
+                    .await
+                    .context("close simulator broker position")?;
+                }
+                position_id
+            } else {
+                sqlx::query(
+                    r#"INSERT INTO automation_incident
+                         (severity, kind, symbol, permission_id, sleeve_id,
+                          desired_position_id, proof_id, reconciliation_id,
+                          title, detail, source_ref)
+                       VALUES ('critical', 'simulated_broker_position_missing',
+                               $1, $2, $3, $4, $5, $6,
+                               'Simulated broker position missing',
+                               $7, $8::jsonb)"#,
+                )
+                .bind(&symbol)
+                .bind(permission_id)
+                .bind(sleeve_id)
+                .bind(desired_position_id)
+                .bind(proof_id)
+                .bind(reconciliation_id)
+                .bind(format!(
+                    "No open simulator {} position existed for {} {} fill.",
+                    fill.side.as_str(),
+                    symbol,
+                    fill.leg_kind
+                ))
+                .bind(&source_ref)
+                .execute(&mut *tx)
+                .await
+                .context("insert missing simulator broker position incident")?;
+                continue;
+            };
+
+            let broker_execution_id = format!("{reconciliation_id}:{idx}");
+            let fill_id: Option<uuid::Uuid> = sqlx::query_scalar(
+                r#"INSERT INTO position_fill
+                     (position_id, thesis_id, symbol, side, instrument, qty,
+                      price, fees, filled_at, source, notes, raw,
+                      broker, broker_account, broker_execution_id)
+                   VALUES ($1, $2, $3, $4, 'equity', $5, $6, 0, now(),
+                           'broker', 'automation simulator fill', $7::jsonb,
+                           'simulator', 'digital', $8)
+                ON CONFLICT DO NOTHING
+                RETURNING fill_id"#,
+            )
+            .bind(position_id)
+            .bind(thesis_id)
+            .bind(&symbol)
+            .bind(fill.side.as_str())
+            .bind(fill.quantity)
+            .bind(fill.price)
+            .bind(serde_json::json!({
+                "source": "digital_broker_simulator",
+                "reconciliation_id": reconciliation_id,
+                "desired_position_id": desired_position_id,
+                "proof_id": proof_id,
+                "leg_kind": fill.leg_kind,
+                "notional_usd": fill.notional_usd,
+                "realized_pnl_delta": fill.realized_pnl_delta,
+            }))
+            .bind(&broker_execution_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .context("insert simulator position fill")?;
+
+            if let Some(fill_id) = fill_id {
+                inserted_fills += 1;
+                sqlx::query(
+                    r#"INSERT INTO automation_sleeve_fill_attribution
+                         (sleeve_id, position_fill_id, position_id, symbol, side,
+                          quantity, notional_usd, realized_pnl_delta, source_ref)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)"#,
+                )
+                .bind(sleeve_id)
+                .bind(fill_id)
+                .bind(position_id)
+                .bind(&symbol)
+                .bind(fill.side.as_str())
+                .bind(fill.quantity)
+                .bind(fill.notional_usd)
+                .bind(fill.realized_pnl_delta)
+                .bind(serde_json::json!({
+                    "source": "digital_broker_simulator",
+                    "reconciliation_id": reconciliation_id,
+                    "broker_execution_id": broker_execution_id,
+                    "leg_kind": fill.leg_kind,
+                }))
+                .execute(&mut *tx)
+                .await
+                .context("insert simulator sleeve fill attribution")?;
+            }
+        }
+
+        let final_notional = outcome.final_position.quantity * market_price;
+        sqlx::query(
+            r#"UPDATE automation_strategy_sleeve
+                  SET current_side = $2,
+                      current_quantity = $3,
+                      current_notional_usd = $4,
+                      realized_pnl = realized_pnl + $5,
+                      unrealized_pnl = $6,
+                      last_mark_price = NULLIF($7, 0),
+                      last_mark_at = now(),
+                      updated_at = now()
+                WHERE sleeve_id = $1"#,
+        )
+        .bind(sleeve_id)
+        .bind(outcome.final_position.side.as_str())
+        .bind(outcome.final_position.quantity)
+        .bind(final_notional)
+        .bind(outcome.realized_pnl_delta)
+        .bind(outcome.unrealized_pnl)
+        .bind(market_price)
+        .execute(&mut *tx)
+        .await
+        .context("update simulator sleeve state")?;
+
+        sqlx::query(
+            r#"INSERT INTO automation_sleeve_event
+                 (sleeve_id, event_kind, quantity_delta, notional_delta,
+                  realized_pnl_delta, source_ref)
+               VALUES ($1, 'reconciled', $2, $3, $4, $5::jsonb)"#,
+        )
+        .bind(sleeve_id)
+        .bind(outcome.final_position.quantity - current_quantity)
+        .bind(final_notional - current_notional_usd)
+        .bind(outcome.realized_pnl_delta)
+        .bind(serde_json::json!({
+            "source": "digital_broker_simulator",
+            "reconciliation_id": reconciliation_id,
+            "status": outcome.status,
+            "fills": inserted_fills,
+        }))
+        .execute(&mut *tx)
+        .await
+        .context("insert simulator sleeve event")?;
+
+        tx.commit()
+            .await
+            .context("commit simulator reconciliation tx")?;
+        Ok(SimulatedReconciliationReceipt {
+            reconciliation_id,
+            status: outcome.status,
+            duplicate: false,
+            fills: inserted_fills,
+            incident: outcome.incident.is_some(),
         })
     }
 

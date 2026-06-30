@@ -14,5 +14,6 @@ ALTER TABLE attention_item
         'thesis_actionable',
         'risk_review',
         'invalidation_hit',
-        'outcome_ready'
+        'outcome_ready',
+        'price_alert'
     ));

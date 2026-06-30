@@ -197,6 +197,36 @@ different. A good thesis that was skipped, a bad thesis that was rejected, and
 a good thesis that was filled at a bad price must remain distinguishable in
 reflection.
 
+## Automation V2 Contract
+
+Automation adds a permissioned strategy layer on top of the manual execution
+contract; it does not replace the contract.
+
+```text
+operator approves symbol + strategy + version
+  -> strategy emits desired_strategy_position for its sleeve
+  -> automation_proof freezes permission/data/session/risk/capital/broker gates
+  -> automation_execution_reconciliation compares desired state with broker state
+  -> broker order adapter may act later, only after proof passes
+```
+
+The key invariant is:
+
+```text
+strategy output is desired exposure
+  -> proof decides whether the desired exposure is allowed
+  -> reconciliation decides what execution delta would be needed
+  -> only a later broker adapter can submit orders
+```
+
+Manual exposure and automated exposure are separate sleeves. The broker may
+report one net position, but the app must keep sleeve attribution so strategy
+P/L, allocation use, manual freezes, and overrides remain auditable.
+
+Kronos-style forecasts, LLM reads, and other model outputs are evidence inputs
+only. They may appear in a strategy feature snapshot after validation, but they
+must not directly create desired positions, proofs, reconciliations, or orders.
+
 ### Attention State Machine
 
 `attention_item.status` is the coarse terminal state (`open`, `resolved`,

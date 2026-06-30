@@ -93,6 +93,11 @@ The canonical object lifecycle and attention-kind map lives in
 thesis transitions, decisions, positions, or outcomes, update that map in the
 same PR.
 
+The permissioned automation foundation lives in
+[`docs/AUTOMATION.md`](AUTOMATION.md). Automation is a v2 extension where the
+operator approves ticker+strategy permissions and strategies emit desired
+positions. It does not make broker order placement available by itself.
+
 The scheduler and feedback-loop map lives in
 [`docs/BRAIN_LOOPS.md`](BRAIN_LOOPS.md). When changing service intervals,
 freshness rules, retry behavior, or queue ownership, update that loop map in
@@ -872,6 +877,19 @@ reflection scores
 No service both proposes and approves its own trade. Risk and integrity checks
 are deterministic where possible, and append-only histories make later review
 possible.
+
+Automation keeps that separation:
+
+```text
+operator permission approves symbol + strategy scope
+strategy emits desired exposure
+proof/policy/risk gate constrains
+reconciler compares desired exposure to broker state
+broker adapter submits only after all gates pass
+```
+
+No LLM, model signal, strategy runner, or broker adapter may bypass proof,
+policy, risk, manual freeze, or kill-switch state.
 
 Important safety nets:
 

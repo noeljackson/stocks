@@ -88,6 +88,14 @@
     return orders.filter((order) => order.status === "filled" || order.status === "partially_filled").length;
   }
 
+  function paperOrderTotal(row: AutomationPermission): number {
+    return row.paper_orders?.orders_total ?? 0;
+  }
+
+  function paperOpenCount(row: AutomationPermission): number {
+    return (row.paper_orders?.submitted ?? 0) + (row.paper_orders?.partially_filled ?? 0);
+  }
+
   $effect(() => {
     const key = symbol ?? "";
     if (key === lastKey) return;
@@ -125,6 +133,7 @@
       <span><strong>{status.summary.live_capable}</strong> live-capable</span>
       <span><strong>{status.summary.blocked_strategies}</strong> blocked</span>
       <span><strong>{status.summary.incidents_open}</strong> incidents</span>
+      <span><strong>{status.paper_order_adapter?.enabled ? "on" : "off"}</strong> paper orders</span>
     </section>
 
     <section class="approval-readonly">
@@ -242,6 +251,18 @@
               </section>
 
               <section>
+                <h5>Paper Orders</h5>
+                <dl>
+                  <dt>adapter</dt><dd>{status.paper_order_adapter?.enabled ? "Enabled" : "Disabled"}</dd>
+                  <dt>account</dt><dd>{status.paper_order_adapter?.broker_account ?? "-"}</dd>
+                  <dt>orders</dt><dd>{paperOrderTotal(row)}</dd>
+                  <dt>open</dt><dd>{paperOpenCount(row)}</dd>
+                  <dt>filled</dt><dd>{row.paper_orders?.filled ?? 0}</dd>
+                  <dt>event</dt><dd>{titleize(row.paper_orders?.latest_event?.event_kind ?? "none")}</dd>
+                </dl>
+              </section>
+
+              <section>
                 <h5>Proof</h5>
                 <dl>
                   <dt>result</dt><dd>{titleize(row.latest_proof?.result ?? "missing")}</dd>
@@ -262,6 +283,9 @@
               <span class="badge rec-{row.reconciliation?.status ?? "missing"}">
                 reconciliation {titleize(row.reconciliation?.status ?? "missing")}
               </span>
+              <span class="badge paper-orders">
+                paper orders {paperOrderTotal(row)}
+              </span>
               {#if row.desired_position?.rationale}
                 <span class="muted">{row.desired_position.rationale}</span>
               {/if}
@@ -273,6 +297,17 @@
                   <span>{reason}</span>
                 {/each}
               </div>
+            {/if}
+
+            {#if row.paper_orders?.latest_event}
+              <p class="paper-event">
+                <span class="badge">{titleize(row.paper_orders.latest_event.status)}</span>
+                {titleize(row.paper_orders.latest_event.event_kind)}
+                {#if row.paper_orders.latest_event.message}
+                  <span class="muted">{row.paper_orders.latest_event.message}</span>
+                {/if}
+                <span class="muted">{shortTs(row.paper_orders.latest_event.created_at)}</span>
+              </p>
             {/if}
 
             {#if row.incidents && row.incidents.length > 0}
@@ -314,6 +349,7 @@
   .badges,
   .proof-line,
   .blocked-reasons,
+  .paper-event,
   .incident-list li {
     display: flex;
     align-items: center;
@@ -466,6 +502,11 @@
   .rec-noop {
     border-color: rgba(166,227,161,.45);
     color: #a6e3a1;
+  }
+
+  .paper-orders {
+    border-color: rgba(137,180,250,.45);
+    color: #89b4fa;
   }
 
   .freeze-note {

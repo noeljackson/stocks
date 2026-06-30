@@ -159,6 +159,7 @@ export interface AutomationStatus {
     source: string;
     reason?: string | null;
   };
+  paper_order_adapter?: AutomationPaperOrderAdapter;
   summary: {
     permissions_total: number;
     approved: number;
@@ -199,8 +200,19 @@ export interface AutomationPermission {
   desired_position?: AutomationDesiredPosition | null;
   latest_proof?: AutomationProof | null;
   reconciliation?: AutomationReconciliation | null;
+  paper_orders?: AutomationPaperOrders | null;
   broker_position?: AutomationBrokerPosition | null;
   incidents?: AutomationIncident[];
+}
+
+export interface AutomationPaperOrderAdapter {
+  enabled: boolean;
+  broker: string;
+  account_mode: string;
+  broker_account?: string | null;
+  max_position_snapshot_age_seconds?: number | null;
+  updated_by?: string | null;
+  updated_at?: string | null;
 }
 
 export interface AutomationSleeve {
@@ -331,6 +343,47 @@ export interface AutomationReconciliation {
   blocked_reasons?: string[];
   created_at?: string | null;
   updated_at?: string | null;
+}
+
+export interface AutomationPaperOrders {
+  orders_total: number;
+  submitted: number;
+  filled: number;
+  partially_filled: number;
+  rejected: number;
+  cancelled: number;
+  latest_event?: AutomationPaperOrderEvent | null;
+  orders?: AutomationPaperOrder[];
+}
+
+export interface AutomationPaperOrder {
+  order_id: string;
+  client_order_id: string;
+  broker_order_id?: string | null;
+  parent_client_order_id?: string | null;
+  order_role: string;
+  action: string;
+  position_side: string;
+  order_type: string;
+  quantity: number;
+  limit_price?: number | null;
+  stop_price?: number | null;
+  transmit: boolean;
+  status: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface AutomationPaperOrderEvent {
+  event_id: number;
+  client_order_id: string;
+  broker_order_id?: string | null;
+  event_kind: string;
+  status: string;
+  filled_quantity?: number | null;
+  fill_price?: number | null;
+  message?: string | null;
+  created_at?: string | null;
 }
 
 export interface AutomationBrokerPosition {

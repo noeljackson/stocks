@@ -210,7 +210,7 @@ operator approves symbol + strategy + version
   -> automation_proof freezes permission/market/session/risk/capital/broker gates
   -> automation_execution_reconciliation compares desired state with broker state
   -> digital broker simulator updates shadow sleeves/fills
-  -> broker order adapter may act later, only after proof passes
+  -> IBKR paper adapter may submit bracket orders only after proof/reconciliation gates pass
 ```
 
 The key invariant is:

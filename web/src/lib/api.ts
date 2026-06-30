@@ -505,6 +505,43 @@ export async function fetchAutomationTimeline(opts?: {
   return (await r.json()) as AutomationTimeline;
 }
 
+export interface AutomationPermissionApproval {
+  permission_id: string;
+  sleeve_id: string;
+  symbol: string;
+  strategy_id: string;
+  strategy_version: string;
+  environment_scope: string;
+  status: string;
+  inserted: boolean;
+}
+
+export async function approveAutomationPermission(opts: {
+  symbol: string;
+  strategyId?: string | null;
+  strategyVersion?: string | null;
+  environmentScope?: string | null;
+  maxAllocationPct?: number | null;
+  maxNotionalUsd?: number | null;
+  sourceRef?: Record<string, unknown>;
+}): Promise<AutomationPermissionApproval> {
+  const r = await fetch("/api/automation/permissions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      symbol: opts.symbol,
+      strategy_id: opts.strategyId ?? undefined,
+      strategy_version: opts.strategyVersion ?? undefined,
+      environment_scope: opts.environmentScope ?? undefined,
+      max_allocation_pct: opts.maxAllocationPct ?? undefined,
+      max_notional_usd: opts.maxNotionalUsd ?? undefined,
+      source_ref: opts.sourceRef ?? {},
+    }),
+  });
+  if (!r.ok) throw new Error(`automation approval ${r.status}: ${await r.text()}`);
+  return (await r.json()) as AutomationPermissionApproval;
+}
+
 export async function fetchRegime(): Promise<MarketState> {
   const r = await fetch("/api/regime");
   if (!r.ok) throw new Error(`regime ${r.status}`);
@@ -1676,6 +1713,9 @@ export interface ReviewPacketAction {
   label: string;
   kind: string;
   detail: string;
+  strategy_id?: string;
+  strategy_version?: string;
+  environment_scope?: string;
 }
 
 export interface ReviewPacketActionPayload {

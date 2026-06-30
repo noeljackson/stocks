@@ -20,8 +20,8 @@ use crate::automation::{
     DesiredPositionWrite, LatestDesiredPosition, PromotionApproval, ReadinessInput,
     ReadinessMetrics, ReadinessThresholds, ReconciliationInput, SimulatedPosition,
     SimulatedReconciliationReceipt, SimulationConfig, SleeveAllocation, SleevePolicyState,
-    StrategyDefinitionInput, TargetSide, TradePermissionInput, evaluate_readiness,
-    manual_stage_change, reconcile_simulated,
+    StrategyDefinitionInput, TargetSide, TradePermissionInput, builtin_strategy_definitions,
+    evaluate_readiness, manual_stage_change, reconcile_simulated,
 };
 use crate::llm::prompts::{InvocationRecorder, InvocationRow};
 use crate::platform::domain::{
@@ -6394,6 +6394,199 @@ impl Store {
                 "limit": limit,
             },
             "events": events,
+        }))
+    }
+
+    pub async fn approve_automation_permission(
+        &self,
+        symbol: &str,
+        strategy_id: &str,
+        strategy_version: &str,
+        environment_scope: &str,
+        max_allocation_pct: Option<f64>,
+        max_notional_usd: Option<f64>,
+        source: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        if !matches!(
+            environment_scope,
+            "shadow" | "paper" | "canary_live" | "expanded_live"
+        ) {
+            anyhow::bail!("unsupported automation environment_scope {environment_scope}");
+        }
+        if matches!(environment_scope, "canary_live" | "expanded_live") {
+            anyhow::bail!("live automation approvals are not exposed through review packets yet");
+        }
+
+        self.ensure_builtin_automation_strategies(&builtin_strategy_definitions())
+            .await?;
+
+        let symbol = symbol.trim().to_ascii_uppercase();
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("begin automation approval")?;
+        let existing = sqlx::query(
+            r#"SELECT permission_id, status, manual_freeze
+                 FROM automation_trade_permission
+                WHERE symbol = $1
+                  AND strategy_id = $2
+                  AND strategy_version = $3
+                  AND environment_scope = $4
+                  AND status IN ('pending', 'approved')
+             ORDER BY updated_at DESC
+                LIMIT 1
+                  FOR UPDATE"#,
+        )
+        .bind(&symbol)
+        .bind(strategy_id)
+        .bind(strategy_version)
+        .bind(environment_scope)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("select automation permission")?;
+
+        let source_ref = serde_json::json!({
+            "source": "operator_review_packet",
+            "requested": source,
+        });
+
+        let (permission_id, prior_status, inserted) = if let Some(row) = existing {
+            let permission_id: uuid::Uuid = row.try_get("permission_id")?;
+            let prior_status: String = row.try_get("status")?;
+            sqlx::query(
+                r#"UPDATE automation_trade_permission
+                      SET status = 'approved',
+                          instrument_scope = 'equity_long_only',
+                          manual_freeze = false,
+                          freeze_reason = NULL,
+                          approved_by = 'operator',
+                          approved_at = COALESCE(approved_at, now()),
+                          expires_at = COALESCE(expires_at, now() + interval '90 days'),
+                          max_allocation_pct = COALESCE($2::numeric, max_allocation_pct),
+                          max_notional_usd = COALESCE($3::numeric, max_notional_usd),
+                          source_ref = source_ref || $4::jsonb,
+                          updated_at = now()
+                    WHERE permission_id = $1"#,
+            )
+            .bind(permission_id)
+            .bind(max_allocation_pct)
+            .bind(max_notional_usd)
+            .bind(&source_ref)
+            .execute(&mut *tx)
+            .await
+            .context("update automation permission")?;
+            (permission_id, Some(prior_status), false)
+        } else {
+            let permission_id: uuid::Uuid = sqlx::query_scalar(
+                r#"INSERT INTO automation_trade_permission
+                     (symbol, strategy_id, strategy_version, status, instrument_scope,
+                      environment_scope, max_allocation_pct, max_notional_usd,
+                      manual_freeze, approved_by, approved_at, expires_at, source_ref)
+                   VALUES ($1, $2, $3, 'approved', 'equity_long_only',
+                           $4, $5::numeric, $6::numeric,
+                           false, 'operator', now(), now() + interval '90 days', $7::jsonb)
+                RETURNING permission_id"#,
+            )
+            .bind(&symbol)
+            .bind(strategy_id)
+            .bind(strategy_version)
+            .bind(environment_scope)
+            .bind(max_allocation_pct)
+            .bind(max_notional_usd)
+            .bind(&source_ref)
+            .fetch_one(&mut *tx)
+            .await
+            .context("insert automation permission")?;
+            (permission_id, None, true)
+        };
+
+        sqlx::query(
+            r#"INSERT INTO automation_permission_event
+                 (permission_id, event_kind, from_status, to_status,
+                  manual_freeze, actor, reason, source_ref)
+               VALUES ($1, 'approved', $2, 'approved',
+                       false, 'operator', $3, $4::jsonb)"#,
+        )
+        .bind(permission_id)
+        .bind(prior_status.as_deref())
+        .bind(if inserted {
+            "operator approved ticker for shadow automation"
+        } else {
+            "operator refreshed automation approval"
+        })
+        .bind(&source_ref)
+        .execute(&mut *tx)
+        .await
+        .context("insert automation permission event")?;
+
+        let sleeve_id: uuid::Uuid = if let Some(row) = sqlx::query(
+            r#"SELECT sleeve_id
+                 FROM automation_strategy_sleeve
+                WHERE permission_id = $1
+                  AND sleeve_kind = 'strategy'
+                  AND closed_at IS NULL
+             ORDER BY opened_at DESC
+                LIMIT 1
+                  FOR UPDATE"#,
+        )
+        .bind(permission_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("select automation sleeve")?
+        {
+            let sleeve_id: uuid::Uuid = row.try_get("sleeve_id")?;
+            sqlx::query(
+                r#"UPDATE automation_strategy_sleeve
+                      SET status = 'active',
+                          updated_at = now()
+                    WHERE sleeve_id = $1"#,
+            )
+            .bind(sleeve_id)
+            .execute(&mut *tx)
+            .await
+            .context("update automation sleeve")?;
+            sleeve_id
+        } else {
+            let sleeve_id: uuid::Uuid = sqlx::query_scalar(
+                r#"INSERT INTO automation_strategy_sleeve
+                     (sleeve_kind, permission_id, symbol, strategy_id,
+                      strategy_version, status, source_ref)
+                   VALUES ('strategy', $1, $2, $3, $4, 'active', $5::jsonb)
+                RETURNING sleeve_id"#,
+            )
+            .bind(permission_id)
+            .bind(&symbol)
+            .bind(strategy_id)
+            .bind(strategy_version)
+            .bind(&source_ref)
+            .fetch_one(&mut *tx)
+            .await
+            .context("insert automation sleeve")?;
+            sqlx::query(
+                r#"INSERT INTO automation_sleeve_event
+                     (sleeve_id, event_kind, to_status, source_ref)
+                   VALUES ($1, 'created', 'active', $2::jsonb)"#,
+            )
+            .bind(sleeve_id)
+            .bind(&source_ref)
+            .execute(&mut *tx)
+            .await
+            .context("insert automation sleeve event")?;
+            sleeve_id
+        };
+
+        tx.commit().await.context("commit automation approval")?;
+
+        Ok(serde_json::json!({
+            "permission_id": permission_id,
+            "sleeve_id": sleeve_id,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "strategy_version": strategy_version,
+            "environment_scope": environment_scope,
+            "status": "approved",
+            "inserted": inserted,
         }))
     }
 

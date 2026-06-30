@@ -3,6 +3,7 @@ import { expect, type Page, type Route, test } from "@playwright/test";
 type Calls = {
   candleUrls: URL[];
   automationTimelineUrls: URL[];
+  automationApprovalBody: unknown | null;
   confirmBody: unknown | null;
   promoteBody: unknown | null;
   decisionBody: unknown | null;
@@ -124,6 +125,7 @@ async function mockApi(
   const calls: Calls = {
     candleUrls: [],
     automationTimelineUrls: [],
+    automationApprovalBody: null,
     confirmBody: null,
     promoteBody: null,
     decisionBody: null,
@@ -395,30 +397,43 @@ async function mockApi(
     const skipDecision = { id: "skip", label: "Skip / defer thesis", kind: "decision_skip", detail: "Record why this thesis is not being acted on now." };
     const deferAction = { id: "defer", label: "Defer", kind: "attention_defer", detail: "Resurface later." };
     const dismissAction = { id: "dismiss", label: "Dismiss", kind: "attention_dismiss", detail: "Mark as not actionable." };
+    const automationApprove = {
+      id: "approve_thesis_timing",
+      label: "Approve for automation",
+      kind: "automation_approve",
+      detail: "Create a shadow thesis-timing automation permission and open the cockpit.",
+      strategy_id: "thesis_timing",
+      strategy_version: "0.1.0",
+      environment_scope: "shadow",
+    };
     const primary = isCandidate
       ? { id: "promote", label: "Start research", kind: "candidate_confirm", detail: "Add to Universe and start context, evidence, and thesis work." }
-      : isActionable
-        ? recordDecision
+      : isActionable || isThesisReview
+        ? automationApprove
       : { id: "open_symbol", label: "Open symbol", kind: "open_symbol", detail: "Inspect context and evidence." };
     const secondaryActions = isCandidate
       ? [deferAction, dismissAction]
       : isThesisReview
         ? [recordDecision, skipDecision, deferAction, dismissAction]
         : isActionable
-          ? [deferAction, skipDecision, dismissAction]
+          ? [recordDecision, deferAction, skipDecision, dismissAction]
           : [deferAction, dismissAction];
     return {
       attention: item,
       decision: {
-        intent: isCandidate ? "promote_to_universe" : (isActionable ? "record_trade_decision" : "inspect_symbol"),
-        headline: isCandidate ? `Start research for ${symbol}?` : (isActionable ? `Record a decision on ${symbol}` : `${symbol ?? "Symbol"} review`),
+        intent: isCandidate ? "promote_to_universe" : ((isActionable || isThesisReview) ? "approve_for_automation" : "inspect_symbol"),
+        headline: isCandidate ? `Start research for ${symbol}?` : ((isActionable || isThesisReview) ? `Approve ${symbol} for automation?` : `${symbol ?? "Symbol"} review`),
         primary_action: primary,
         secondary_actions: secondaryActions,
         blockers: [],
-        consequences: isCandidate ? ["symbol promoted into Universe", "context and thesis work starts"] : [],
+        consequences: isCandidate
+          ? ["symbol promoted into Universe", "context and thesis work starts"]
+          : (isActionable || isThesisReview)
+            ? ["shadow automation permission is approved", "strategy sleeve is created or reactivated", "no broker order is placed by this approval"]
+            : [],
       },
       universe_status: {
-        in_universe: ["MSFT", "NVDA", "OKTA"].includes(symbol ?? ""),
+        in_universe: ["MSFT", "NVDA", "OKTA", "CRDO"].includes(symbol ?? ""),
         tier: symbol === "OKTA" ? 2 : 1,
         added_at: "2026-01-01T00:00:00Z",
         open_theses: symbol === "OKTA" ? 1 : 0,
@@ -812,6 +827,47 @@ async function mockApi(
       }],
     }],
   };
+  const automationPermissionFor = (symbol: string, strategyId = "thesis_timing") => ({
+    permission_id: `mock-${symbol.toLowerCase()}-${strategyId}`,
+    symbol,
+    strategy_id: strategyId,
+    strategy_version: "0.1.0",
+    strategy_display_name: strategyId === "thesis_timing" ? "Thesis Timing" : "Technical Timing",
+    strategy_family: strategyId === "thesis_timing" ? "thesis_timing" : "technical_timing",
+    strategy_status: "shadow",
+    permission_status: "approved",
+    derived_status: "approved",
+    instrument_scope: "equity_long_only",
+    environment_scope: "shadow",
+    manual_freeze: false,
+    freeze_reason: null,
+    approved_by: "operator",
+    approved_at: "2026-06-01T12:30:00Z",
+    expires_at: "2026-08-30T12:30:00Z",
+    max_allocation_pct: 0.05,
+    max_notional_usd: null,
+    max_quantity: null,
+    created_at: "2026-06-01T12:30:00Z",
+    updated_at: "2026-06-01T12:30:00Z",
+    sleeve: {
+      sleeve_id: `mock-sleeve-${symbol.toLowerCase()}-${strategyId}`,
+      sleeve_kind: "strategy",
+      status: "active",
+      current_side: "flat",
+      current_quantity: 0,
+      current_notional_usd: 0,
+      allocated_notional_usd: null,
+      realized_pnl: 0,
+      updated_at: "2026-06-01T12:30:00Z",
+    },
+    desired_position: null,
+    latest_proof: null,
+    readiness: null,
+    reconciliation: null,
+    broker_position: null,
+    paper_orders: { orders_total: 0, submitted: 0, filled: 0, partially_filled: 0, rejected: 0, cancelled: 0 },
+    incidents: [],
+  });
   const automationTimeline = {
     as_of: "2026-06-01T12:00:00Z",
     filters: { symbol: null, strategy_id: null, limit: 120 },
@@ -1041,6 +1097,29 @@ async function mockApi(
       await json(route, symbol
         ? { ...automationStatus, permissions: automationStatus.permissions.filter((p) => p.symbol === symbol.toUpperCase()) }
         : automationStatus);
+      return;
+    }
+    if (path === "/api/automation/permissions" && request.method() === "POST") {
+      const body = await request.postDataJSON();
+      calls.automationApprovalBody = body;
+      const symbol = String(body.symbol ?? "").toUpperCase();
+      const strategyId = String(body.strategy_id ?? "thesis_timing");
+      const existing = automationStatus.permissions.find((p) => p.symbol === symbol && p.strategy_id === strategyId);
+      if (!existing) {
+        automationStatus.permissions.push(automationPermissionFor(symbol, strategyId));
+        automationStatus.summary.permissions_total += 1;
+        automationStatus.summary.approved += 1;
+      }
+      await json(route, {
+        permission_id: existing?.permission_id ?? `mock-${symbol.toLowerCase()}-${strategyId}`,
+        sleeve_id: existing?.sleeve?.sleeve_id ?? `mock-sleeve-${symbol.toLowerCase()}-${strategyId}`,
+        symbol,
+        strategy_id: strategyId,
+        strategy_version: String(body.strategy_version ?? "0.1.0"),
+        environment_scope: String(body.environment_scope ?? "shadow"),
+        status: "approved",
+        inserted: !existing,
+      }, 201);
       return;
     }
     if (path === "/api/automation/timeline") {
@@ -2847,7 +2926,8 @@ test("thesis review packet opens an inline prefilled decision form", async ({ pa
 
   await page.getByTestId("workflow-attention").getByRole("button", { name: /OKTA thesis changed/ }).click();
   const packet = page.getByTestId("review-packet");
-  await expect(packet).toContainText("OKTA review");
+  await expect(packet).toContainText("Approve OKTA for automation?");
+  await expect(packet).toContainText("Approve for automation");
 
   await packet.getByRole("button", { name: /Record decision/ }).click();
 
@@ -2856,6 +2936,28 @@ test("thesis review packet opens an inline prefilled decision form", async ({ pa
   await expect(inline.getByLabel("Thesis ID")).toHaveValue("12ceaea3-9df3-416a-bfe5-107d3233dd59");
   await expect(inline.getByLabel("Action")).toHaveValue("skip");
   await expect(page.locator(".bottom-tabs button.active")).not.toHaveText("decisions");
+});
+
+test("thesis review packet approves the symbol for automation", async ({ page }) => {
+  const calls = await mockApi(page);
+  await page.goto("/symbol/OKTA");
+
+  await page.getByTestId("workflow-attention").getByRole("button", { name: /OKTA thesis changed/ }).click();
+  const packet = page.getByTestId("review-packet");
+  await expect(packet).toContainText("Approve OKTA for automation?");
+  await packet.getByRole("button", { name: "Approve for automation" }).click();
+
+  await expect.poll(() => calls.automationApprovalBody).toMatchObject({
+    symbol: "OKTA",
+    strategy_id: "thesis_timing",
+    strategy_version: "0.1.0",
+    environment_scope: "shadow",
+  });
+  await expect(page).toHaveURL(/\/automation\/OKTA$/);
+  const cockpit = page.getByTestId("autonomous-cockpit");
+  await expect(cockpit).toContainText("OKTA permissioned strategy control plane");
+  await expect(cockpit).toContainText("Thesis Timing");
+  await expect(cockpit).toContainText("No Signal");
 });
 
 test("thesis review packet submits the decision inline", async ({ page }) => {
@@ -2988,7 +3090,8 @@ test("journal daily trade desk opens the matching review packet", async ({ page 
   await tradeDesk.locator(".trade-section.consider").getByRole("button", { name: "Open review packet" }).click();
 
   await expect(page).toHaveURL(/\/symbol\/CRDO/);
-  await expect(page.getByTestId("review-packet")).toContainText("Record a decision on CRDO");
+  await expect(page.getByTestId("review-packet")).toContainText("Approve CRDO for automation?");
+  await expect(page.getByTestId("review-packet")).toContainText("Approve for automation");
   await expect(page.getByTestId("review-packet")).toContainText("Actionable up thesis with constructive setup.");
 });
 

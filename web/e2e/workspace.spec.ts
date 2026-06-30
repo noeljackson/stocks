@@ -281,6 +281,7 @@ async function mockApi(
           workflowStep("attention", "Attention", "1 attention", "attention", "actionable"),
           workflowStep("evidence", "Evidence", "1 open evidence", "evidence", "monitoring"),
           workflowStep("thesis", "Thesis", "forming · bull", "thesis", "monitoring"),
+          workflowStep("automation", "Automation", "1 frozen", "automation", "blocked"),
           workflowStep("decision", "Decision", "1 open position", "tracking", "tracking"),
         ],
         attention: [{
@@ -393,10 +394,14 @@ async function mockApi(
     const isCandidate = item.kind === "candidate_review";
     const isActionable = item.kind === "thesis_actionable";
     const isThesisReview = item.kind === "thesis_review";
+    const isPriceAlert = item.kind === "price_alert";
     const recordDecision = { id: "record_decision", label: "Record decision", kind: "decision", detail: "Open the thesis decision form." };
+    const recordAlertDecision = { id: "record_alert_decision", label: "Record alert decision", kind: "decision", detail: "Open the decision form with this triggered level as context." };
     const skipDecision = { id: "skip", label: "Skip / defer thesis", kind: "decision_skip", detail: "Record why this thesis is not being acted on now." };
+    const inspectChart = { id: "inspect_chart", label: "Inspect chart", kind: "open_symbol", detail: "Review chart, thesis, and alert context before deciding." };
     const deferAction = { id: "defer", label: "Defer", kind: "attention_defer", detail: "Resurface later." };
     const dismissAction = { id: "dismiss", label: "Dismiss", kind: "attention_dismiss", detail: "Mark as not actionable." };
+    const dismissNoise = { id: "dismiss", label: "Dismiss as noise", kind: "attention_dismiss", detail: "Mark this triggered alert as not actionable." };
     const automationApprove = {
       id: "approve_thesis_timing",
       label: "Approve for automation",
@@ -410,6 +415,8 @@ async function mockApi(
       ? { id: "promote", label: "Start research", kind: "candidate_confirm", detail: "Add to Universe and start context, evidence, and thesis work." }
       : isActionable || isThesisReview
         ? automationApprove
+      : isPriceAlert
+        ? recordAlertDecision
       : { id: "open_symbol", label: "Open symbol", kind: "open_symbol", detail: "Inspect context and evidence." };
     const secondaryActions = isCandidate
       ? [deferAction, dismissAction]
@@ -417,12 +424,14 @@ async function mockApi(
         ? [recordDecision, skipDecision, deferAction, dismissAction]
         : isActionable
           ? [recordDecision, deferAction, skipDecision, dismissAction]
+        : isPriceAlert
+          ? [inspectChart, deferAction, dismissNoise]
           : [deferAction, dismissAction];
     return {
       attention: item,
       decision: {
-        intent: isCandidate ? "promote_to_universe" : ((isActionable || isThesisReview) ? "approve_for_automation" : "inspect_symbol"),
-        headline: isCandidate ? `Start research for ${symbol}?` : ((isActionable || isThesisReview) ? `Approve ${symbol} for automation?` : `${symbol ?? "Symbol"} review`),
+        intent: isCandidate ? "promote_to_universe" : ((isActionable || isThesisReview) ? "approve_for_automation" : (isPriceAlert ? "record_alert_decision" : "inspect_symbol")),
+        headline: isCandidate ? `Start research for ${symbol}?` : ((isActionable || isThesisReview) ? `Approve ${symbol} for automation?` : (isPriceAlert ? `Act on ${symbol} price alert?` : `${symbol ?? "Symbol"} review`)),
         primary_action: primary,
         secondary_actions: secondaryActions,
         blockers: [],
@@ -430,6 +439,8 @@ async function mockApi(
           ? ["symbol promoted into Universe", "context and thesis work starts"]
           : (isActionable || isThesisReview)
             ? ["shadow automation permission is approved", "strategy sleeve is created or reactivated", "no broker order is placed by this approval"]
+          : isPriceAlert
+            ? ["human decision, deferral, or dismissal is recorded", "price alert trigger remains available in the audit trail", "no automation permission or broker order is placed by this packet"]
             : [],
       },
       universe_status: {
@@ -457,13 +468,15 @@ async function mockApi(
           title: "Why it matters",
           body: isCandidate
             ? "The symbol can enter the monitored Universe and start cognition work."
+            : isPriceAlert
+              ? "The alert may change timing, thesis handling, or the decision to ignore this move."
             : "The selected thesis needs operator review before the next action is recorded.",
         },
         { key: "evidence", title: "Evidence", items: ["Mock source-backed review packet fixture."] },
         {
           key: "recommendation",
           title: "Recommendation",
-          body: isCandidate ? "Start research or reject the nomination." : "Review the thesis and record the operator decision.",
+          body: isCandidate ? "Start research or reject the nomination." : (isPriceAlert ? "Record whether the alert changes the trade plan or dismiss it as noise." : "Review the thesis and record the operator decision."),
         },
         {
           key: "recorded_artifacts",
@@ -2901,12 +2914,26 @@ test("workflow rail surfaces open position tracking and routes to decisions", as
   await expect(strip).toContainText("Position tracking");
   await expect(strip).toContainText("1 attention");
   await expect(strip).toContainText("forming · bull");
+  await expect(strip).toContainText("1 frozen");
   await expect(page.getByTestId("workflow-primary")).toHaveText("Track position");
   await expect(page.getByTestId("workflow-attention")).toContainText("OKTA thesis changed");
 
   await page.getByTestId("workflow-primary").click();
 
   await expect(page.locator(".tabs button.active")).toHaveText("decisions");
+});
+
+test("workflow rail routes automation state to the cockpit", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/symbol/OKTA");
+
+  const strip = page.getByTestId("workflow-strip");
+  await expect(strip).toContainText("Automation");
+  await expect(strip).toContainText("1 frozen");
+  await strip.getByRole("button", { name: /Automation 1 frozen/ }).click();
+
+  await expect(page).toHaveURL(/\/automation\/OKTA$/);
+  await expect(page.getByTestId("autonomous-cockpit")).toContainText("OKTA permissioned strategy control plane");
 });
 
 test("thesis card opens a prefilled decision form", async ({ page }) => {
@@ -2987,6 +3014,50 @@ test("thesis review packet submits the decision inline", async ({ page }) => {
     human_conviction: "low",
     reason: "Inline review packet decision.",
   });
+});
+
+test("price alert review packet asks for an alert decision", async ({ page }) => {
+  await mockApi(page, {
+    attentionItems: [{
+      id: 9301,
+      kind: "price_alert",
+      symbol: "CRDO",
+      thesis_id: null,
+      candidate_id: null,
+      severity: "decision",
+      status: "open",
+      fsm_state: "ready_for_review",
+      owner: "operator",
+      title: "CRDO price alert hit",
+      reason: "CRDO crossed above 120.00: reclaim short moving average",
+      source: "price_alert",
+      source_ref: {
+        intent: "entry",
+        direction: "above",
+        target_price: 120,
+        trigger_price: 121.25,
+        label: "reclaim short moving average",
+      },
+      created_at: "2026-06-01T00:00:00Z",
+      resolved_at: null,
+      resolution_kind: null,
+      next_retry_at: null,
+      resurface_at: null,
+      state_reason: "price_alert",
+    }],
+  });
+  await page.goto("/symbol/CRDO");
+
+  await page.getByTestId("workflow-attention").getByRole("button", { name: /CRDO price alert hit/ }).click();
+  const packet = page.getByTestId("review-packet");
+  await expect(packet).toContainText("Act on CRDO price alert?");
+  await expect(packet).toContainText("Record alert decision");
+  await expect(packet).toContainText("Inspect chart");
+  await expect(packet).toContainText("Dismiss as noise");
+  await expect(packet).toContainText("price alert trigger remains available in the audit trail");
+
+  await packet.getByRole("button", { name: "Record alert decision" }).click();
+  await expect(page.getByTestId("review-packet-decision-form")).toBeVisible();
 });
 
 test("brain tab shows macro and theme theses with linked symbols", async ({ page }) => {
@@ -3237,7 +3308,7 @@ test("automation tab shows permissioned strategies read-only", async ({ page }) 
   await mockApi(page);
   await page.goto("/symbol/OKTA");
 
-  await page.getByRole("button", { name: "automation" }).click();
+  await page.locator(".bottom-tabs").getByRole("button", { name: "automation" }).click();
 
   const panel = page.getByTestId("automation-cockpit");
   await expect(panel).toContainText("Technical Breakout");
@@ -3246,7 +3317,9 @@ test("automation tab shows permissioned strategies read-only", async ({ page }) 
   await expect(panel).toContainText("Permission Frozen");
   await expect(panel).toContainText("Market Data Stale");
   await expect(panel).toContainText("readiness blocked");
-  await expect(panel).toContainText("Approval Missing");
+  await expect(panel).toContainText("Stage Promotion Approval Needed");
+  await expect(panel).toContainText("Needed for Canary Live promotion");
+  await expect(panel).not.toContainText("Approval Missing");
   await expect(panel).toContainText("Insufficient Paper Orders");
   await expect(panel).toContainText("paper");
   await expect(panel.getByRole("button", { name: "freeze", exact: true })).toBeDisabled();
@@ -3269,6 +3342,9 @@ test("autonomous trading cockpit shows decisions logic and timeline", async ({ p
   await expect(cockpit).toContainText("Breakout retest held above rising 50-day.");
   await expect(cockpit).toContainText("Permission Frozen");
   await expect(cockpit).toContainText("Market Data Stale");
+  await expect(cockpit).toContainText("Stage Promotion Approval Needed");
+  await expect(cockpit).toContainText("Needed for Canary Live promotion");
+  await expect(cockpit).not.toContainText("Approval Missing");
   await expect(cockpit).toContainText("Desired long exposure");
   await expect(cockpit).toContainText("Proof blocked");
   await expect(cockpit).toContainText("Reconciliation blocked");

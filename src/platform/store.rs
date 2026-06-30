@@ -132,6 +132,10 @@ struct SymbolWorkflowFacts {
     decision_count: i64,
     pending_manual_fill_count: i64,
     open_position_count: i64,
+    automation_permission_count: i64,
+    automation_approved_count: i64,
+    automation_pending_count: i64,
+    automation_frozen_count: i64,
     open_attention_count: i64,
     candidate_attention_id: Option<i64>,
     review_packet_attention_id: Option<i64>,
@@ -712,6 +716,26 @@ fn workflow_decision_step(facts: &SymbolWorkflowFacts) -> String {
     "no decision".to_string()
 }
 
+fn workflow_automation_step(facts: &SymbolWorkflowFacts) -> String {
+    if facts.automation_frozen_count > 0 {
+        return workflow_count(facts.automation_frozen_count, "frozen", "frozen");
+    }
+    if facts.automation_approved_count > 0 {
+        return workflow_count(facts.automation_approved_count, "approved", "approved");
+    }
+    if facts.automation_pending_count > 0 {
+        return workflow_count(facts.automation_pending_count, "pending", "pending");
+    }
+    if facts.automation_permission_count > 0 {
+        return workflow_count(
+            facts.automation_permission_count,
+            "permission",
+            "permissions",
+        );
+    }
+    "not approved".to_string()
+}
+
 fn symbol_workflow_steps(
     facts: &SymbolWorkflowFacts,
     decision: &SymbolWorkflowDecision,
@@ -758,6 +782,21 @@ fn symbol_workflow_steps(
                 Some(_) => "monitoring",
                 None if facts.decline_count > 0 => "declined",
                 None => "muted",
+            },
+        },
+        SymbolWorkflowStep {
+            key: "automation",
+            label: "Automation",
+            value: workflow_automation_step(facts),
+            action: "automation",
+            tone: if facts.automation_frozen_count > 0 {
+                "blocked"
+            } else if facts.automation_approved_count > 0 {
+                "tracking"
+            } else if facts.automation_pending_count > 0 {
+                "monitoring"
+            } else {
+                "muted"
             },
         },
         SymbolWorkflowStep {
@@ -1929,6 +1968,10 @@ impl Store {
                        COALESCE(decisions.decision_count, 0) AS decision_count,
                        COALESCE(decisions.pending_manual_fill_count, 0) AS pending_manual_fill_count,
                        COALESCE(positions.open_position_count, 0) AS open_position_count,
+                       COALESCE(automation.permission_count, 0) AS automation_permission_count,
+                       COALESCE(automation.approved_count, 0) AS automation_approved_count,
+                       COALESCE(automation.pending_count, 0) AS automation_pending_count,
+                       COALESCE(automation.frozen_count, 0) AS automation_frozen_count,
                        COALESCE(attention.open_count, 0) AS open_attention_count,
                        attention.candidate_attention_id,
                        attention.review_packet_attention_id,
@@ -1996,10 +2039,19 @@ impl Store {
                 ) decisions ON TRUE
              LEFT JOIN LATERAL (
                     SELECT count(*) AS open_position_count
-                      FROM position p
+                     FROM position p
                      WHERE p.symbol = s.symbol
                        AND p.closed_at IS NULL
                 ) positions ON TRUE
+             LEFT JOIN LATERAL (
+                    SELECT count(*) AS permission_count,
+                           count(*) FILTER (WHERE p.status = 'approved') AS approved_count,
+                           count(*) FILTER (WHERE p.status = 'pending') AS pending_count,
+                           count(*) FILTER (WHERE p.manual_freeze) AS frozen_count
+                      FROM automation_trade_permission p
+                     WHERE p.symbol = s.symbol
+                       AND p.status IN ('pending', 'approved')
+                ) automation ON TRUE
              LEFT JOIN LATERAL (
                     SELECT count(*) AS open_count,
                            (array_agg(ai.id ORDER BY
@@ -2061,6 +2113,10 @@ impl Store {
             decision_count: row.try_get("decision_count")?,
             pending_manual_fill_count: row.try_get("pending_manual_fill_count")?,
             open_position_count: row.try_get("open_position_count")?,
+            automation_permission_count: row.try_get("automation_permission_count")?,
+            automation_approved_count: row.try_get("automation_approved_count")?,
+            automation_pending_count: row.try_get("automation_pending_count")?,
+            automation_frozen_count: row.try_get("automation_frozen_count")?,
             open_attention_count: row.try_get("open_attention_count")?,
             candidate_attention_id: row.try_get("candidate_attention_id")?,
             review_packet_attention_id: row.try_get("review_packet_attention_id")?,
@@ -9187,6 +9243,26 @@ mod tests {
         assert_eq!(response["state"], "thesis_monitoring");
         assert_eq!(response["primary_action"]["kind"], "thesis");
         assert_eq!(response["steps"][3]["value"], "forming · bull");
+    }
+
+    #[test]
+    fn workflow_surfaces_automation_approval_state() {
+        let mut facts = workflow_facts();
+        facts.automation_permission_count = 1;
+        facts.automation_approved_count = 1;
+
+        let response = symbol_workflow_response(&facts);
+        let automation_step = response["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["key"] == "automation")
+            .unwrap();
+
+        assert_eq!(automation_step["label"], "Automation");
+        assert_eq!(automation_step["value"], "1 approved");
+        assert_eq!(automation_step["action"], "automation");
+        assert_eq!(automation_step["tone"], "tracking");
     }
 
     #[test]

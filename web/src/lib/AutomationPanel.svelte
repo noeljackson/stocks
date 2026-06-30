@@ -31,6 +31,19 @@
       .replace(/\b\w/g, (char) => char.toUpperCase());
   }
 
+  function blockerLabel(value: string | null | undefined): string {
+    const key = (value ?? "").trim().toLowerCase();
+    if (key === "approval_missing") return "Stage Promotion Approval Needed";
+    return titleize(value);
+  }
+
+  function readinessApprovalText(row: AutomationPermission): string {
+    const target = row.readiness?.target_stage ? titleize(row.readiness.target_stage) : "Target Stage";
+    if (row.readiness?.approval_valid) return `Valid for ${target} promotion`;
+    if (row.readiness?.approval_required) return `Needed for ${target} promotion`;
+    return "-";
+  }
+
   function money(value: number | null | undefined): string {
     if (value === null || value === undefined || Number.isNaN(value)) return "-";
     return value.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
@@ -285,7 +298,7 @@
                   <dt>target</dt><dd>{titleize(row.readiness?.target_stage ?? "none")}</dd>
                   <dt>status</dt><dd>{titleize(row.readiness?.status ?? "missing")}</dd>
                   <dt>score</dt><dd>{pct(row.readiness?.readiness_score)}</dd>
-                  <dt>approval</dt><dd>{row.readiness?.approval_valid ? "Valid" : row.readiness?.approval_required ? "Needed" : "-"}</dd>
+                  <dt>stage approval</dt><dd>{readinessApprovalText(row)}</dd>
                   <dt>last</dt><dd>{shortTs(row.readiness?.evaluated_at)}</dd>
                 </dl>
               </section>
@@ -312,7 +325,7 @@
             {#if blocked.length > 0}
               <div class="blocked-reasons">
                 {#each [...new Set(blocked)] as reason}
-                  <span>{titleize(reason)}</span>
+                  <span>{blockerLabel(reason)}</span>
                 {/each}
               </div>
             {/if}

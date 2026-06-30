@@ -570,6 +570,7 @@ export type WorkflowActionKind =
   | "research"
   | "evidence"
   | "thesis"
+  | "automation"
   | "decision"
   | "tracking"
   | "overview";

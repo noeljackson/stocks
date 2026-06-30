@@ -7,6 +7,7 @@
   import {
     ackAlert,
     addToWatchlist,
+    approveAutomationPermission,
     confirmCandidate,
     createWatchlist,
     fetchAlerts,
@@ -251,6 +252,36 @@
     if (action.kind === "attention_dismiss") {
       await dismissOne(item.id, "review_packet");
       reviewPacket = null;
+      return;
+    }
+    if (action.kind === "automation_approve") {
+      if (!item.symbol) {
+        error = "automation approval needs a symbol";
+        return;
+      }
+      promotionBusy = true;
+      promotionStatus = null;
+      try {
+        await approveAutomationPermission({
+          symbol: item.symbol,
+          strategyId: action.strategy_id || "thesis_timing",
+          strategyVersion: action.strategy_version || "0.1.0",
+          environmentScope: action.environment_scope || "shadow",
+          sourceRef: {
+            attention_id: item.id,
+            attention_kind: item.kind,
+            thesis_id: item.thesis_id,
+            action_id: action.id,
+          },
+        });
+        await refreshAttention();
+        promotionStatus = `${item.symbol} approved for shadow automation.`;
+        openAutomationPage(item.symbol);
+      } catch (e) {
+        error = e instanceof Error ? e.message : String(e);
+      } finally {
+        promotionBusy = false;
+      }
       return;
     }
     if (item.symbol) await selectSymbol(item.symbol);

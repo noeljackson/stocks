@@ -50,6 +50,10 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/price-alert-events", get(list_price_alert_events))
         .route("/api/automation/status", get(get_automation_status))
         .route("/api/automation/timeline", get(get_automation_timeline))
+        .route(
+            "/api/automation/permissions",
+            post(approve_automation_permission),
+        )
         .route("/api/regime", get(get_regime))
         .route("/api/tickers", get(list_tickers).post(add_ticker))
         .route("/api/theses", get(list_theses))
@@ -1950,6 +1954,36 @@ struct AutomationTimelineQuery {
     limit: Option<i64>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct AutomationPermissionApprovalRequest {
+    symbol: String,
+    #[serde(default)]
+    strategy_id: Option<String>,
+    #[serde(default)]
+    strategy_version: Option<String>,
+    #[serde(default)]
+    environment_scope: Option<String>,
+    #[serde(default)]
+    max_allocation_pct: Option<f64>,
+    #[serde(default)]
+    max_notional_usd: Option<f64>,
+    #[serde(default)]
+    source_ref: Option<serde_json::Value>,
+}
+
+fn normalize_automation_symbol(value: &str) -> Option<String> {
+    let symbol = value.trim().to_ascii_uppercase();
+    if symbol.is_empty()
+        || symbol.len() > 14
+        || !symbol
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '.' || ch == '-')
+    {
+        return None;
+    }
+    Some(symbol)
+}
+
 async fn get_automation_status(
     State(gw): State<Arc<Gateway>>,
     Query(q): Query<AutomationStatusQuery>,
@@ -1976,6 +2010,38 @@ async fn get_automation_timeline(
         Err(e) => {
             warn!(error = %e, "get_automation_timeline failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn approve_automation_permission(
+    State(gw): State<Arc<Gateway>>,
+    Json(req): Json<AutomationPermissionApprovalRequest>,
+) -> impl IntoResponse {
+    let Some(symbol) = normalize_automation_symbol(&req.symbol) else {
+        return (StatusCode::BAD_REQUEST, "invalid symbol").into_response();
+    };
+    let strategy_id = req.strategy_id.as_deref().unwrap_or("thesis_timing");
+    let strategy_version = req.strategy_version.as_deref().unwrap_or("0.1.0");
+    let environment_scope = req.environment_scope.as_deref().unwrap_or("shadow");
+    let source_ref = req.source_ref.unwrap_or_else(|| json!({}));
+    match gw
+        .store
+        .approve_automation_permission(
+            &symbol,
+            strategy_id,
+            strategy_version,
+            environment_scope,
+            req.max_allocation_pct,
+            req.max_notional_usd,
+            source_ref,
+        )
+        .await
+    {
+        Ok(body) => (StatusCode::CREATED, Json(body)).into_response(),
+        Err(e) => {
+            warn!(error = %e, "approve_automation_permission failed");
+            (StatusCode::BAD_REQUEST, e.to_string()).into_response()
         }
     }
 }
@@ -4097,11 +4163,13 @@ fn review_packet_actions(kind: &str) -> serde_json::Value {
             json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later without resolving."}),
         ],
         "thesis_actionable" => vec![
-            json!({"id": "record_decision", "label": "Record decision", "kind": "decision", "detail": "Open the thesis decision form."}),
+            json!({"id": "approve_thesis_timing", "label": "Approve for automation", "kind": "automation_approve", "detail": "Create a shadow thesis-timing automation permission and open the cockpit.", "strategy_id": "thesis_timing", "strategy_version": "0.1.0", "environment_scope": "shadow"}),
+            json!({"id": "record_decision", "label": "Record manual decision", "kind": "decision", "detail": "Open the thesis decision form."}),
             json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later without resolving."}),
             json!({"id": "skip", "label": "Skip", "kind": "decision_skip", "detail": "Record a structured skip/defer decision."}),
         ],
         "thesis_review" => vec![
+            json!({"id": "approve_thesis_timing", "label": "Approve for automation", "kind": "automation_approve", "detail": "Create a shadow thesis-timing automation permission and open the cockpit.", "strategy_id": "thesis_timing", "strategy_version": "0.1.0", "environment_scope": "shadow"}),
             json!({"id": "record_decision", "label": "Record decision", "kind": "decision", "detail": "Open the thesis decision form for this reviewed thesis."}),
             json!({"id": "skip", "label": "Skip / defer thesis", "kind": "decision_skip", "detail": "Record why this thesis is not being acted on now."}),
             json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later without resolving."}),
@@ -4140,7 +4208,14 @@ fn review_packet_decision(
             "Start research",
             "Add the symbol to Universe, queue research, and start context/thesis work.",
         ),
-        "thesis_actionable" | "risk_review" => (
+        "thesis_actionable" => (
+            "approve_for_automation",
+            format!("Approve {sym} for automation?"),
+            "automation_approve",
+            "Approve for automation",
+            "Create a shadow thesis-timing automation permission, then inspect proof and lifecycle state in the cockpit.",
+        ),
+        "risk_review" => (
             "record_trade_decision",
             format!("Record a decision on {sym}"),
             "decision",
@@ -4155,11 +4230,11 @@ fn review_packet_decision(
             "Inspect missing evidence and source tasks.",
         ),
         "thesis_review" => (
-            "review_thesis_change",
-            format!("Review thesis changes for {sym}"),
-            "open_symbol",
-            "Review thesis changes",
-            "Open the thesis tab and inspect version history.",
+            "approve_for_automation",
+            format!("Approve {sym} for automation?"),
+            "automation_approve",
+            "Approve for automation",
+            "Create a shadow thesis-timing automation permission, then inspect proof and lifecycle state in the cockpit.",
         ),
         _ => (
             "inspect_symbol",
@@ -4170,15 +4245,15 @@ fn review_packet_decision(
         ),
     };
 
-    let mut blockers = Vec::new();
-    if kind != "candidate_review" && in_universe {
-        blockers.push(
-            "Already in Universe; this packet is about the next workflow action, not promotion.",
-        );
-    }
-    if kind != "candidate_review" && !in_universe {
-        blockers.push("No discovery candidate is attached, so Universe kickoff is unavailable from this packet.");
-    }
+    let blockers = if primary_kind == "automation_approve" && !in_universe {
+        vec!["Promote the symbol to Universe before automation approval."]
+    } else if kind != "candidate_review" && !in_universe {
+        vec![
+            "No discovery candidate is attached, so Universe kickoff is unavailable from this packet.",
+        ]
+    } else {
+        Vec::new()
+    };
 
     json!({
         "intent": intent,
@@ -4188,6 +4263,9 @@ fn review_packet_decision(
             "label": primary_label,
             "kind": primary_kind,
             "detail": primary_detail,
+            "strategy_id": if primary_kind == "automation_approve" { "thesis_timing" } else { "" },
+            "strategy_version": if primary_kind == "automation_approve" { "0.1.0" } else { "" },
+            "environment_scope": if primary_kind == "automation_approve" { "shadow" } else { "" },
         },
         "secondary_actions": review_packet_actions(kind),
         "blockers": blockers,
@@ -4198,7 +4276,13 @@ fn review_packet_decision(
                 "matching attention item is resolved",
                 "research, context, and thesis work is kicked off",
             ],
-            "thesis_actionable" | "risk_review" => vec![
+            "thesis_actionable" | "thesis_review" => vec![
+                "shadow automation permission is approved",
+                "strategy sleeve is created or reactivated",
+                "no broker order is placed by this approval",
+                "ticker appears in the autonomous cockpit queue",
+            ],
+            "risk_review" => vec![
                 "human decision is recorded",
                 "risk context remains attached to the thesis",
             ],
@@ -6113,8 +6197,14 @@ mod tests {
     fn review_packet_existing_thesis_decision_is_not_promotion() {
         let decision = review_packet_decision("thesis_review", Some("BG"), true);
 
-        assert_eq!(decision["intent"], "review_thesis_change");
-        assert_eq!(decision["primary_action"]["kind"], "open_symbol");
+        assert_eq!(decision["intent"], "approve_for_automation");
+        assert_eq!(decision["headline"], "Approve BG for automation?");
+        assert_eq!(decision["primary_action"]["kind"], "automation_approve");
+        assert_eq!(
+            decision["primary_action"]["label"],
+            "Approve for automation"
+        );
+        assert_eq!(decision["primary_action"]["strategy_id"], "thesis_timing");
         assert!(
             decision["secondary_actions"]
                 .as_array()
@@ -6122,12 +6212,14 @@ mod tests {
                 .iter()
                 .any(|item| item["kind"] == "decision")
         );
-        assert!(decision["blockers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item
-                == "Already in Universe; this packet is about the next workflow action, not promotion."));
+        assert_eq!(decision["blockers"].as_array().unwrap().len(), 0);
+        assert!(
+            decision["consequences"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item == "ticker appears in the autonomous cockpit queue")
+        );
     }
 
     #[test]

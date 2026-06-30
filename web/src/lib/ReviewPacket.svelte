@@ -62,7 +62,7 @@
   function secondaryActions(packet: AttentionReviewPacket): ReviewPacketAction[] {
     const primary = primaryAction(packet);
     const actions = packet.decision?.secondary_actions?.length ? packet.decision.secondary_actions : packet.allowed_actions;
-    return actions.filter((action) => action.kind !== primary.kind || action.id !== primary.id);
+    return actions.filter((action) => action.kind !== primary.kind);
   }
 
   function proposedLists(packet: AttentionReviewPacket): ProposedList[] {
@@ -92,7 +92,7 @@
   }
 
   function actionTone(action: ReviewPacketAction): string {
-    if (action.kind === "candidate_confirm" || action.kind === "decision") return "primary";
+    if (action.kind === "candidate_confirm" || action.kind === "decision" || action.kind === "automation_approve") return "primary";
     if (action.kind === "candidate_reject" || action.kind === "attention_dismiss") return "danger";
     return "secondary";
   }

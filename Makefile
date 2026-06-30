@@ -187,7 +187,7 @@ web-e2e: ## Playwright UI workflow tests (mocked API, no DB mutation)
 # ---- run (local dev; build once with `make build`, then ./target/release/<bin>) ----
 # $(RUN) injects infisical when installed (see top of file). Override with
 # `make RUN= run-gateway` to bypass.
-.PHONY: run-gateway run-ingest run-regime run-router run-risk run-goalpost run-price-alerts run-technical-timing-validator run-strategy-runner run-strategy-runner-once llmsmoke
+.PHONY: run-gateway run-ingest run-regime run-router run-risk run-goalpost run-price-alerts run-technical-timing-validator run-automation-readiness run-strategy-runner run-strategy-runner-once llmsmoke
 run-gateway: ## Run the gateway
 	$(RUN) cargo run --release --bin gateway
 
@@ -226,6 +226,9 @@ run-price-alerts: ## Run the price alert evaluator (manual + AI price levels)
 
 run-technical-timing-validator: ## Score due technical timing validation observations once
 	$(RUN) env TECHNICAL_TIMING_VALIDATOR_ONCE=1 cargo run --release --bin technical-timing-validator
+
+run-automation-readiness: ## Score automation readiness and apply approved lifecycle gates once
+	$(RUN) env AUTOMATION_READINESS_ONCE=1 cargo run --release --bin automation-readiness
 
 run-strategy-runner: ## Run shadow automation strategies (desired state only)
 	$(RUN) cargo run --release --bin strategy-runner
@@ -269,6 +272,7 @@ watch-all: ## Show how to run all services in watch mode
 	@echo "  make watch-goalpost"
 	@echo "  make watch-ingest    # only when actively iterating on adapter code"
 	@echo "  make run-strategy-runner"
+	@echo "  make run-automation-readiness"
 
 # ---- Python ----
 .PHONY: py-setup py-check run-context research sync-ibkr run-ibkr-sync ibkr-paper-orders run-ibkr-paper-orders

@@ -15,11 +15,13 @@ use sqlx::{
 use std::time::Duration;
 
 use crate::automation::{
-    AllocationLimits, AutomationControlState, AutomationStrategyCandidate, BlockedProofWrite,
-    BrokerPolicyState, BuiltinStrategyDefinition, DesiredPositionReceipt, DesiredPositionWrite,
-    LatestDesiredPosition, ReconciliationInput, SimulatedPosition, SimulatedReconciliationReceipt,
-    SimulationConfig, SleeveAllocation, SleevePolicyState, StrategyDefinitionInput, TargetSide,
-    TradePermissionInput, reconcile_simulated,
+    AllocationLimits, AutomationControlState, AutomationStage, AutomationStrategyCandidate,
+    BlockedProofWrite, BrokerPolicyState, BuiltinStrategyDefinition, DesiredPositionReceipt,
+    DesiredPositionWrite, LatestDesiredPosition, PromotionApproval, ReadinessInput,
+    ReadinessMetrics, ReadinessThresholds, ReconciliationInput, SimulatedPosition,
+    SimulatedReconciliationReceipt, SimulationConfig, SleeveAllocation, SleevePolicyState,
+    StrategyDefinitionInput, TargetSide, TradePermissionInput, evaluate_readiness,
+    manual_stage_change, reconcile_simulated,
 };
 use crate::llm::prompts::{InvocationRecorder, InvocationRow};
 use crate::platform::domain::{
@@ -90,6 +92,12 @@ struct DerivedRefreshTask {
     reason: String,
     dependency_kind: String,
     dependency_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PromotionApprovalRow {
+    approval_id: uuid::Uuid,
+    approval: PromotionApproval,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -877,9 +885,14 @@ impl Store {
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or(8)
             .clamp(1, 32);
+        let acquire_timeout_secs = std::env::var("DATABASE_ACQUIRE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(5)
+            .clamp(1, 60);
         let pool = PgPoolOptions::new()
             .max_connections(max_connections)
-            .acquire_timeout(Duration::from_secs(5))
+            .acquire_timeout(Duration::from_secs(acquire_timeout_secs))
             .connect(url)
             .await
             .with_context(|| format!("db connect {url}"))?;
@@ -4993,11 +5006,22 @@ impl Store {
             config: SimulationConfig::default(),
         };
         let outcome = reconcile_simulated(&input);
+        let reconciliation_status = if input.environment_scope == "shadow"
+            || outcome.status == "noop"
+            || outcome.status == "blocked"
+            || outcome.status == "incident"
+        {
+            outcome.status.clone()
+        } else {
+            "needs_order".to_string()
+        };
         let blocked_reasons = serde_json::json!(outcome.blocked_reasons);
         let source_ref = serde_json::json!({
             "source": "digital_broker_simulator",
             "desired_position_id": desired_position_id,
             "proof_id": proof_id,
+            "scope": input.environment_scope,
+            "shadow_fill_applied": input.environment_scope == "shadow",
         });
         let reconciliation_id: Option<uuid::Uuid> = sqlx::query_scalar(
             r#"INSERT INTO automation_execution_reconciliation
@@ -5014,7 +5038,7 @@ impl Store {
         .bind(sleeve_id)
         .bind(&symbol)
         .bind(&input.environment_scope)
-        .bind(&outcome.status)
+        .bind(&reconciliation_status)
         .bind(&outcome.idempotency_key)
         .bind(&outcome.target_snapshot)
         .bind(&outcome.broker_snapshot)
@@ -5048,6 +5072,19 @@ impl Store {
             });
         };
 
+        if input.environment_scope != "shadow" && reconciliation_status != "incident" {
+            tx.commit()
+                .await
+                .context("commit paper/live needs-order reconciliation")?;
+            return Ok(SimulatedReconciliationReceipt {
+                reconciliation_id,
+                status: reconciliation_status,
+                duplicate: false,
+                fills: 0,
+                incident: false,
+            });
+        }
+
         if let Some(incident) = outcome.incident.as_ref() {
             sqlx::query(
                 r#"INSERT INTO automation_incident
@@ -5070,6 +5107,19 @@ impl Store {
             .execute(&mut *tx)
             .await
             .context("insert simulator incident")?;
+        }
+
+        if input.environment_scope != "shadow" {
+            tx.commit()
+                .await
+                .context("commit paper/live incident reconciliation")?;
+            return Ok(SimulatedReconciliationReceipt {
+                reconciliation_id,
+                status: reconciliation_status,
+                duplicate: false,
+                fills: 0,
+                incident: true,
+            });
         }
 
         let mut inserted_fills = 0_usize;
@@ -5384,6 +5434,526 @@ impl Store {
         Ok(proof_id)
     }
 
+    pub async fn evaluate_automation_readiness(&self, lookback_days: i64) -> Result<usize> {
+        let lookback_days = lookback_days.clamp(1, 3660);
+        let rows = sqlx::query(
+            r#"SELECT strategy_id, strategy_version, status
+                 FROM automation_strategy_definition
+                WHERE status <> 'retired'
+             ORDER BY strategy_id, strategy_version"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("select automation strategies for readiness")?;
+
+        let thresholds = ReadinessThresholds::default();
+        let now = Utc::now();
+        let mut evaluated = 0_usize;
+        for row in rows {
+            let strategy_id: String = row.try_get("strategy_id")?;
+            let strategy_version: String = row.try_get("strategy_version")?;
+            let status: String = row.try_get("status")?;
+            let current_stage = AutomationStage::try_from(status.as_str())
+                .with_context(|| format!("decode strategy stage {status}"))?;
+            let target_stage = match current_stage {
+                AutomationStage::Draft => Some(AutomationStage::Shadow),
+                AutomationStage::Shadow => Some(AutomationStage::Paper),
+                AutomationStage::Paper => Some(AutomationStage::CanaryLive),
+                AutomationStage::CanaryLive => Some(AutomationStage::ExpandedLive),
+                AutomationStage::ExpandedLive
+                | AutomationStage::Frozen
+                | AutomationStage::Retired => None,
+            };
+            let approval = match target_stage {
+                Some(target) => {
+                    self.automation_promotion_approval(
+                        &strategy_id,
+                        &strategy_version,
+                        current_stage,
+                        target,
+                    )
+                    .await?
+                }
+                None => None,
+            };
+            let metrics = self
+                .automation_readiness_metrics(&strategy_id, &strategy_version, lookback_days)
+                .await?;
+            let decision = evaluate_readiness(&ReadinessInput {
+                current_stage,
+                metrics: metrics.clone(),
+                approval: approval.as_ref().map(|row| row.approval.clone()),
+                thresholds: thresholds.clone(),
+                now,
+            });
+            let evaluation_id = self
+                .insert_automation_readiness_evaluation(
+                    &strategy_id,
+                    &strategy_version,
+                    lookback_days,
+                    &metrics,
+                    &thresholds,
+                    &decision,
+                    approval.as_ref().map(|row| row.approval_id),
+                )
+                .await?;
+            self.insert_automation_strategy_lifecycle_event(
+                &strategy_id,
+                &strategy_version,
+                "readiness_evaluated",
+                Some(current_stage.as_str()),
+                decision.target_stage.map(AutomationStage::as_str),
+                Some(evaluation_id),
+                approval.as_ref().map(|row| row.approval_id),
+                "system",
+                None,
+                serde_json::json!({"lookback_days": lookback_days}),
+            )
+            .await?;
+            if decision.status.as_str() == "ready" {
+                if let (Some(target), Some(approval)) = (decision.target_stage, approval.as_ref()) {
+                    self.promote_automation_strategy_after_readiness(
+                        &strategy_id,
+                        &strategy_version,
+                        current_stage,
+                        target,
+                        evaluation_id,
+                        approval.approval_id,
+                    )
+                    .await?;
+                }
+            }
+            if decision.freeze_live_permissions {
+                self.freeze_live_automation_permissions(
+                    &strategy_id,
+                    &strategy_version,
+                    "readiness gate blocked live-capable strategy",
+                    evaluation_id,
+                )
+                .await?;
+            }
+            evaluated += 1;
+        }
+        Ok(evaluated)
+    }
+
+    async fn automation_readiness_metrics(
+        &self,
+        strategy_id: &str,
+        strategy_version: &str,
+        lookback_days: i64,
+    ) -> Result<ReadinessMetrics> {
+        let observation = sqlx::query(
+            r#"SELECT COUNT(*)::int8 AS observations_total,
+                      COUNT(*) FILTER (WHERE evaluated_at IS NOT NULL)::int8 AS outcomes_scored,
+                      COUNT(*) FILTER (
+                        WHERE evaluated_at IS NOT NULL
+                          AND target_side <> 'flat'
+                      )::int8 AS directional_outcomes_scored,
+                      AVG(CASE
+                            WHEN evaluated_at IS NULL OR target_side = 'flat' THEN NULL
+                            WHEN target_side = 'long' AND forward_return_pct > 0 THEN 1.0
+                            WHEN target_side = 'short' AND forward_return_pct < 0 THEN 1.0
+                            ELSE 0.0
+                          END)::float8 AS signal_quality_rate,
+                      AVG(forward_return_pct::float8)
+                        FILTER (WHERE evaluated_at IS NOT NULL AND target_side <> 'flat')
+                        AS mean_forward_return_pct,
+                      AVG(max_drawdown_pct::float8)
+                        FILTER (WHERE evaluated_at IS NOT NULL AND target_side <> 'flat')
+                        AS mean_max_drawdown_pct,
+                      AVG(CASE WHEN churn_event THEN 1.0 ELSE 0.0 END)::float8 AS churn_rate,
+                      AVG(forward_return_pct::float8)
+                        FILTER (WHERE evaluated_at IS NOT NULL AND target_side <> 'flat')
+                        AS baseline_excess_return_pct
+                 FROM automation_strategy_signal_observation
+                WHERE strategy_id = $1
+                  AND strategy_version = $2
+                  AND created_at > now() - ($3 || ' days')::interval"#,
+        )
+        .bind(strategy_id)
+        .bind(strategy_version)
+        .bind(lookback_days.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .context("automation readiness observation metrics")?;
+
+        let proof = sqlx::query(
+            r#"SELECT COUNT(*)::int8 AS proof_total,
+                      AVG(CASE WHEN result IN ('passed', 'warning') THEN 1.0 ELSE 0.0 END)::float8
+                        AS proof_pass_rate
+                 FROM automation_proof
+                WHERE strategy_id = $1
+                  AND strategy_version = $2
+                  AND evaluated_at > now() - ($3 || ' days')::interval"#,
+        )
+        .bind(strategy_id)
+        .bind(strategy_version)
+        .bind(lookback_days.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .context("automation readiness proof metrics")?;
+
+        let incident = sqlx::query(
+            r#"SELECT COUNT(*)::int8 AS incident_total,
+                      COUNT(*) FILTER (
+                        WHERE i.status <> 'resolved'
+                          AND i.severity = 'critical'
+                      )::int8 AS open_critical_incidents
+                 FROM automation_incident i
+                 JOIN automation_trade_permission p
+                   ON p.permission_id = i.permission_id
+                WHERE p.strategy_id = $1
+                  AND p.strategy_version = $2
+                  AND i.created_at > now() - ($3 || ' days')::interval"#,
+        )
+        .bind(strategy_id)
+        .bind(strategy_version)
+        .bind(lookback_days.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .context("automation readiness incident metrics")?;
+
+        let paper = sqlx::query(
+            r#"SELECT COUNT(*)::int8 AS paper_orders_total,
+                      CASE WHEN COUNT(*) = 0 THEN NULL
+                           ELSE (
+                             COUNT(*) FILTER (WHERE bo.status IN ('filled', 'partially_filled'))::float8
+                             / COUNT(*)::float8
+                           )
+                      END AS paper_fill_quality_rate,
+                      AVG(ABS((e.fill_price::float8 - COALESCE(bo.limit_price::float8, e.fill_price::float8))
+                              / NULLIF(e.fill_price::float8, 0)) * 10000.0)
+                        FILTER (WHERE e.fill_price IS NOT NULL)
+                        AS mean_slippage_bps
+                 FROM automation_broker_order bo
+                 JOIN desired_strategy_position d
+                   ON d.desired_position_id = bo.desired_position_id
+            LEFT JOIN LATERAL (
+                    SELECT fill_price
+                      FROM automation_broker_order_event e
+                     WHERE e.order_id = bo.order_id
+                       AND e.fill_price IS NOT NULL
+                  ORDER BY e.created_at DESC
+                     LIMIT 1
+                 ) e ON TRUE
+                WHERE d.strategy_id = $1
+                  AND d.strategy_version = $2
+                  AND bo.created_at > now() - ($3 || ' days')::interval"#,
+        )
+        .bind(strategy_id)
+        .bind(strategy_version)
+        .bind(lookback_days.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .context("automation readiness paper metrics")?;
+
+        let proof_total: i64 = proof.try_get("proof_total")?;
+        let incident_total: i64 = incident.try_get("incident_total")?;
+        let incident_rate = (proof_total > 0).then_some(incident_total as f64 / proof_total as f64);
+
+        Ok(ReadinessMetrics {
+            observations_total: observation.try_get("observations_total")?,
+            outcomes_scored: observation.try_get("outcomes_scored")?,
+            directional_outcomes_scored: observation.try_get("directional_outcomes_scored")?,
+            signal_quality_rate: observation.try_get("signal_quality_rate").ok(),
+            mean_forward_return_pct: observation.try_get("mean_forward_return_pct").ok(),
+            mean_max_drawdown_pct: observation.try_get("mean_max_drawdown_pct").ok(),
+            churn_rate: observation.try_get("churn_rate").ok(),
+            proof_pass_rate: proof.try_get("proof_pass_rate").ok(),
+            incident_rate,
+            open_critical_incidents: incident.try_get("open_critical_incidents")?,
+            paper_orders_total: paper.try_get("paper_orders_total")?,
+            paper_fill_quality_rate: paper.try_get("paper_fill_quality_rate").ok(),
+            mean_slippage_bps: paper.try_get("mean_slippage_bps").ok(),
+            baseline_excess_return_pct: observation.try_get("baseline_excess_return_pct").ok(),
+        })
+    }
+
+    async fn automation_promotion_approval(
+        &self,
+        strategy_id: &str,
+        strategy_version: &str,
+        from_stage: AutomationStage,
+        to_stage: AutomationStage,
+    ) -> Result<Option<PromotionApprovalRow>> {
+        let row = sqlx::query(
+            r#"SELECT approval_id,
+                      from_stage,
+                      to_stage,
+                      status,
+                      approved_at,
+                      expires_at
+                 FROM automation_strategy_promotion_approval
+                WHERE strategy_id = $1
+                  AND strategy_version = $2
+                  AND from_stage = $3
+                  AND to_stage = $4
+                  AND status = 'approved'
+             ORDER BY approved_at DESC
+                LIMIT 1"#,
+        )
+        .bind(strategy_id)
+        .bind(strategy_version)
+        .bind(from_stage.as_str())
+        .bind(to_stage.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .context("automation promotion approval")?;
+        row.map(|row| {
+            let from_stage: String = row.try_get("from_stage")?;
+            let to_stage: String = row.try_get("to_stage")?;
+            Ok(PromotionApprovalRow {
+                approval_id: row.try_get("approval_id")?,
+                approval: PromotionApproval {
+                    from_stage: AutomationStage::try_from(from_stage.as_str())?,
+                    to_stage: AutomationStage::try_from(to_stage.as_str())?,
+                    status: row.try_get("status")?,
+                    approved_at: row.try_get("approved_at")?,
+                    expires_at: row.try_get("expires_at")?,
+                },
+            })
+        })
+        .transpose()
+    }
+
+    async fn insert_automation_readiness_evaluation(
+        &self,
+        strategy_id: &str,
+        strategy_version: &str,
+        lookback_days: i64,
+        metrics: &ReadinessMetrics,
+        thresholds: &ReadinessThresholds,
+        decision: &crate::automation::ReadinessDecision,
+        approval_id: Option<uuid::Uuid>,
+    ) -> Result<uuid::Uuid> {
+        let evaluation_id = sqlx::query_scalar(
+            r#"INSERT INTO automation_strategy_readiness_evaluation
+                 (strategy_id, strategy_version, lifecycle_stage, target_stage,
+                  status, readiness_score, approval_id, approval_required,
+                  approval_valid, freeze_live_permissions, metrics, blockers,
+                  warnings, thresholds, lookback_days, source_ref)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                       $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb, $15,
+                       $16::jsonb)
+            RETURNING evaluation_id"#,
+        )
+        .bind(strategy_id)
+        .bind(strategy_version)
+        .bind(decision.current_stage.as_str())
+        .bind(decision.target_stage.map(AutomationStage::as_str))
+        .bind(decision.status.as_str())
+        .bind(decision.readiness_score)
+        .bind(approval_id)
+        .bind(decision.approval_required)
+        .bind(decision.approval_valid)
+        .bind(decision.freeze_live_permissions)
+        .bind(serde_json::to_value(metrics)?)
+        .bind(serde_json::json!(decision.blockers))
+        .bind(serde_json::json!(decision.warnings))
+        .bind(serde_json::to_value(thresholds)?)
+        .bind(i32::try_from(lookback_days).unwrap_or(90))
+        .bind(serde_json::json!({"source": "automation_readiness_evaluator"}))
+        .fetch_one(&self.pool)
+        .await
+        .context("insert automation readiness evaluation")?;
+        Ok(evaluation_id)
+    }
+
+    async fn promote_automation_strategy_after_readiness(
+        &self,
+        strategy_id: &str,
+        strategy_version: &str,
+        from_stage: AutomationStage,
+        to_stage: AutomationStage,
+        evaluation_id: uuid::Uuid,
+        approval_id: uuid::Uuid,
+    ) -> Result<()> {
+        let updated = sqlx::query(
+            r#"UPDATE automation_strategy_definition
+                  SET status = $3
+                WHERE strategy_id = $1
+                  AND strategy_version = $2
+                  AND status = $4"#,
+        )
+        .bind(strategy_id)
+        .bind(strategy_version)
+        .bind(to_stage.as_str())
+        .bind(from_stage.as_str())
+        .execute(&self.pool)
+        .await
+        .context("promote automation strategy")?
+        .rows_affected();
+        if updated == 0 {
+            return Ok(());
+        }
+        sqlx::query(
+            r#"UPDATE automation_strategy_promotion_approval
+                  SET status = 'used',
+                      updated_at = now()
+                WHERE approval_id = $1"#,
+        )
+        .bind(approval_id)
+        .execute(&self.pool)
+        .await
+        .context("mark automation promotion approval used")?;
+        self.insert_automation_strategy_lifecycle_event(
+            strategy_id,
+            strategy_version,
+            "promoted",
+            Some(from_stage.as_str()),
+            Some(to_stage.as_str()),
+            Some(evaluation_id),
+            Some(approval_id),
+            "system",
+            Some("readiness gate passed with valid operator approval"),
+            serde_json::json!({}),
+        )
+        .await
+    }
+
+    async fn freeze_live_automation_permissions(
+        &self,
+        strategy_id: &str,
+        strategy_version: &str,
+        reason: &str,
+        evaluation_id: uuid::Uuid,
+    ) -> Result<()> {
+        let rows = sqlx::query(
+            r#"UPDATE automation_trade_permission
+                  SET manual_freeze = true,
+                      freeze_reason = $3,
+                      updated_at = now()
+                WHERE strategy_id = $1
+                  AND strategy_version = $2
+                  AND status = 'approved'
+                  AND environment_scope IN ('canary_live', 'expanded_live')
+                  AND manual_freeze = false
+            RETURNING permission_id"#,
+        )
+        .bind(strategy_id)
+        .bind(strategy_version)
+        .bind(reason)
+        .fetch_all(&self.pool)
+        .await
+        .context("freeze live automation permissions")?;
+        for row in rows {
+            let permission_id: uuid::Uuid = row.try_get("permission_id")?;
+            sqlx::query(
+                r#"INSERT INTO automation_permission_event
+                     (permission_id, event_kind, manual_freeze, actor, reason, source_ref)
+                   VALUES ($1, 'freeze_set', true, 'system', $2, $3::jsonb)"#,
+            )
+            .bind(permission_id)
+            .bind(reason)
+            .bind(serde_json::json!({
+                "source": "automation_readiness_evaluator",
+                "evaluation_id": evaluation_id,
+            }))
+            .execute(&self.pool)
+            .await
+            .context("insert readiness freeze permission event")?;
+        }
+        Ok(())
+    }
+
+    async fn insert_automation_strategy_lifecycle_event(
+        &self,
+        strategy_id: &str,
+        strategy_version: &str,
+        event_kind: &str,
+        from_status: Option<&str>,
+        to_status: Option<&str>,
+        evaluation_id: Option<uuid::Uuid>,
+        approval_id: Option<uuid::Uuid>,
+        actor: &str,
+        reason: Option<&str>,
+        source_ref: serde_json::Value,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"INSERT INTO automation_strategy_lifecycle_event
+                 (strategy_id, strategy_version, event_kind, from_status, to_status,
+                  evaluation_id, approval_id, actor, reason, source_ref)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)"#,
+        )
+        .bind(strategy_id)
+        .bind(strategy_version)
+        .bind(event_kind)
+        .bind(from_status)
+        .bind(to_status)
+        .bind(evaluation_id)
+        .bind(approval_id)
+        .bind(actor)
+        .bind(reason)
+        .bind(source_ref)
+        .execute(&self.pool)
+        .await
+        .context("insert automation strategy lifecycle event")?;
+        Ok(())
+    }
+
+    pub async fn set_automation_strategy_stage_manual(
+        &self,
+        strategy_id: &str,
+        strategy_version: &str,
+        to_stage: AutomationStage,
+        actor: &str,
+        reason: Option<&str>,
+    ) -> Result<bool> {
+        let Some(current): Option<String> = sqlx::query_scalar(
+            r#"SELECT status
+                 FROM automation_strategy_definition
+                WHERE strategy_id = $1
+                  AND strategy_version = $2"#,
+        )
+        .bind(strategy_id)
+        .bind(strategy_version)
+        .fetch_optional(&self.pool)
+        .await
+        .context("select automation strategy stage")?
+        else {
+            return Ok(false);
+        };
+        let from_stage = AutomationStage::try_from(current.as_str())?;
+        let change = manual_stage_change(from_stage, to_stage);
+        if !change.allowed {
+            return Ok(false);
+        }
+        let updated = sqlx::query(
+            r#"UPDATE automation_strategy_definition
+                  SET status = $3,
+                      retired_at = CASE WHEN $3 = 'retired' THEN now() ELSE retired_at END
+                WHERE strategy_id = $1
+                  AND strategy_version = $2
+                  AND status = $4"#,
+        )
+        .bind(strategy_id)
+        .bind(strategy_version)
+        .bind(to_stage.as_str())
+        .bind(from_stage.as_str())
+        .execute(&self.pool)
+        .await
+        .context("manual automation strategy stage change")?
+        .rows_affected();
+        if updated == 0 {
+            return Ok(false);
+        }
+        self.insert_automation_strategy_lifecycle_event(
+            strategy_id,
+            strategy_version,
+            change.event_kind,
+            Some(from_stage.as_str()),
+            Some(to_stage.as_str()),
+            None,
+            None,
+            actor,
+            reason,
+            serde_json::json!({"source": "manual_stage_change"}),
+        )
+        .await?;
+        Ok(true)
+    }
+
     pub async fn automation_status(&self, symbol: Option<&str>) -> Result<serde_json::Value> {
         let control = self.automation_control_state().await?;
         let paper_order_adapter = sqlx::query_scalar::<_, serde_json::Value>(
@@ -5420,6 +5990,7 @@ impl Store {
                       p.environment_scope,
                       COALESCE(incident.open_incident_count, 0)::int8 AS open_incident_count,
                       proof.result AS latest_proof_result,
+                      readiness.status AS latest_readiness_status,
                       jsonb_build_object(
                         'permission_id', p.permission_id,
                         'symbol', p.symbol,
@@ -5449,6 +6020,7 @@ impl Store {
                         'sleeve', sleeve.row,
                         'desired_position', desired.row,
                         'latest_proof', proof.row,
+                        'readiness', readiness.row,
                         'reconciliation', reconciliation.row,
                         'paper_orders', paper_order.row,
                         'broker_position', broker.row,
@@ -5520,6 +6092,44 @@ impl Store {
                   ORDER BY ap.evaluated_at DESC
                      LIMIT 1
                  ) proof ON TRUE
+            LEFT JOIN LATERAL (
+                    SELECT are.status,
+                           jsonb_build_object(
+                             'evaluation_id', are.evaluation_id,
+                             'lifecycle_stage', are.lifecycle_stage,
+                             'target_stage', are.target_stage,
+                             'status', are.status,
+                             'readiness_score', are.readiness_score::float8,
+                             'approval_required', are.approval_required,
+                             'approval_valid', are.approval_valid,
+                             'freeze_live_permissions', are.freeze_live_permissions,
+                             'metrics', are.metrics,
+                             'blockers', are.blockers,
+                             'warnings', are.warnings,
+                             'lookback_days', are.lookback_days,
+                             'evaluated_at', are.evaluated_at,
+                             'approval', CASE
+                               WHEN pa.approval_id IS NULL THEN NULL
+                               ELSE jsonb_build_object(
+                                 'approval_id', pa.approval_id,
+                                 'from_stage', pa.from_stage,
+                                 'to_stage', pa.to_stage,
+                                 'status', pa.status,
+                                 'approved_by', pa.approved_by,
+                                 'approved_at', pa.approved_at,
+                                 'expires_at', pa.expires_at,
+                                 'reason', pa.reason
+                               )
+                             END
+                           ) AS row
+                      FROM automation_strategy_readiness_evaluation are
+                 LEFT JOIN automation_strategy_promotion_approval pa
+                        ON pa.approval_id = are.approval_id
+                     WHERE are.strategy_id = p.strategy_id
+                       AND are.strategy_version = p.strategy_version
+                  ORDER BY are.evaluated_at DESC
+                     LIMIT 1
+                 ) readiness ON TRUE
             LEFT JOIN LATERAL (
                     SELECT ar.reconciliation_id,
                            jsonb_build_object(
@@ -5645,6 +6255,9 @@ impl Store {
         let mut live_capable = 0_i64;
         let mut incidents_open = 0_i64;
         let mut blocked_strategies = 0_i64;
+        let mut readiness_ready = 0_i64;
+        let mut readiness_blocked = 0_i64;
+        let mut readiness_missing = 0_i64;
 
         for row in rows {
             let permission_status: String = row.try_get("permission_status")?;
@@ -5653,6 +6266,7 @@ impl Store {
             let environment_scope: String = row.try_get("environment_scope")?;
             let open_incident_count: i64 = row.try_get("open_incident_count")?;
             let latest_proof_result: Option<String> = row.try_get("latest_proof_result")?;
+            let latest_readiness_status: Option<String> = row.try_get("latest_readiness_status")?;
 
             if permission_status == "approved" {
                 approved += 1;
@@ -5676,6 +6290,11 @@ impl Store {
             if latest_proof_result.as_deref() == Some("blocked") {
                 blocked_strategies += 1;
             }
+            match latest_readiness_status.as_deref() {
+                Some("ready") => readiness_ready += 1,
+                Some("blocked") => readiness_blocked += 1,
+                _ => readiness_missing += 1,
+            }
 
             permissions.push(row.try_get::<serde_json::Value, _>("permission")?);
         }
@@ -5698,7 +6317,10 @@ impl Store {
                 "paper_only": paper_only,
                 "live_capable": live_capable,
                 "incidents_open": incidents_open,
-                "blocked_strategies": blocked_strategies
+                "blocked_strategies": blocked_strategies,
+                "readiness_ready": readiness_ready,
+                "readiness_blocked": readiness_blocked,
+                "readiness_missing": readiness_missing
             },
             "permissions": permissions
         }))

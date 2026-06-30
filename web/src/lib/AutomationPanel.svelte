@@ -54,6 +54,7 @@
   function reasons(row: AutomationPermission): string[] {
     return [
       ...((row.latest_proof?.blocked_reasons ?? []) as string[]),
+      ...((row.readiness?.blockers ?? []) as string[]),
       ...((row.reconciliation?.blocked_reasons ?? []) as string[]),
     ].filter(Boolean);
   }
@@ -133,6 +134,8 @@
       <span><strong>{status.summary.live_capable}</strong> live-capable</span>
       <span><strong>{status.summary.blocked_strategies}</strong> blocked</span>
       <span><strong>{status.summary.incidents_open}</strong> incidents</span>
+      <span><strong>{status.summary.readiness_ready ?? 0}</strong> ready</span>
+      <span><strong>{status.summary.readiness_blocked ?? 0}</strong> readiness blocked</span>
       <span><strong>{status.paper_order_adapter?.enabled ? "on" : "off"}</strong> paper orders</span>
     </section>
 
@@ -274,6 +277,18 @@
                   <dt>target</dt><dd>{pct(row.latest_proof?.capital_allocation?.target_weight_pct)}</dd>
                 </dl>
               </section>
+
+              <section>
+                <h5>Readiness</h5>
+                <dl>
+                  <dt>stage</dt><dd>{titleize(row.readiness?.lifecycle_stage ?? row.strategy_status)}</dd>
+                  <dt>target</dt><dd>{titleize(row.readiness?.target_stage ?? "none")}</dd>
+                  <dt>status</dt><dd>{titleize(row.readiness?.status ?? "missing")}</dd>
+                  <dt>score</dt><dd>{pct(row.readiness?.readiness_score)}</dd>
+                  <dt>approval</dt><dd>{row.readiness?.approval_valid ? "Valid" : row.readiness?.approval_required ? "Needed" : "-"}</dd>
+                  <dt>last</dt><dd>{shortTs(row.readiness?.evaluated_at)}</dd>
+                </dl>
+              </section>
             </div>
 
             <div class="proof-line">
@@ -286,6 +301,9 @@
               <span class="badge paper-orders">
                 paper orders {paperOrderTotal(row)}
               </span>
+              <span class="badge readiness-{row.readiness?.status ?? "missing"}">
+                readiness {titleize(row.readiness?.status ?? "missing")}
+              </span>
               {#if row.desired_position?.rationale}
                 <span class="muted">{row.desired_position.rationale}</span>
               {/if}
@@ -294,7 +312,7 @@
             {#if blocked.length > 0}
               <div class="blocked-reasons">
                 {#each [...new Set(blocked)] as reason}
-                  <span>{reason}</span>
+                  <span>{titleize(reason)}</span>
                 {/each}
               </div>
             {/if}
@@ -499,9 +517,15 @@
 
   .proof-passed,
   .rec-reconciled,
-  .rec-noop {
+  .rec-noop,
+  .readiness-ready {
     border-color: rgba(166,227,161,.45);
     color: #a6e3a1;
+  }
+
+  .readiness-blocked {
+    border-color: rgba(249,226,175,.45);
+    color: #f9e2af;
   }
 
   .paper-orders {

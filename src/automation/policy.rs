@@ -2,7 +2,9 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::{StrategyDecision, StrategyDefinitionInput, TargetSide, TradePermissionInput};
+use super::{
+    AutomationStage, StrategyDecision, StrategyDefinitionInput, TargetSide, TradePermissionInput,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct AutomationControlState {
@@ -102,8 +104,15 @@ pub fn evaluate_proof_policy(input: &ProofPolicyInput) -> ProofPolicyDecision {
             if permission.status != "approved" {
                 blocked_reasons.push("permission_not_approved".to_string());
             }
-            if permission.environment_scope != "shadow" {
-                blocked_reasons.push("environment_not_shadow".to_string());
+            match AutomationStage::try_from(input.definition.status.as_str()) {
+                Ok(stage) if !stage.is_runnable() => {
+                    blocked_reasons.push("strategy_stage_not_runnable".to_string());
+                }
+                Ok(stage) if !stage.allows_environment_scope(&permission.environment_scope) => {
+                    blocked_reasons.push("environment_exceeds_strategy_stage".to_string());
+                }
+                Err(_) => blocked_reasons.push("strategy_stage_unknown".to_string()),
+                _ => {}
             }
             if permission.manual_freeze {
                 blocked_reasons.push("permission_frozen".to_string());
@@ -468,5 +477,33 @@ mod tests {
         input.control.kill_switch_enabled = true;
         input.control.kill_switch_reason = Some("operator halt".to_string());
         assert_blocked(input, "automation_kill_switch");
+    }
+
+    #[test]
+    fn promoted_paper_strategy_can_run_paper_permission() {
+        let mut input = base_input();
+        input.definition.status = "paper".to_string();
+        input.permission.as_mut().unwrap().environment_scope = "paper".to_string();
+        let proof = evaluate_proof_policy(&input);
+        assert_eq!(proof.result, "passed");
+        assert!(
+            !proof
+                .blocked_reasons
+                .contains(&"environment_not_shadow".to_string())
+        );
+    }
+
+    #[test]
+    fn permission_environment_cannot_exceed_strategy_stage() {
+        let mut input = base_input();
+        input.permission.as_mut().unwrap().environment_scope = "paper".to_string();
+        assert_blocked(input, "environment_exceeds_strategy_stage");
+    }
+
+    #[test]
+    fn frozen_strategy_stage_blocks_proof() {
+        let mut input = base_input();
+        input.definition.status = "frozen".to_string();
+        assert_blocked(input, "strategy_stage_not_runnable");
     }
 }

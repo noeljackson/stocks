@@ -70,6 +70,10 @@ name = "technical-timing-validator"
 path = "src/bin/technical_timing_validator.rs"
 
 [[bin]]
+name = "automation-readiness"
+path = "src/bin/automation_readiness.rs"
+
+[[bin]]
 name = "strategy-runner"
 path = "src/bin/strategy_runner.rs"
 

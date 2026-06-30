@@ -7,6 +7,7 @@
 mod allocator;
 mod market_readiness;
 mod policy;
+mod readiness;
 mod simulator;
 
 use anyhow::{Context, Result};
@@ -34,6 +35,11 @@ pub use policy::{
     AutomationControlState, BrokerPolicyState, CapitalPolicyState, DataFreshnessPolicyState,
     ProofPolicyDecision, ProofPolicyInput, RiskPolicyState, SessionPolicyState, SleevePolicyState,
     evaluate_proof_policy,
+};
+pub use readiness::{
+    AutomationStage, ManualStageChange, PromotionApproval, ReadinessDecision, ReadinessInput,
+    ReadinessMetrics, ReadinessStatus, ReadinessThresholds, evaluate_readiness,
+    manual_stage_change,
 };
 pub use simulator::{
     ReconciliationInput, ReconciliationOutcome, SimulatedFault, SimulatedFill, SimulatedIncident,

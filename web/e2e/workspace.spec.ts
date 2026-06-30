@@ -523,6 +523,9 @@ async function mockApi(
       live_capable: 0,
       incidents_open: 1,
       blocked_strategies: 1,
+      readiness_ready: 0,
+      readiness_blocked: 1,
+      readiness_missing: 0,
     },
     permissions: [{
       permission_id: "39ad2b74-75e0-4a68-9e09-6e2b2f9b7f13",
@@ -572,6 +575,36 @@ async function mockApi(
         result: "blocked",
         blocked_reasons: ["permission frozen", "market data stale"],
         evaluated_at: "2026-06-01T09:11:00Z",
+      },
+      readiness: {
+        evaluation_id: "f0f4795d-3125-4c15-9ac2-cd52de16e0a0",
+        lifecycle_stage: "paper",
+        target_stage: "canary_live",
+        status: "blocked",
+        readiness_score: 0.42,
+        approval_required: true,
+        approval_valid: false,
+        freeze_live_permissions: false,
+        metrics: {
+          observations_total: 12,
+          outcomes_scored: 8,
+          directional_outcomes_scored: 8,
+          signal_quality_rate: 0.5,
+          mean_forward_return_pct: 1.2,
+          mean_max_drawdown_pct: -4.3,
+          churn_rate: 0.2,
+          proof_pass_rate: 0.72,
+          incident_rate: 0.08,
+          open_critical_incidents: 0,
+          paper_orders_total: 3,
+          paper_fill_quality_rate: 0.67,
+          baseline_excess_return_pct: 0.5,
+        },
+        blockers: ["approval_missing", "insufficient_paper_orders", "proof_pass_rate_below_threshold"],
+        warnings: [],
+        lookback_days: 90,
+        evaluated_at: "2026-06-01T09:15:00Z",
+        approval: null,
       },
       reconciliation: {
         reconciliation_id: "7b8e42b8-33b0-49e2-bf59-970be41750db",
@@ -2696,8 +2729,11 @@ test("automation tab shows permissioned strategies read-only", async ({ page }) 
   await expect(panel).toContainText("Technical Breakout");
   await expect(panel).toContainText("OKTA");
   await expect(panel).toContainText("frozen");
-  await expect(panel).toContainText("permission frozen");
-  await expect(panel).toContainText("market data stale");
+  await expect(panel).toContainText("Permission Frozen");
+  await expect(panel).toContainText("Market Data Stale");
+  await expect(panel).toContainText("readiness blocked");
+  await expect(panel).toContainText("Approval Missing");
+  await expect(panel).toContainText("Insufficient Paper Orders");
   await expect(panel).toContainText("paper");
   await expect(panel.getByRole("button", { name: "freeze", exact: true })).toBeDisabled();
   await expect(panel.getByRole("button", { name: "kill switch" })).toBeDisabled();

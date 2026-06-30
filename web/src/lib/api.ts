@@ -170,6 +170,9 @@ export interface AutomationStatus {
     live_capable: number;
     incidents_open: number;
     blocked_strategies: number;
+    readiness_ready?: number;
+    readiness_blocked?: number;
+    readiness_missing?: number;
   };
   permissions: AutomationPermission[];
 }
@@ -199,10 +202,52 @@ export interface AutomationPermission {
   sleeve?: AutomationSleeve | null;
   desired_position?: AutomationDesiredPosition | null;
   latest_proof?: AutomationProof | null;
+  readiness?: AutomationReadiness | null;
   reconciliation?: AutomationReconciliation | null;
   paper_orders?: AutomationPaperOrders | null;
   broker_position?: AutomationBrokerPosition | null;
   incidents?: AutomationIncident[];
+}
+
+export interface AutomationReadiness {
+  evaluation_id: string;
+  lifecycle_stage: string;
+  target_stage?: string | null;
+  status: string;
+  readiness_score: number;
+  approval_required: boolean;
+  approval_valid: boolean;
+  freeze_live_permissions: boolean;
+  metrics?: {
+    observations_total?: number;
+    outcomes_scored?: number;
+    directional_outcomes_scored?: number;
+    signal_quality_rate?: number | null;
+    mean_forward_return_pct?: number | null;
+    mean_max_drawdown_pct?: number | null;
+    churn_rate?: number | null;
+    proof_pass_rate?: number | null;
+    incident_rate?: number | null;
+    open_critical_incidents?: number;
+    paper_orders_total?: number;
+    paper_fill_quality_rate?: number | null;
+    mean_slippage_bps?: number | null;
+    baseline_excess_return_pct?: number | null;
+  };
+  blockers?: string[];
+  warnings?: string[];
+  lookback_days?: number;
+  evaluated_at?: string | null;
+  approval?: {
+    approval_id: string;
+    from_stage: string;
+    to_stage: string;
+    status: string;
+    approved_by: string;
+    approved_at: string;
+    expires_at?: string | null;
+    reason?: string | null;
+  } | null;
 }
 
 export interface AutomationPaperOrderAdapter {

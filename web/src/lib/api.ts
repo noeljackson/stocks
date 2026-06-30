@@ -289,6 +289,8 @@ export interface AutomationDesiredPosition {
   target_weight_pct?: number | null;
   rationale?: string | null;
   reason_codes?: string[];
+  feature_snapshot?: Record<string, unknown>;
+  signal_ref?: Record<string, unknown>;
   emitted_at?: string | null;
 }
 
@@ -453,12 +455,54 @@ export interface AutomationIncident {
   created_at: string;
 }
 
+export interface AutomationTimelineEvent {
+  source_kind: string;
+  source_id: string;
+  occurred_at: string;
+  symbol?: string | null;
+  strategy_id?: string | null;
+  strategy_version?: string | null;
+  permission_id?: string | null;
+  sleeve_id?: string | null;
+  desired_position_id?: string | null;
+  proof_id?: string | null;
+  reconciliation_id?: string | null;
+  title: string;
+  summary: string;
+  status?: string | null;
+  payload: Record<string, unknown>;
+}
+
+export interface AutomationTimeline {
+  as_of: string;
+  filters: {
+    symbol?: string | null;
+    strategy_id?: string | null;
+    limit: number;
+  };
+  events: AutomationTimelineEvent[];
+}
+
 export async function fetchAutomationStatus(opts?: { symbol?: string | null }): Promise<AutomationStatus> {
   const q = new URLSearchParams();
   if (opts?.symbol) q.set("symbol", opts.symbol);
   const r = await fetch(`/api/automation/status${q.size ? `?${q}` : ""}`);
   if (!r.ok) throw new Error(`automation ${r.status}: ${await r.text()}`);
   return (await r.json()) as AutomationStatus;
+}
+
+export async function fetchAutomationTimeline(opts?: {
+  symbol?: string | null;
+  strategyId?: string | null;
+  limit?: number;
+}): Promise<AutomationTimeline> {
+  const q = new URLSearchParams();
+  if (opts?.symbol) q.set("symbol", opts.symbol);
+  if (opts?.strategyId) q.set("strategy_id", opts.strategyId);
+  if (opts?.limit) q.set("limit", String(opts.limit));
+  const r = await fetch(`/api/automation/timeline${q.size ? `?${q}` : ""}`);
+  if (!r.ok) throw new Error(`automation timeline ${r.status}: ${await r.text()}`);
+  return (await r.json()) as AutomationTimeline;
 }
 
 export async function fetchRegime(): Promise<MarketState> {

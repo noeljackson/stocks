@@ -87,13 +87,14 @@
   import ChartPanel from "./lib/ChartPanel.svelte";
   import PriceAlertsPanel from "./lib/PriceAlertsPanel.svelte";
   import AutomationPanel from "./lib/AutomationPanel.svelte";
+  import AutonomousTradingPage from "./lib/AutonomousTradingPage.svelte";
   import { PaneGroup, Pane, PaneResizer } from "paneforge";
 
   // ---------- workspace state ----------
   type RightTab = "overview" | "analyst" | "technical" | "context" | "evidence" | "theses" | "alerts" | "decisions";
   const RIGHT_TABS: RightTab[] = ["overview", "analyst", "technical", "context", "evidence", "theses", "alerts", "decisions"];
   type BottomMode = "brain" | "attention" | "events" | "discovery" | "automation" | "decisions" | "calibration" | "diagnostics";
-  type AppPage = "workspace" | "journal";
+  type AppPage = "workspace" | "journal" | "automation";
   type WorkflowAction = WorkflowActionKind;
   type SymbolWorkflow = {
     state: string;
@@ -131,6 +132,7 @@
 
   let selectedSymbol = $state<string | null>(null);
   let routePage = $state<AppPage>("workspace");
+  let automationSymbol = $state<string | null>(null);
   let rightTab = $state<RightTab>("overview");
   let bottomMode = $state<BottomMode>("attention");
   let bottomOpen = $state(true);
@@ -2013,6 +2015,12 @@
     };
   }
 
+  function automationFromRoute(): { symbol: string | null } | null {
+    const match = window.location.pathname.match(/^\/automation(?:\/([^/]+))?\/?$/);
+    if (!match) return null;
+    return { symbol: match[1] ? normalizeSymbol(decodeURIComponent(match[1])) : null };
+  }
+
   function syncSymbolRoute(symbol: string, replace = false) {
     const path = `/symbol/${encodeURIComponent(symbol)}?p=${encodeURIComponent(rightTab)}`;
     if (`${window.location.pathname}${window.location.search}` === path) return;
@@ -2023,6 +2031,13 @@
   function syncJournalRoute(date: string, page = 1, replace = false) {
     const query = page > 1 ? `?page=${page}` : "";
     const path = `/journal/${date}${query}`;
+    if (`${window.location.pathname}${window.location.search}` === path) return;
+    const method = replace ? "replaceState" : "pushState";
+    window.history[method](null, "", path);
+  }
+
+  function syncAutomationRoute(symbol: string | null = automationSymbol, replace = false) {
+    const path = symbol ? `/automation/${encodeURIComponent(symbol)}` : "/automation";
     if (`${window.location.pathname}${window.location.search}` === path) return;
     const method = replace ? "replaceState" : "pushState";
     window.history[method](null, "", path);
@@ -2052,6 +2067,12 @@
     journalPage = page > 0 ? page : 1;
     syncJournalRoute(journalDate, journalPage, replace);
     void loadBrainJournal(journalDate, journalPage);
+  }
+
+  function openAutomationPage(symbol: string | null = automationSymbol, replace = false) {
+    routePage = "automation";
+    automationSymbol = symbol ? normalizeSymbol(symbol) : null;
+    syncAutomationRoute(automationSymbol, replace);
   }
 
   function changeJournalDate(date: string) {
@@ -2521,8 +2542,11 @@
   });
 
   onMount(() => {
+    const routedAutomation = automationFromRoute();
     const routedJournal = journalFromRoute();
-    if (routedJournal) {
+    if (routedAutomation) {
+      openAutomationPage(routedAutomation.symbol, true);
+    } else if (routedJournal) {
       openJournalPage(routedJournal.date, routedJournal.page, true);
     } else {
       const routedSymbol = symbolFromRoute();
@@ -2531,6 +2555,12 @@
     }
     refreshAll();
     const onPopState = () => {
+      const automation = automationFromRoute();
+      if (automation) {
+        routePage = "automation";
+        automationSymbol = automation.symbol;
+        return;
+      }
       const journal = journalFromRoute();
       if (journal) {
         routePage = "journal";
@@ -2753,6 +2783,9 @@
       <button type="button" class:active={routePage === "journal"} onclick={() => openJournalPage()}>
         Journal
       </button>
+      <button type="button" class:active={routePage === "automation"} onclick={() => openAutomationPage(selectedSymbol)}>
+        Autonomous
+      </button>
     </nav>
 
     <div class="symbol-box">
@@ -2816,6 +2849,15 @@
       onStartResearch={(symbol) => startResearchForSymbol(symbol, { refreshJournal: true })}
       researchBusySymbol={researchKickoffSymbol}
       researchStatus={researchKickoffStatus}
+      onBack={() => openWorkspace()}
+    />
+  {:else if routePage === "automation"}
+    <AutonomousTradingPage
+      symbol={automationSymbol}
+      onFilterSymbol={(nextSymbol) => openAutomationPage(nextSymbol)}
+      onOpenWorkspace={(nextSymbol) => {
+        void selectSymbol(nextSymbol);
+      }}
       onBack={() => openWorkspace()}
     />
   {:else}
@@ -3500,6 +3542,11 @@
             </ul>
           {/if}
         {:else if bottomMode === "automation"}
+          <div class="automation-preview-actions">
+            <button type="button" onclick={() => openAutomationPage(selectedSymbol)}>
+              Open full cockpit
+            </button>
+          </div>
           <AutomationPanel symbol={selectedSymbol} />
         {:else if bottomMode === "decisions"}
           {@render decisionForm()}
@@ -4863,6 +4910,24 @@
   .calibration-themes li > span {
     color: #a6adc8;
     white-space: nowrap;
+  }
+  .automation-preview-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: .45rem;
+  }
+  .automation-preview-actions button {
+    background: #111827;
+    color: #cdd6f4;
+    border: 1px solid #2a3548;
+    border-radius: 4px;
+    padding: .24rem .55rem;
+    font: inherit;
+    font-size: .8rem;
+    cursor: pointer;
+  }
+  .automation-preview-actions button:hover {
+    background: #162033;
   }
   .status { margin-left: auto; font-size: .75rem; color: #f38ba8; }
   .status.on { color: #a6e3a1; }

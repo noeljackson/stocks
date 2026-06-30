@@ -2,6 +2,7 @@ import { expect, type Page, type Route, test } from "@playwright/test";
 
 type Calls = {
   candleUrls: URL[];
+  automationTimelineUrls: URL[];
   confirmBody: unknown | null;
   promoteBody: unknown | null;
   decisionBody: unknown | null;
@@ -122,6 +123,7 @@ async function mockApi(
 ): Promise<Calls> {
   const calls: Calls = {
     candleUrls: [],
+    automationTimelineUrls: [],
     confirmBody: null,
     promoteBody: null,
     decisionBody: null,
@@ -549,6 +551,15 @@ async function mockApi(
       source: "not_configured",
       reason: "Automation mutation endpoints are not wired yet.",
     },
+    paper_order_adapter: {
+      enabled: true,
+      broker: "paper",
+      account_mode: "paper",
+      broker_account: "paper-demo",
+      max_position_snapshot_age_seconds: 300,
+      updated_by: "system",
+      updated_at: "2026-06-01T08:00:00Z",
+    },
     summary: {
       permissions_total: 1,
       approved: 1,
@@ -598,18 +609,73 @@ async function mockApi(
       },
       desired_position: {
         desired_position_id: "e965661b-7d72-4914-b315-27d7bd5a202c",
+        strategy_config_hash: "sha256:technical-breakout-v1",
         target_side: "long",
         target_quantity: 20,
         target_notional_usd: 1900,
         target_weight_pct: 0.02,
         rationale: "Breakout retest held above rising 50-day.",
         reason_codes: ["breakout_retest"],
+        feature_snapshot: {
+          close: 95,
+          ma_50d: 91,
+          volume_z: 1.7,
+          relative_strength_20d: 0.08,
+        },
+        signal_ref: {
+          signal_name: "technical_breakout",
+          source: "cross_technical",
+        },
         emitted_at: "2026-06-01T09:10:00Z",
       },
       latest_proof: {
         proof_id: "be432d6f-b7db-454a-a6f1-5154f1a3b7b2",
+        strategy_config_hash: "sha256:technical-breakout-v1",
         result: "blocked",
         blocked_reasons: ["permission frozen", "market data stale"],
+        risk_result: {
+          status: "pass",
+          veto: false,
+          warnings: [],
+          size_mult: 1,
+          snapshot: { status: "pass", portfolio_demo: true },
+        },
+        data_freshness: {
+          status: "stale",
+          latest_bar_at: "2026-05-30T20:00:00Z",
+          max_age_days: 1,
+          stale: true,
+          market_readiness_status: "blocked",
+          market_readiness: {
+            status: "blocked",
+            blocked_reasons: ["market data stale"],
+            latest_price: 95,
+            previous_close: 94,
+            gap_pct: 0.01,
+            max_gap_pct: 0.06,
+            session_open: true,
+            session_label: "regular",
+            halt_state: "clear",
+            corporate_actions_adjusted: true,
+            active_no_trade_window: null,
+          },
+        },
+        session_state: {
+          is_open: true,
+          label: "regular",
+          reason: null,
+        },
+        capital_allocation: {
+          target_weight_pct: 0.02,
+          max_allocation_pct: 0.04,
+          target_notional_usd: 1900,
+          max_notional_usd: 5000,
+          allocator_blocked_reasons: [],
+        },
+        broker_reconciliation: {
+          status: "mismatch",
+          mismatch: true,
+        },
         evaluated_at: "2026-06-01T09:11:00Z",
       },
       readiness: {
@@ -645,7 +711,35 @@ async function mockApi(
       reconciliation: {
         reconciliation_id: "7b8e42b8-33b0-49e2-bf59-970be41750db",
         status: "blocked",
+        target_snapshot: {
+          target_side: "long",
+          target_notional_usd: 1900,
+          target_quantity: 20,
+          market_price: 95,
+        },
+        broker_snapshot: {
+          broker: "paper",
+          account: "paper-demo",
+          side: "flat",
+          quantity: 0,
+          notional_usd: 0,
+          last_seen_at: "2026-06-01T09:11:30Z",
+        },
+        delta_snapshot: {
+          quantity_delta: 20,
+          notional_delta_usd: 1900,
+          realized_pnl_delta: 0,
+        },
+        order_plan: {
+          orders: [{
+            action: "buy",
+            status: "blocked",
+            quantity: 20,
+            filled_quantity: 0,
+          }],
+        },
         blocked_reasons: ["permission frozen"],
+        created_at: "2026-06-01T09:11:30Z",
         updated_at: "2026-06-01T09:12:00Z",
       },
       broker_position: {
@@ -656,6 +750,58 @@ async function mockApi(
         premium_at_risk: 0,
         latest_sync_at: "2026-06-01T09:00:00Z",
       },
+      paper_orders: {
+        orders_total: 2,
+        submitted: 1,
+        filled: 1,
+        partially_filled: 0,
+        rejected: 0,
+        cancelled: 0,
+        latest_event: {
+          event_id: 7102,
+          client_order_id: "paper-okta-entry-2",
+          broker_order_id: "paper-2",
+          event_kind: "fill",
+          status: "filled",
+          filled_quantity: 10,
+          fill_price: 95,
+          message: "paper order fill accepted",
+          created_at: "2026-06-01T09:14:00Z",
+        },
+        orders: [{
+          order_id: "20e8d76a-3e0c-4c02-a92f-1276f4375baa",
+          client_order_id: "paper-okta-entry-1",
+          broker_order_id: "paper-1",
+          parent_client_order_id: null,
+          order_role: "entry",
+          action: "buy",
+          position_side: "long",
+          order_type: "market",
+          quantity: 10,
+          limit_price: null,
+          stop_price: null,
+          transmit: true,
+          status: "filled",
+          created_at: "2026-06-01T09:13:00Z",
+          updated_at: "2026-06-01T09:14:00Z",
+        }, {
+          order_id: "2a09a2c0-d6b5-4f0d-8e9d-65c0f176be12",
+          client_order_id: "paper-okta-entry-2",
+          broker_order_id: "paper-2",
+          parent_client_order_id: null,
+          order_role: "entry",
+          action: "buy",
+          position_side: "long",
+          order_type: "market",
+          quantity: 10,
+          limit_price: null,
+          stop_price: null,
+          transmit: true,
+          status: "submitted",
+          created_at: "2026-06-01T09:13:30Z",
+          updated_at: "2026-06-01T09:13:30Z",
+        }],
+      },
       incidents: [{
         incident_id: "f453d51a-fb4f-4cb4-bb7e-6254da39c733",
         severity: "warning",
@@ -664,6 +810,136 @@ async function mockApi(
         title: "Market data stale",
         created_at: "2026-06-01T09:12:00Z",
       }],
+    }],
+  };
+  const automationTimeline = {
+    as_of: "2026-06-01T12:00:00Z",
+    filters: { symbol: null, strategy_id: null, limit: 120 },
+    events: [{
+      source_kind: "paper_order_event",
+      source_id: "7102",
+      occurred_at: "2026-06-01T09:14:00Z",
+      symbol: "OKTA",
+      strategy_id: "technical_breakout",
+      strategy_version: "v1",
+      permission_id: "39ad2b74-75e0-4a68-9e09-6e2b2f9b7f13",
+      sleeve_id: "cb8c78cb-3dac-43ee-abaf-062f049d61bd",
+      desired_position_id: "e965661b-7d72-4914-b315-27d7bd5a202c",
+      proof_id: "be432d6f-b7db-454a-a6f1-5154f1a3b7b2",
+      reconciliation_id: "7b8e42b8-33b0-49e2-bf59-970be41750db",
+      title: "Paper order fill",
+      summary: "paper order fill accepted",
+      status: "filled",
+      payload: {
+        table: "automation_broker_order_event",
+        event_kind: "fill",
+        filled_quantity: 10,
+        fill_price: 95,
+        message: "paper order fill accepted",
+      },
+    }, {
+      source_kind: "paper_order",
+      source_id: "2a09a2c0-d6b5-4f0d-8e9d-65c0f176be12",
+      occurred_at: "2026-06-01T09:13:30Z",
+      symbol: "OKTA",
+      strategy_id: "technical_breakout",
+      strategy_version: "v1",
+      permission_id: "39ad2b74-75e0-4a68-9e09-6e2b2f9b7f13",
+      sleeve_id: "cb8c78cb-3dac-43ee-abaf-062f049d61bd",
+      desired_position_id: "e965661b-7d72-4914-b315-27d7bd5a202c",
+      proof_id: "be432d6f-b7db-454a-a6f1-5154f1a3b7b2",
+      reconciliation_id: "7b8e42b8-33b0-49e2-bf59-970be41750db",
+      title: "Paper entry buy",
+      summary: "Paper order submitted for 10 share(s).",
+      status: "submitted",
+      payload: {
+        table: "automation_broker_order",
+        broker: "paper",
+        order_role: "entry",
+        action: "buy",
+        quantity: 10,
+      },
+    }, {
+      source_kind: "reconciliation",
+      source_id: "7b8e42b8-33b0-49e2-bf59-970be41750db",
+      occurred_at: "2026-06-01T09:12:00Z",
+      symbol: "OKTA",
+      strategy_id: "technical_breakout",
+      strategy_version: "v1",
+      permission_id: "39ad2b74-75e0-4a68-9e09-6e2b2f9b7f13",
+      sleeve_id: "cb8c78cb-3dac-43ee-abaf-062f049d61bd",
+      desired_position_id: "e965661b-7d72-4914-b315-27d7bd5a202c",
+      proof_id: "be432d6f-b7db-454a-a6f1-5154f1a3b7b2",
+      reconciliation_id: "7b8e42b8-33b0-49e2-bf59-970be41750db",
+      title: "Reconciliation blocked",
+      summary: "Reconciliation blocked execution.",
+      status: "blocked",
+      payload: {
+        table: "automation_execution_reconciliation",
+        blocked_reasons: ["permission frozen"],
+        delta_snapshot: { quantity_delta: 20, notional_delta_usd: 1900 },
+      },
+    }, {
+      source_kind: "proof",
+      source_id: "be432d6f-b7db-454a-a6f1-5154f1a3b7b2",
+      occurred_at: "2026-06-01T09:11:00Z",
+      symbol: "OKTA",
+      strategy_id: "technical_breakout",
+      strategy_version: "v1",
+      permission_id: "39ad2b74-75e0-4a68-9e09-6e2b2f9b7f13",
+      sleeve_id: "cb8c78cb-3dac-43ee-abaf-062f049d61bd",
+      desired_position_id: "e965661b-7d72-4914-b315-27d7bd5a202c",
+      proof_id: "be432d6f-b7db-454a-a6f1-5154f1a3b7b2",
+      reconciliation_id: null,
+      title: "Proof blocked",
+      summary: "Automation proof blocked the desired exposure.",
+      status: "blocked",
+      payload: {
+        table: "automation_proof",
+        blocked_reasons: ["permission frozen", "market data stale"],
+        data_freshness: { status: "stale" },
+      },
+    }, {
+      source_kind: "desired_position",
+      source_id: "e965661b-7d72-4914-b315-27d7bd5a202c",
+      occurred_at: "2026-06-01T09:10:00Z",
+      symbol: "OKTA",
+      strategy_id: "technical_breakout",
+      strategy_version: "v1",
+      permission_id: "39ad2b74-75e0-4a68-9e09-6e2b2f9b7f13",
+      sleeve_id: "cb8c78cb-3dac-43ee-abaf-062f049d61bd",
+      desired_position_id: "e965661b-7d72-4914-b315-27d7bd5a202c",
+      proof_id: null,
+      reconciliation_id: null,
+      title: "Desired long exposure",
+      summary: "Breakout retest held above rising 50-day.",
+      status: "long",
+      payload: {
+        table: "desired_strategy_position",
+        target_side: "long",
+        target_notional_usd: 1900,
+        reason_codes: ["breakout_retest"],
+      },
+    }, {
+      source_kind: "permission_event",
+      source_id: "10001",
+      occurred_at: "2026-06-01T08:00:00Z",
+      symbol: "OKTA",
+      strategy_id: "technical_breakout",
+      strategy_version: "v1",
+      permission_id: "39ad2b74-75e0-4a68-9e09-6e2b2f9b7f13",
+      sleeve_id: null,
+      desired_position_id: null,
+      proof_id: null,
+      reconciliation_id: null,
+      title: "Permission approved",
+      summary: "Operator approved paper automation for OKTA.",
+      status: "approved",
+      payload: {
+        table: "automation_permission_event",
+        event_kind: "approved",
+        actor: "operator",
+      },
     }],
   };
 
@@ -765,6 +1041,24 @@ async function mockApi(
       await json(route, symbol
         ? { ...automationStatus, permissions: automationStatus.permissions.filter((p) => p.symbol === symbol.toUpperCase()) }
         : automationStatus);
+      return;
+    }
+    if (path === "/api/automation/timeline") {
+      calls.automationTimelineUrls.push(url);
+      const symbol = url.searchParams.get("symbol");
+      const strategyId = url.searchParams.get("strategy_id");
+      await json(route, {
+        ...automationTimeline,
+        filters: {
+          symbol,
+          strategy_id: strategyId,
+          limit: Number(url.searchParams.get("limit") ?? 120),
+        },
+        events: automationTimeline.events.filter((event) =>
+          (!symbol || event.symbol === symbol.toUpperCase())
+          && (!strategyId || event.strategy_id === strategyId)
+        ),
+      });
       return;
     }
     if (path === "/api/regime") {
@@ -2854,6 +3148,45 @@ test("automation tab shows permissioned strategies read-only", async ({ page }) 
   await expect(panel).toContainText("paper");
   await expect(panel.getByRole("button", { name: "freeze", exact: true })).toBeDisabled();
   await expect(panel.getByRole("button", { name: "kill switch" })).toBeDisabled();
+});
+
+test("autonomous trading cockpit shows decisions logic and timeline", async ({ page }) => {
+  const calls = await mockApi(page);
+  await page.goto("/automation");
+
+  const cockpit = page.getByTestId("autonomous-cockpit");
+  await expect(cockpit).toContainText("Autonomous Trading");
+  await expect(cockpit).toContainText("Decision Board");
+  await expect(cockpit).toContainText("OKTA");
+  await expect(cockpit).toContainText("Technical Breakout");
+  await expect(cockpit).toContainText("Blocked");
+  await expect(cockpit).toContainText("Current Sleeve");
+  await expect(cockpit).toContainText("Desired Target");
+  await expect(cockpit).toContainText("Proof Gates");
+  await expect(cockpit).toContainText("Breakout retest held above rising 50-day.");
+  await expect(cockpit).toContainText("Permission Frozen");
+  await expect(cockpit).toContainText("Market Data Stale");
+  await expect(cockpit).toContainText("Desired long exposure");
+  await expect(cockpit).toContainText("Proof blocked");
+  await expect(cockpit).toContainText("Reconciliation blocked");
+  await expect(cockpit).toContainText("Paper order fill");
+  await expect.poll(() => calls.automationTimelineUrls.length).toBeGreaterThan(0);
+  expect(calls.automationTimelineUrls.at(-1)?.searchParams.get("symbol")).toBe("OKTA");
+  expect(calls.automationTimelineUrls.at(-1)?.searchParams.get("strategy_id")).toBe("technical_breakout");
+});
+
+test("autonomous trading cockpit deep links to a symbol", async ({ page }) => {
+  const calls = await mockApi(page);
+  await page.goto("/automation/OKTA");
+
+  const cockpit = page.getByTestId("autonomous-cockpit");
+  await expect(cockpit).toContainText("OKTA permissioned strategy control plane");
+  await expect(cockpit).toContainText("Technical Breakout");
+  await expect.poll(() => calls.automationTimelineUrls.length).toBeGreaterThan(0);
+  expect(calls.automationTimelineUrls.at(-1)?.searchParams.get("symbol")).toBe("OKTA");
+
+  await cockpit.getByRole("button", { name: "Workspace" }).click();
+  await expect(page).toHaveURL(/\/symbol\/OKTA/);
 });
 
 test("discovery tab shows candidate ranking reasons", async ({ page }) => {

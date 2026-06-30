@@ -49,6 +49,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         )
         .route("/api/price-alert-events", get(list_price_alert_events))
         .route("/api/automation/status", get(get_automation_status))
+        .route("/api/automation/timeline", get(get_automation_timeline))
         .route("/api/regime", get(get_regime))
         .route("/api/tickers", get(list_tickers).post(add_ticker))
         .route("/api/theses", get(list_theses))
@@ -1939,6 +1940,16 @@ struct AutomationStatusQuery {
     symbol: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct AutomationTimelineQuery {
+    #[serde(default)]
+    symbol: Option<String>,
+    #[serde(default)]
+    strategy_id: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
 async fn get_automation_status(
     State(gw): State<Arc<Gateway>>,
     Query(q): Query<AutomationStatusQuery>,
@@ -1947,6 +1958,23 @@ async fn get_automation_status(
         Ok(body) => (StatusCode::OK, Json(body)).into_response(),
         Err(e) => {
             warn!(error = %e, "get_automation_status failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn get_automation_timeline(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<AutomationTimelineQuery>,
+) -> impl IntoResponse {
+    match gw
+        .store
+        .automation_timeline(q.symbol.as_deref(), q.strategy_id.as_deref(), q.limit)
+        .await
+    {
+        Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+        Err(e) => {
+            warn!(error = %e, "get_automation_timeline failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }

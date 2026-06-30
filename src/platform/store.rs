@@ -6082,6 +6082,321 @@ impl Store {
         Ok(true)
     }
 
+    pub async fn automation_timeline(
+        &self,
+        symbol: Option<&str>,
+        strategy_id: Option<&str>,
+        limit: Option<i64>,
+    ) -> Result<serde_json::Value> {
+        let symbol = symbol.map(str::trim).filter(|s| !s.is_empty());
+        let strategy_id = strategy_id.map(str::trim).filter(|s| !s.is_empty());
+        let limit = limit.unwrap_or(80).clamp(1, 200);
+        let rows = sqlx::query(
+            r#"WITH events AS (
+                SELECT 'permission_event'::text AS source_kind,
+                       pe.id::text AS source_id,
+                       pe.occurred_at,
+                       p.symbol,
+                       p.strategy_id,
+                       p.strategy_version,
+                       pe.permission_id,
+                       NULL::uuid AS sleeve_id,
+                       NULL::uuid AS desired_position_id,
+                       NULL::uuid AS proof_id,
+                       NULL::uuid AS reconciliation_id,
+                       concat('Permission ', replace(pe.event_kind, '_', ' ')) AS title,
+                       COALESCE(NULLIF(pe.reason, ''), concat('Permission event recorded by ', pe.actor, '.')) AS summary,
+                       COALESCE(pe.to_status, p.status) AS status,
+                       jsonb_build_object(
+                         'table', 'automation_permission_event',
+                         'event_kind', pe.event_kind,
+                         'from_status', pe.from_status,
+                         'to_status', pe.to_status,
+                         'manual_freeze', pe.manual_freeze,
+                         'actor', pe.actor,
+                         'reason', pe.reason,
+                         'source_ref', pe.source_ref
+                       ) AS payload
+                  FROM automation_permission_event pe
+                  JOIN automation_trade_permission p ON p.permission_id = pe.permission_id
+
+                UNION ALL
+
+                SELECT 'desired_position'::text AS source_kind,
+                       d.desired_position_id::text AS source_id,
+                       d.emitted_at AS occurred_at,
+                       d.symbol,
+                       d.strategy_id,
+                       d.strategy_version,
+                       d.permission_id,
+                       d.sleeve_id,
+                       d.desired_position_id,
+                       NULL::uuid AS proof_id,
+                       NULL::uuid AS reconciliation_id,
+                       concat('Desired ', d.target_side, ' exposure') AS title,
+                       COALESCE(NULLIF(d.rationale, ''), concat('Strategy emitted desired ', d.target_side, ' target.')) AS summary,
+                       d.target_side AS status,
+                       jsonb_build_object(
+                         'table', 'desired_strategy_position',
+                         'target_side', d.target_side,
+                         'target_quantity', d.target_quantity::float8,
+                         'target_notional_usd', d.target_notional_usd::float8,
+                         'target_weight_pct', d.target_weight_pct::float8,
+                         'rationale', d.rationale,
+                         'reason_codes', d.reason_codes,
+                         'feature_snapshot', d.feature_snapshot,
+                         'signal_ref', d.signal_ref,
+                         'supersedes_desired_position_id', d.supersedes_desired_position_id
+                       ) AS payload
+                  FROM desired_strategy_position d
+
+                UNION ALL
+
+                SELECT 'proof'::text AS source_kind,
+                       ap.proof_id::text AS source_id,
+                       ap.evaluated_at AS occurred_at,
+                       ap.symbol,
+                       ap.strategy_id,
+                       ap.strategy_version,
+                       ap.permission_id,
+                       ap.sleeve_id,
+                       ap.desired_position_id,
+                       ap.proof_id,
+                       NULL::uuid AS reconciliation_id,
+                       concat('Proof ', ap.result) AS title,
+                       CASE
+                         WHEN ap.result = 'blocked' THEN 'Automation proof blocked the desired exposure.'
+                         WHEN ap.result = 'warning' THEN 'Automation proof passed with warnings.'
+                         ELSE 'Automation proof passed.'
+                       END AS summary,
+                       ap.result AS status,
+                       jsonb_build_object(
+                         'table', 'automation_proof',
+                         'environment_scope', ap.environment_scope,
+                         'strategy_config_hash', ap.strategy_config_hash,
+                         'blocked_reasons', ap.blocked_reasons,
+                         'risk_result', ap.risk_result,
+                         'data_freshness', ap.data_freshness,
+                         'session_state', ap.session_state,
+                         'capital_allocation', ap.capital_allocation,
+                         'broker_reconciliation', ap.broker_reconciliation
+                       ) AS payload
+                  FROM automation_proof ap
+
+                UNION ALL
+
+                SELECT 'reconciliation'::text AS source_kind,
+                       ar.reconciliation_id::text AS source_id,
+                       ar.updated_at AS occurred_at,
+                       ar.symbol,
+                       d.strategy_id,
+                       d.strategy_version,
+                       d.permission_id,
+                       ar.sleeve_id,
+                       ar.desired_position_id,
+                       ar.proof_id,
+                       ar.reconciliation_id,
+                       concat('Reconciliation ', ar.status) AS title,
+                       CASE
+                         WHEN ar.status = 'needs_order' THEN 'Desired exposure needs a broker order.'
+                         WHEN ar.status = 'reconciled' THEN 'Desired exposure reconciled to sleeve/broker state.'
+                         WHEN ar.status = 'blocked' THEN 'Reconciliation blocked execution.'
+                         ELSE 'Automation reconciliation updated.'
+                       END AS summary,
+                       ar.status,
+                       jsonb_build_object(
+                         'table', 'automation_execution_reconciliation',
+                         'environment_scope', ar.environment_scope,
+                         'idempotency_key', ar.idempotency_key,
+                         'target_snapshot', ar.target_snapshot,
+                         'broker_snapshot', ar.broker_snapshot,
+                         'delta_snapshot', ar.delta_snapshot,
+                         'order_plan', ar.order_plan,
+                         'blocked_reasons', ar.blocked_reasons,
+                         'source_ref', ar.source_ref,
+                         'created_at', ar.created_at
+                       ) AS payload
+                  FROM automation_execution_reconciliation ar
+                  JOIN desired_strategy_position d ON d.desired_position_id = ar.desired_position_id
+
+                UNION ALL
+
+                SELECT 'paper_order'::text AS source_kind,
+                       bo.order_id::text AS source_id,
+                       bo.updated_at AS occurred_at,
+                       bo.symbol,
+                       d.strategy_id,
+                       d.strategy_version,
+                       d.permission_id,
+                       bo.sleeve_id,
+                       bo.desired_position_id,
+                       bo.proof_id,
+                       bo.reconciliation_id,
+                       concat('Paper ', bo.order_role, ' ', bo.action) AS title,
+                       concat('Paper order ', bo.status, ' for ', bo.quantity::float8, ' share(s).') AS summary,
+                       bo.status,
+                       jsonb_build_object(
+                         'table', 'automation_broker_order',
+                         'broker', bo.broker,
+                         'broker_account', bo.broker_account,
+                         'client_order_id', bo.client_order_id,
+                         'broker_order_id', bo.broker_order_id,
+                         'parent_client_order_id', bo.parent_client_order_id,
+                         'order_role', bo.order_role,
+                         'action', bo.action,
+                         'position_side', bo.position_side,
+                         'order_type', bo.order_type,
+                         'quantity', bo.quantity::float8,
+                         'limit_price', bo.limit_price::float8,
+                         'stop_price', bo.stop_price::float8,
+                         'transmit', bo.transmit,
+                         'created_at', bo.created_at
+                       ) AS payload
+                  FROM automation_broker_order bo
+                  JOIN desired_strategy_position d ON d.desired_position_id = bo.desired_position_id
+
+                UNION ALL
+
+                SELECT 'paper_order_event'::text AS source_kind,
+                       e.event_id::text AS source_id,
+                       e.created_at AS occurred_at,
+                       e.symbol,
+                       d.strategy_id,
+                       d.strategy_version,
+                       d.permission_id,
+                       ar.sleeve_id,
+                       ar.desired_position_id,
+                       ar.proof_id,
+                       e.reconciliation_id,
+                       concat('Paper order ', replace(e.event_kind, '_', ' ')) AS title,
+                       COALESCE(NULLIF(e.message, ''), concat('Paper order event ', e.status, '.')) AS summary,
+                       e.status,
+                       jsonb_build_object(
+                         'table', 'automation_broker_order_event',
+                         'order_id', e.order_id,
+                         'broker', e.broker,
+                         'broker_account', e.broker_account,
+                         'client_order_id', e.client_order_id,
+                         'broker_order_id', e.broker_order_id,
+                         'event_kind', e.event_kind,
+                         'filled_quantity', e.filled_quantity::float8,
+                         'fill_price', e.fill_price::float8,
+                         'message', e.message
+                       ) AS payload
+                  FROM automation_broker_order_event e
+                  JOIN automation_execution_reconciliation ar ON ar.reconciliation_id = e.reconciliation_id
+                  JOIN desired_strategy_position d ON d.desired_position_id = ar.desired_position_id
+
+                UNION ALL
+
+                SELECT 'sleeve_event'::text AS source_kind,
+                       se.id::text AS source_id,
+                       se.occurred_at,
+                       sl.symbol,
+                       sl.strategy_id,
+                       sl.strategy_version,
+                       sl.permission_id,
+                       se.sleeve_id,
+                       NULL::uuid AS desired_position_id,
+                       NULL::uuid AS proof_id,
+                       NULL::uuid AS reconciliation_id,
+                       concat('Sleeve ', replace(se.event_kind, '_', ' ')) AS title,
+                       'Automation sleeve state changed.' AS summary,
+                       COALESCE(se.to_status, sl.status) AS status,
+                       jsonb_build_object(
+                         'table', 'automation_sleeve_event',
+                         'event_kind', se.event_kind,
+                         'from_status', se.from_status,
+                         'to_status', se.to_status,
+                         'quantity_delta', se.quantity_delta::float8,
+                         'notional_delta', se.notional_delta::float8,
+                         'realized_pnl_delta', se.realized_pnl_delta::float8,
+                         'source_ref', se.source_ref
+                       ) AS payload
+                  FROM automation_sleeve_event se
+                  JOIN automation_strategy_sleeve sl ON sl.sleeve_id = se.sleeve_id
+
+                UNION ALL
+
+                SELECT 'incident'::text AS source_kind,
+                       i.incident_id::text AS source_id,
+                       i.created_at AS occurred_at,
+                       i.symbol,
+                       COALESCE(p.strategy_id, d.strategy_id) AS strategy_id,
+                       COALESCE(p.strategy_version, d.strategy_version) AS strategy_version,
+                       i.permission_id,
+                       i.sleeve_id,
+                       i.desired_position_id,
+                       i.proof_id,
+                       i.reconciliation_id,
+                       i.title,
+                       COALESCE(NULLIF(i.detail, ''), 'Automation incident recorded.') AS summary,
+                       i.status,
+                       jsonb_build_object(
+                         'table', 'automation_incident',
+                         'severity', i.severity,
+                         'kind', i.kind,
+                         'detail', i.detail,
+                         'source_ref', i.source_ref,
+                         'acknowledged_at', i.acknowledged_at,
+                         'resolved_at', i.resolved_at,
+                         'resolved_by', i.resolved_by
+                       ) AS payload
+                  FROM automation_incident i
+             LEFT JOIN automation_trade_permission p ON p.permission_id = i.permission_id
+             LEFT JOIN desired_strategy_position d ON d.desired_position_id = i.desired_position_id
+            )
+            SELECT source_kind, source_id, occurred_at, symbol, strategy_id,
+                   strategy_version, permission_id, sleeve_id, desired_position_id,
+                   proof_id, reconciliation_id, title, summary, status, payload
+              FROM events
+             WHERE ($1::text IS NULL OR symbol = upper($1::text))
+               AND ($2::text IS NULL OR strategy_id = $2::text)
+          ORDER BY occurred_at DESC, source_kind ASC, source_id DESC
+             LIMIT $3"#,
+        )
+        .bind(symbol)
+        .bind(strategy_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("automation_timeline")?;
+
+        let events = rows
+            .into_iter()
+            .map(|row| {
+                let occurred_at: DateTime<Utc> = row.try_get("occurred_at")?;
+                Ok(serde_json::json!({
+                    "source_kind": row.try_get::<String, _>("source_kind")?,
+                    "source_id": row.try_get::<String, _>("source_id")?,
+                    "occurred_at": occurred_at,
+                    "symbol": row.try_get::<Option<String>, _>("symbol")?,
+                    "strategy_id": row.try_get::<Option<String>, _>("strategy_id")?,
+                    "strategy_version": row.try_get::<Option<String>, _>("strategy_version")?,
+                    "permission_id": row.try_get::<Option<uuid::Uuid>, _>("permission_id")?,
+                    "sleeve_id": row.try_get::<Option<uuid::Uuid>, _>("sleeve_id")?,
+                    "desired_position_id": row.try_get::<Option<uuid::Uuid>, _>("desired_position_id")?,
+                    "proof_id": row.try_get::<Option<uuid::Uuid>, _>("proof_id")?,
+                    "reconciliation_id": row.try_get::<Option<uuid::Uuid>, _>("reconciliation_id")?,
+                    "title": row.try_get::<String, _>("title")?,
+                    "summary": row.try_get::<String, _>("summary")?,
+                    "status": row.try_get::<Option<String>, _>("status")?,
+                    "payload": row.try_get::<serde_json::Value, _>("payload")?,
+                }))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(serde_json::json!({
+            "as_of": Utc::now(),
+            "filters": {
+                "symbol": symbol.map(|s| s.to_ascii_uppercase()),
+                "strategy_id": strategy_id,
+                "limit": limit,
+            },
+            "events": events,
+        }))
+    }
+
     pub async fn automation_status(&self, symbol: Option<&str>) -> Result<serde_json::Value> {
         let control = self.automation_control_state().await?;
         let paper_order_adapter = sqlx::query_scalar::<_, serde_json::Value>(

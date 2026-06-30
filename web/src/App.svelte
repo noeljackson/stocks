@@ -3535,6 +3535,40 @@
                 </ul>
               </section>
             {/if}
+            {#if calibration.technical_timing?.length}
+              <section class="calibration-themes">
+                <h4>Technical Timing Calibration</h4>
+                <ul>
+                  {#each calibration.technical_timing as row (`${row.technical_state}:${row.setup_kind}:${row.benchmark_symbol}`)}
+                    <li>
+                      <div>
+                        <strong>{row.setup_kind.replace(/_/g, " ")}</strong>
+                        <span class="badge tiny">{row.entry_stance.replace(/_/g, " ")}</span>
+                        <span class="badge tiny">vs {row.benchmark_symbol}</span>
+                      </div>
+                      <span>
+                        {row.outcomes_scored}/{row.observations_total}
+                        {#if row.positive_return_rate != null}
+                          · win {pct01(row.positive_return_rate)}
+                        {/if}
+                        {#if row.outperform_rate != null}
+                          · outperform {pct01(row.outperform_rate)}
+                        {/if}
+                        {#if row.mean_forward_return_pct != null}
+                          · ret {pctCompact(row.mean_forward_return_pct)}
+                        {/if}
+                        {#if row.mean_max_drawdown_pct != null}
+                          · dd {pctCompact(row.mean_max_drawdown_pct)}
+                        {/if}
+                        {#if row.mean_excess_return_pct != null}
+                          · excess {pctCompact(row.mean_excess_return_pct)}
+                        {/if}
+                      </span>
+                    </li>
+                  {/each}
+                </ul>
+              </section>
+            {/if}
           {:else}
             <p class="muted">No calibration data yet.</p>
           {/if}

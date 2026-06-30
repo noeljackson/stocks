@@ -531,6 +531,7 @@ thesis lifecycle    -> thesis + thesis_state_history
 decision log        -> decision
 position state      -> position
 outcome scoring     -> outcome
+technical timing    -> technical_timing_observation
 ```
 
 Read APIs expose parent-brain links on ticker rows, watchlist rows, discovery

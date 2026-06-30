@@ -27,11 +27,12 @@ use crate::platform::domain::{
     ThesisSubstance, ThesisVersionEvent, TickerContextRow, TickerRow, Watchlist, WatchlistMember,
     WellFormedCondCounts,
 };
-use crate::platform::technical::TechnicalBar;
+use crate::platform::technical::{TechnicalBar, TechnicalState};
 use crate::price_alerts::{
     PriceAlertEvent, PriceAlertRule, PriceAlertRuleInput, PriceAlertRulePatch, PriceTrigger,
     validate_rule_input, validate_rule_patch,
 };
+use crate::reflection::technical_timing;
 use crate::thesis::substance::{self, Thesis as SubstanceInput};
 
 #[derive(Clone)]
@@ -871,8 +872,13 @@ impl Store {
     pub async fn connect(url: &str) -> Result<Self> {
         // Strip the sslmode=disable querystring noise that pgx accepts but
         // sqlx doesn't always: prefer ssl-mode in connection options.
+        let max_connections = std::env::var("DATABASE_MAX_CONNECTIONS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(8)
+            .clamp(1, 32);
         let pool = PgPoolOptions::new()
-            .max_connections(8)
+            .max_connections(max_connections)
             .acquire_timeout(Duration::from_secs(5))
             .connect(url)
             .await
@@ -3928,6 +3934,223 @@ impl Store {
         .fetch_all(&self.pool)
         .await
         .context("daily_technical_bars_for")?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(TechnicalBar {
+                    ts: r.try_get("ts")?,
+                    close: r.try_get("close")?,
+                    high: r.try_get("high")?,
+                    low: r.try_get("low")?,
+                    volume: r.try_get("volume")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn record_technical_timing_observations(
+        &self,
+        state: &TechnicalState,
+        benchmarks: &[(&str, Vec<TechnicalBar>)],
+    ) -> Result<usize> {
+        if !technical_timing::tracks_state(&state.state, &state.setup.kind) {
+            return Ok(0);
+        }
+        let Some(observed_at) = state.as_of else {
+            return Ok(0);
+        };
+        let Some(daily) = state.daily.as_ref() else {
+            return Ok(0);
+        };
+        if daily.close <= 0.0 {
+            return Ok(0);
+        }
+
+        let horizon_bars = 20_i64;
+        let input_snapshot = serde_json::to_value(state).context("encode technical state")?;
+        let mut inserted = 0_usize;
+        if benchmarks.is_empty() {
+            inserted += self
+                .insert_technical_timing_observation(
+                    state,
+                    observed_at,
+                    daily.close,
+                    "none",
+                    None,
+                    serde_json::json!({ "status": "missing" }),
+                    horizon_bars,
+                    &input_snapshot,
+                )
+                .await?;
+        } else {
+            for (benchmark_symbol, bars) in benchmarks {
+                let benchmark = bars.last();
+                inserted += self
+                    .insert_technical_timing_observation(
+                        state,
+                        observed_at,
+                        daily.close,
+                        benchmark_symbol,
+                        benchmark.map(|bar| bar.close).filter(|close| *close > 0.0),
+                        serde_json::json!({
+                            "symbol": benchmark_symbol,
+                            "as_of": benchmark.map(|bar| bar.ts),
+                            "close": benchmark.map(|bar| bar.close),
+                        }),
+                        horizon_bars,
+                        &input_snapshot,
+                    )
+                    .await?;
+            }
+        }
+        Ok(inserted)
+    }
+
+    async fn insert_technical_timing_observation(
+        &self,
+        state: &TechnicalState,
+        observed_at: DateTime<Utc>,
+        close: f64,
+        benchmark_symbol: &str,
+        benchmark_close: Option<f64>,
+        benchmark_snapshot: serde_json::Value,
+        horizon_bars: i64,
+        input_snapshot: &serde_json::Value,
+    ) -> Result<usize> {
+        let evaluation_due_at = technical_timing::due_at(observed_at, horizon_bars);
+        let row: Option<uuid::Uuid> = sqlx::query_scalar(
+            r#"INSERT INTO technical_timing_observation
+                 (symbol, observed_at, technical_state, setup_kind, entry_stance,
+                  close, benchmark_symbol, benchmark_close, horizon_bars,
+                  evaluation_due_at, input_snapshot, benchmark_snapshot)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                       $11::jsonb, $12::jsonb)
+            ON CONFLICT DO NOTHING
+            RETURNING observation_id"#,
+        )
+        .bind(&state.symbol)
+        .bind(observed_at)
+        .bind(&state.state)
+        .bind(&state.setup.kind)
+        .bind(&state.setup.entry_stance)
+        .bind(close)
+        .bind(benchmark_symbol)
+        .bind(benchmark_close)
+        .bind(i32::try_from(horizon_bars).unwrap_or(20))
+        .bind(evaluation_due_at)
+        .bind(input_snapshot)
+        .bind(&benchmark_snapshot)
+        .fetch_optional(&self.pool)
+        .await
+        .context("insert technical timing observation")?;
+        Ok(usize::from(row.is_some()))
+    }
+
+    pub async fn score_due_technical_timing_observations(&self, limit: i64) -> Result<usize> {
+        let rows = sqlx::query(
+            r#"SELECT observation_id,
+                      symbol,
+                      observed_at,
+                      close::float8 AS close,
+                      benchmark_symbol,
+                      benchmark_close::float8 AS benchmark_close,
+                      horizon_bars
+                 FROM technical_timing_observation
+                WHERE evaluated_at IS NULL
+                  AND evaluation_due_at <= now()
+             ORDER BY evaluation_due_at ASC, created_at ASC
+                LIMIT $1"#,
+        )
+        .bind(limit.clamp(1, 1000))
+        .fetch_all(&self.pool)
+        .await
+        .context("select due technical timing observations")?;
+
+        let mut scored = 0_usize;
+        for row in rows {
+            let observation_id: uuid::Uuid = row.try_get("observation_id")?;
+            let symbol: String = row.try_get("symbol")?;
+            let observed_at: DateTime<Utc> = row.try_get("observed_at")?;
+            let close: f64 = row.try_get("close")?;
+            let horizon_bars: i32 = row.try_get("horizon_bars")?;
+            let benchmark_symbol: String = row.try_get("benchmark_symbol")?;
+            let benchmark_close: Option<f64> = row.try_get("benchmark_close")?;
+            let future = self
+                .daily_technical_bars_after(&symbol, observed_at, i64::from(horizon_bars))
+                .await?;
+            let benchmark_future = if benchmark_symbol == "none" {
+                Vec::new()
+            } else {
+                self.daily_technical_bars_after(
+                    &benchmark_symbol,
+                    observed_at,
+                    i64::from(horizon_bars),
+                )
+                .await?
+            };
+            let Some(outcome) = technical_timing::evaluate_outcome(
+                close,
+                &future,
+                usize::try_from(horizon_bars).unwrap_or(20),
+                benchmark_close,
+                &benchmark_future,
+            ) else {
+                continue;
+            };
+
+            sqlx::query(
+                r#"UPDATE technical_timing_observation
+                      SET forward_return_pct = $2,
+                          max_drawdown_pct = $3,
+                          benchmark_return_pct = $4,
+                          benchmark_max_drawdown_pct = $5,
+                          excess_return_pct = $6,
+                          evaluated_at = now()
+                    WHERE observation_id = $1"#,
+            )
+            .bind(observation_id)
+            .bind(outcome.forward_return_pct)
+            .bind(outcome.max_drawdown_pct)
+            .bind(outcome.benchmark_return_pct)
+            .bind(outcome.benchmark_max_drawdown_pct)
+            .bind(outcome.excess_return_pct)
+            .execute(&self.pool)
+            .await
+            .context("update technical timing outcome")?;
+            scored += 1;
+        }
+        Ok(scored)
+    }
+
+    pub async fn daily_technical_bars_after(
+        &self,
+        symbol: &str,
+        after: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<TechnicalBar>> {
+        let rows = sqlx::query(
+            r#"WITH daily AS (
+                 SELECT (date_trunc('day', ts AT TIME ZONE 'UTC'))::date AS day,
+                        (array_agg(ts ORDER BY ts DESC))[1] AS ts,
+                        max(high::float8) AS high,
+                        min(low::float8) AS low,
+                        (array_agg(close::float8 ORDER BY ts DESC))[1] AS close,
+                        sum(volume::float8) AS volume
+                   FROM price_bar
+                  WHERE symbol = $1
+                    AND ts > $2
+               GROUP BY 1
+             )
+             SELECT ts, close, high, low, volume
+               FROM daily
+              ORDER BY day ASC
+              LIMIT $3"#,
+        )
+        .bind(symbol)
+        .bind(after)
+        .bind(limit.clamp(1, 1000))
+        .fetch_all(&self.pool)
+        .await
+        .context("daily_technical_bars_after")?;
         rows.into_iter()
             .map(|r| {
                 Ok(TechnicalBar {

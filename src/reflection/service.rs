@@ -13,7 +13,9 @@ use serde_json::{Value, json};
 use sqlx::{Row, postgres::PgPool};
 use tracing::{info, warn};
 
-use super::scoring::{self, CalibrationSummary, ParentThemeCalibration};
+use super::scoring::{
+    self, CalibrationSummary, ParentThemeCalibration, TechnicalTimingCalibration,
+};
 use crate::platform::bus::{Bus, ConsumerHandle};
 use crate::platform::subjects;
 
@@ -367,6 +369,7 @@ pub async fn calibration_summary(pool: &PgPool, lookback_days: i64) -> Result<Ca
     let briers: Vec<f64> = scored.iter().map(|(b, _)| *b).collect();
     let lead_times: Vec<f64> = scored.iter().map(|(_, l)| *l).collect();
     let parent_themes = parent_theme_calibration(pool, lookback_days).await?;
+    let technical_timing = technical_timing_calibration(pool, lookback_days).await?;
 
     Ok(CalibrationSummary {
         predictions_total: pred_count,
@@ -379,6 +382,7 @@ pub async fn calibration_summary(pool: &PgPool, lookback_days: i64) -> Result<Ca
         },
         median_lead_time_days: median(&lead_times),
         parent_themes,
+        technical_timing,
     })
 }
 
@@ -428,6 +432,63 @@ async fn parent_theme_calibration(
     })
     .collect::<std::result::Result<Vec<_>, _>>()
     .context("decode parent theme calibration")
+}
+
+async fn technical_timing_calibration(
+    pool: &PgPool,
+    lookback_days: i64,
+) -> Result<Vec<TechnicalTimingCalibration>> {
+    sqlx::query(
+        r#"SELECT technical_state,
+                  setup_kind,
+                  entry_stance,
+                  benchmark_symbol,
+                  COUNT(*) AS observations_total,
+                  COUNT(evaluated_at) AS outcomes_scored,
+                  AVG(forward_return_pct::float8)
+                      FILTER (WHERE evaluated_at IS NOT NULL) AS mean_forward_return_pct,
+                  AVG(max_drawdown_pct::float8)
+                      FILTER (WHERE evaluated_at IS NOT NULL) AS mean_max_drawdown_pct,
+                  AVG(benchmark_return_pct::float8)
+                      FILTER (WHERE evaluated_at IS NOT NULL) AS mean_benchmark_return_pct,
+                  AVG(excess_return_pct::float8)
+                      FILTER (WHERE evaluated_at IS NOT NULL) AS mean_excess_return_pct,
+                  AVG(CASE WHEN forward_return_pct > 0 THEN 1.0 ELSE 0.0 END)
+                      FILTER (WHERE evaluated_at IS NOT NULL) AS positive_return_rate,
+                  AVG(CASE WHEN excess_return_pct > 0 THEN 1.0 ELSE 0.0 END)
+                      FILTER (WHERE evaluated_at IS NOT NULL AND excess_return_pct IS NOT NULL)
+                      AS outperform_rate
+             FROM technical_timing_observation
+            WHERE observed_at > now() - ($1 || ' days')::interval
+         GROUP BY technical_state, setup_kind, entry_stance, benchmark_symbol
+         ORDER BY COUNT(evaluated_at) DESC,
+                  COUNT(*) DESC,
+                  technical_state,
+                  benchmark_symbol
+            LIMIT 50"#,
+    )
+    .bind(lookback_days.to_string())
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| {
+        Ok::<TechnicalTimingCalibration, sqlx::Error>(TechnicalTimingCalibration {
+            technical_state: r.try_get("technical_state")?,
+            setup_kind: r.try_get("setup_kind")?,
+            entry_stance: r.try_get("entry_stance")?,
+            benchmark_symbol: r.try_get("benchmark_symbol")?,
+            observations_total: r.try_get("observations_total")?,
+            outcomes_scored: r.try_get("outcomes_scored")?,
+            mean_forward_return_pct: r.try_get("mean_forward_return_pct").ok(),
+            mean_max_drawdown_pct: r.try_get("mean_max_drawdown_pct").ok(),
+            mean_benchmark_return_pct: r.try_get("mean_benchmark_return_pct").ok(),
+            mean_excess_return_pct: r.try_get("mean_excess_return_pct").ok(),
+            positive_return_rate: r.try_get("positive_return_rate").ok(),
+            outperform_rate: r.try_get("outperform_rate").ok(),
+        })
+    })
+    .collect::<std::result::Result<Vec<_>, _>>()
+    .context("decode technical timing calibration")
 }
 
 fn median(xs: &[f64]) -> Option<f64> {

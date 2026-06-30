@@ -13,7 +13,7 @@ strategy definition
   -> automation_proof
   -> desired_strategy_position, when proof passes
   -> automation_execution_reconciliation
-  -> broker adapter later
+  -> digital broker simulator now, broker adapter later
   -> fills attributed back to sleeves
 ```
 
@@ -41,8 +41,9 @@ broker reports only one net position.
 sleeves. It constrains per-strategy, per-symbol, and total automated portfolio
 allocation before a desired-position change can become executable.
 
-`automation_sleeve_fill_attribution` is the future fill attribution table for
-simulated, paper, and live fills. It links fills back to the owning sleeve with
+`automation_sleeve_fill_attribution` records simulated fills now and is also
+the future fill attribution table for paper and live fills. It links fills back
+to the owning sleeve with
 quantity, notional, and realized P/L deltas so net broker positions do not erase
 strategy ownership.
 
@@ -58,9 +59,10 @@ future evaluation due date. Later validation fills outcome fields after the
 market has moved; the runner never backfills a signal into the past.
 
 `automation_execution_reconciliation` records how a passing desired position
-would reconcile against actual broker state. In shadow mode this can stop at
-`noop`, `needs_order`, `blocked`, or `reconciled`; paper/live adapters are later
-work.
+reconciles against broker state. In shadow mode the digital broker simulator
+can produce `noop`, `submitted`, `blocked`, `incident`, or `reconciled` rows,
+with deterministic order plans, idempotency keys, simulated fills, and sleeve
+attribution. Paper/live adapters are later work.
 
 `automation_incident` is the operational safety log for stale broker state,
 irreconcilable sleeves, duplicate submission risk, repeated rejects, or any
@@ -74,6 +76,10 @@ state, or bypass risk.
 Proof is required before desired exposure can be treated as executable input to
 reconciliation. Missing, stale, failed, or under-scored inputs block the path
 and must produce concrete blocked reasons.
+
+Reconciliation is idempotent per desired-state/proof pair. Duplicate simulator
+submissions return the existing reconciliation row and do not append another
+fill or mutate sleeve state again.
 
 The existing risk overlay remains an independent hard gate. Automation proof
 may include risk output, but it does not replace the risk module.
@@ -120,6 +126,8 @@ If proof passes or warns, the runner may write a desired position, attaches the
 exact proof snapshots to that emission, and updates that strategy sleeve's
 allocated notional from the proof target.
 
-The runner does not import broker adapters and does not create reconciliation
-orders. Broker reconciliation remains read-only aggregate state until the later
-paper/live simulator and adapter issues are implemented.
+The runner does not import real broker adapters and does not place paper or live
+orders. After a passing desired state is written, it calls the digital broker
+simulator to append an idempotent reconciliation row, simulated broker fill,
+sleeve attribution, and sleeve state update. Real paper/live adapters remain
+explicitly gated later work.

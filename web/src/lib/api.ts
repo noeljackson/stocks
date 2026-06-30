@@ -286,7 +286,36 @@ export interface AutomationProof {
 export interface AutomationReconciliation {
   reconciliation_id: string;
   status: string;
+  idempotency_key?: string | null;
+  target_snapshot?: {
+    target_side?: string;
+    target_notional_usd?: number | null;
+    target_quantity?: number | null;
+    market_price?: number | null;
+  };
+  broker_snapshot?: {
+    broker?: string;
+    account?: string;
+    side?: string;
+    quantity?: number | null;
+    notional_usd?: number | null;
+    last_seen_at?: string | null;
+  };
+  delta_snapshot?: {
+    quantity_delta?: number | null;
+    notional_delta_usd?: number | null;
+    realized_pnl_delta?: number | null;
+  };
+  order_plan?: {
+    orders?: Array<{
+      action?: string;
+      status?: string;
+      quantity?: number | null;
+      filled_quantity?: number | null;
+    }>;
+  };
   blocked_reasons?: string[];
+  created_at?: string | null;
   updated_at?: string | null;
 }
 

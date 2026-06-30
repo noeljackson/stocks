@@ -209,6 +209,7 @@ operator approves symbol + strategy + version
   -> automation_strategy_signal_observation anchors forward-only validation
   -> automation_proof freezes permission/data/session/risk/capital/broker gates
   -> automation_execution_reconciliation compares desired state with broker state
+  -> digital broker simulator updates shadow sleeves/fills
   -> broker order adapter may act later, only after proof passes
 ```
 
@@ -220,6 +221,7 @@ strategy output is desired exposure
   -> proof decides whether the desired exposure is allowed, and blocked
      preflights are recorded without desired exposure
   -> reconciliation decides what execution delta would be needed
+  -> shadow simulator can record deterministic fills and sleeve attribution
   -> only a later broker adapter can submit orders
 ```
 
@@ -231,6 +233,10 @@ The capital allocator uses those sleeves as the ownership boundary. A strategy
 can resize its own reserved notional, but other sleeves on the same symbol still
 count against symbol and portfolio caps, so one strategy cannot silently consume
 another strategy's allocation.
+
+The digital broker simulator is the rehearsal path for paper/live execution. It
+uses the same desired-position, proof, reconciliation, incident, position-fill,
+and sleeve-attribution tables without requiring broker credentials.
 
 Kronos-style forecasts, LLM reads, and other model outputs are evidence inputs
 only. They may appear in a strategy feature snapshot after validation, but they

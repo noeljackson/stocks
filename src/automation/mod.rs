@@ -6,6 +6,7 @@
 
 mod allocator;
 mod policy;
+mod simulator;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, NaiveTime, Utc, Weekday};
@@ -28,6 +29,10 @@ pub use policy::{
     AutomationControlState, BrokerPolicyState, CapitalPolicyState, DataFreshnessPolicyState,
     ProofPolicyDecision, ProofPolicyInput, RiskPolicyState, SessionPolicyState, SleevePolicyState,
     evaluate_proof_policy,
+};
+pub use simulator::{
+    ReconciliationInput, ReconciliationOutcome, SimulatedFault, SimulatedFill, SimulatedIncident,
+    SimulatedPosition, SimulatedReconciliationReceipt, SimulationConfig, reconcile_simulated,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,6 +216,9 @@ pub struct DesiredPositionReceipt {
 pub struct AutomationRunSummary {
     pub evaluated: usize,
     pub emitted: usize,
+    pub reconciled: usize,
+    pub reconciliation_incidents: usize,
+    pub duplicate_reconciliations: usize,
     pub unchanged: usize,
     pub blocked: usize,
     pub no_features: usize,
@@ -363,7 +371,17 @@ pub async fn run_once(store: &Store, limit: i64) -> Result<AutomationRunSummary>
             StrategyDecisionKind::EmitDesired => {
                 let write = desired_write(&candidate, &input, &decision, proof)
                     .context("build desired position write")?;
-                store.insert_desired_strategy_position(&write).await?;
+                let receipt = store.insert_desired_strategy_position(&write).await?;
+                let reconciliation = store
+                    .simulate_desired_reconciliation(receipt.desired_position_id)
+                    .await?;
+                if reconciliation.duplicate {
+                    summary.duplicate_reconciliations += 1;
+                } else if reconciliation.incident {
+                    summary.reconciliation_incidents += 1;
+                } else {
+                    summary.reconciled += 1;
+                }
                 summary.emitted += 1;
             }
             StrategyDecisionKind::NoChange => {
@@ -383,6 +401,9 @@ pub async fn run(store: Store, interval: std::time::Duration, limit: i64) -> Res
         tracing::info!(
             evaluated = summary.evaluated,
             emitted = summary.emitted,
+            reconciled = summary.reconciled,
+            reconciliation_incidents = summary.reconciliation_incidents,
+            duplicate_reconciliations = summary.duplicate_reconciliations,
             unchanged = summary.unchanged,
             blocked = summary.blocked,
             no_features = summary.no_features,

@@ -108,6 +108,19 @@
       .replace(/\b\w/g, (char) => char.toUpperCase());
   }
 
+  function blockerLabel(value: string | null | undefined): string {
+    const key = (value ?? "").trim().toLowerCase();
+    if (key === "approval_missing") return "Stage Promotion Approval Needed";
+    return titleize(value);
+  }
+
+  function readinessApprovalText(row: AutomationPermission): string {
+    const target = row.readiness?.target_stage ? titleize(row.readiness.target_stage) : "Target Stage";
+    if (row.readiness?.approval_valid) return `Valid for ${target} promotion`;
+    if (row.readiness?.approval_required) return `Needed for ${target} promotion`;
+    return "-";
+  }
+
   function money(value: number | null | undefined): string {
     if (value === null || value === undefined || Number.isNaN(value)) return "-";
     return value.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
@@ -204,7 +217,7 @@
 
   function actionDetail(row: AutomationPermission): string {
     const action = nextAction(row);
-    if (action === "blocked") return blockers(row).map(titleize).join(", ") || titleize(row.derived_status);
+    if (action === "blocked") return blockers(row).map(blockerLabel).join(", ") || titleize(row.derived_status);
     if (action === "enter") return `Open ${titleize(row.desired_position?.target_side)} sleeve exposure.`;
     if (action === "exit") return "Flatten existing sleeve exposure.";
     if (action === "resize") return `Adjust by ${money(notionalDiff(row))}.`;
@@ -378,7 +391,7 @@
                   {#if row.desired_position?.rationale}
                     {row.desired_position.rationale}
                   {:else if rowBlockers.length > 0}
-                    {rowBlockers.map(titleize).join(", ")}
+                    {rowBlockers.map(blockerLabel).join(", ")}
                   {:else}
                     {titleize(row.derived_status)}
                   {/if}
@@ -418,7 +431,7 @@
             {#if rowBlockers.length > 0}
               <div class="blocker-strip">
                 {#each rowBlockers as reason}
-                  <span>{titleize(reason)}</span>
+                  <span>{blockerLabel(reason)}</span>
                 {/each}
               </div>
             {/if}
@@ -480,7 +493,7 @@
                   <dt>target</dt><dd>{titleize(row.readiness?.target_stage ?? "none")}</dd>
                   <dt>status</dt><dd>{titleize(row.readiness?.status ?? "missing")}</dd>
                   <dt>score</dt><dd>{pct(row.readiness?.readiness_score)}</dd>
-                  <dt>approval</dt><dd>{row.readiness?.approval_valid ? "valid" : row.readiness?.approval_required ? "needed" : "-"}</dd>
+                  <dt>stage approval</dt><dd>{readinessApprovalText(row)}</dd>
                   <dt>lookback</dt><dd>{row.readiness?.lookback_days ?? "-"}d</dd>
                 </dl>
               </section>

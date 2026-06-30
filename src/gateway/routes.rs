@@ -4140,6 +4140,10 @@ fn review_packet_kind_summary(kind: &str, severity: &str) -> (&'static str, &'st
             "Risk generated a warning or veto.",
             "The idea generator cannot override this; review exposure before acting.",
         ),
+        "price_alert" => (
+            "A watched price level triggered.",
+            "Decide whether the alert changes the trade plan, thesis timing, or should be dismissed as noise.",
+        ),
         "outcome_ready" => (
             "A decision or thesis is ready to score.",
             "Recording the outcome closes the learning loop.",
@@ -4179,6 +4183,12 @@ fn review_packet_actions(kind: &str) -> serde_json::Value {
             json!({"id": "open_decision", "label": "Review risk", "kind": "decision", "detail": "Open decision/risk context."}),
             json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later."}),
             json!({"id": "dismiss", "label": "Dismiss", "kind": "attention_dismiss", "detail": "Mark risk review as handled."}),
+        ],
+        "price_alert" => vec![
+            json!({"id": "record_alert_decision", "label": "Record alert decision", "kind": "decision", "detail": "Open the decision form with this triggered level as context."}),
+            json!({"id": "inspect_chart", "label": "Inspect chart", "kind": "open_symbol", "detail": "Review chart, thesis, and alert context before deciding."}),
+            json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later without resolving the alert."}),
+            json!({"id": "dismiss", "label": "Dismiss as noise", "kind": "attention_dismiss", "detail": "Mark this triggered alert as not actionable."}),
         ],
         "context_stale" | "thesis_incomplete" => vec![
             json!({"id": "open_evidence", "label": "Open evidence", "kind": "open_evidence", "detail": "Inspect blockers and source tasks."}),
@@ -4221,6 +4231,13 @@ fn review_packet_decision(
             "decision",
             "Record decision",
             "Open the decision form with risk context.",
+        ),
+        "price_alert" => (
+            "record_alert_decision",
+            format!("Act on {sym} price alert?"),
+            "decision",
+            "Record alert decision",
+            "Open the decision form with the triggered level, thesis, and chart context.",
         ),
         "context_stale" | "thesis_incomplete" => (
             "resolve_evidence_blocker",
@@ -4285,6 +4302,11 @@ fn review_packet_decision(
             "risk_review" => vec![
                 "human decision is recorded",
                 "risk context remains attached to the thesis",
+            ],
+            "price_alert" => vec![
+                "human decision, deferral, or dismissal is recorded",
+                "price alert trigger remains available in the audit trail",
+                "no automation permission or broker order is placed by this packet",
             ],
             _ => vec![
                 "attention state history is preserved",
@@ -6219,6 +6241,30 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|item| item == "ticker appears in the autonomous cockpit queue")
+        );
+    }
+
+    #[test]
+    fn review_packet_price_alert_asks_for_alert_decision() {
+        let decision = review_packet_decision("price_alert", Some("KO"), true);
+
+        assert_eq!(decision["intent"], "record_alert_decision");
+        assert_eq!(decision["headline"], "Act on KO price alert?");
+        assert_eq!(decision["primary_action"]["kind"], "decision");
+        assert_eq!(decision["primary_action"]["label"], "Record alert decision");
+        assert!(
+            decision["secondary_actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["label"] == "Inspect chart")
+        );
+        assert!(
+            decision["consequences"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item == "price alert trigger remains available in the audit trail")
         );
     }
 

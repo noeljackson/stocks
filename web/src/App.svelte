@@ -111,6 +111,7 @@
     attention: string;
     evidence: string;
     thesis: string;
+    automation: string;
     decision: string;
   };
   type SymbolPlacement = {
@@ -1577,6 +1578,7 @@
       attention: apiWorkflowStep(workflow, "attention", "no attention"),
       evidence: apiWorkflowStep(workflow, "evidence", "evidence ready"),
       thesis: apiWorkflowStep(workflow, "thesis", "no thesis"),
+      automation: apiWorkflowStep(workflow, "automation", "not approved"),
       decision: apiWorkflowStep(workflow, "decision", "no decision"),
     };
   }
@@ -1607,6 +1609,7 @@
       attention: "no attention",
       evidence: "no evidence",
       thesis: "no thesis",
+      automation: "not approved",
       decision: "no decision",
     };
     if (!selectedSymbol) return defaultWorkflow;
@@ -1632,6 +1635,7 @@
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
+        automation: "not approved",
         decision: decisionText,
       };
     }
@@ -1646,6 +1650,7 @@
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
+        automation: "not approved",
         decision: decisionText,
       };
     }
@@ -1660,6 +1665,7 @@
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
+        automation: "not approved",
         decision: decisionText,
       };
     }
@@ -1674,6 +1680,7 @@
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
+        automation: "not approved",
         decision: decisionText,
       };
     }
@@ -1688,6 +1695,7 @@
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
+        automation: "not approved",
         decision: decisionText,
       };
     }
@@ -1702,6 +1710,7 @@
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
+        automation: "not approved",
         decision: decisionText,
       };
     }
@@ -1716,6 +1725,7 @@
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
+        automation: "not approved",
         decision: decisionText,
       };
     }
@@ -1732,6 +1742,7 @@
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
+        automation: "not approved",
         decision: decisionText,
       };
     }
@@ -1746,6 +1757,7 @@
         attention: attentionText,
         evidence: evidenceText,
         thesis: thesisText,
+        automation: "not approved",
         decision: decisionText,
       };
     }
@@ -1759,6 +1771,7 @@
       attention: attentionText,
       evidence: evidenceText,
       thesis: thesisText,
+      automation: "not approved",
       decision: decisionText,
     };
   }
@@ -1787,6 +1800,10 @@
     }
     if (action === "thesis") {
       rightTab = "theses";
+      return;
+    }
+    if (action === "automation") {
+      openAutomationPage(selectedSymbol);
       return;
     }
     if (action === "decision") {
@@ -2934,6 +2951,10 @@
       <button type="button" class="workflow-step" onclick={() => runWorkflowAction("thesis")}>
         <span>Thesis</span>
         <strong>{selectedWorkflow.thesis}</strong>
+      </button>
+      <button type="button" class="workflow-step" onclick={() => runWorkflowAction("automation")}>
+        <span>Automation</span>
+        <strong>{selectedWorkflow.automation}</strong>
       </button>
       <button type="button" class="workflow-step" onclick={() => runWorkflowAction("tracking")}>
         <span>Decision</span>
@@ -5049,7 +5070,7 @@
   }
   .workflow-rail {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: .35rem;
   }
   .workflow-attention {

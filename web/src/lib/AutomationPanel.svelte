@@ -46,6 +46,11 @@
     return new Date(value).toLocaleString();
   }
 
+  function shortHash(value: string | null | undefined): string {
+    if (!value) return "-";
+    return value.replace(/^sha256:/, "").slice(0, 10);
+  }
+
   function reasons(row: AutomationPermission): string[] {
     return [
       ...((row.latest_proof?.blocked_reasons ?? []) as string[]),
@@ -180,6 +185,7 @@
                   <dt>target</dt><dd>{titleize(row.desired_position?.target_side ?? "none")}</dd>
                   <dt>notional</dt><dd>{money(row.desired_position?.target_notional_usd)}</dd>
                   <dt>weight</dt><dd>{pct(row.desired_position?.target_weight_pct)}</dd>
+                  <dt>config</dt><dd>{shortHash(row.desired_position?.strategy_config_hash ?? row.latest_proof?.strategy_config_hash)}</dd>
                 </dl>
               </section>
 

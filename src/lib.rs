@@ -11,6 +11,7 @@
 //! - [`web`]      — `rust-embed` of the built Svelte SPA.
 
 pub mod attention;
+pub mod automation;
 pub mod consensus;
 pub mod discovery;
 pub mod execution;

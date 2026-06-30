@@ -41,6 +41,12 @@ broker reports only one net position.
 change: permission, data freshness, session state, risk, capital allocation,
 and broker reconciliation inputs.
 
+`automation_strategy_signal_observation` is the forward-only validation anchor
+for shadow strategy output. Every emitted desired position gets an observation
+with target side, reason codes, feature snapshot, config hash, churn flag, and
+future evaluation due date. Later validation fills outcome fields after the
+market has moved; the runner never backfills a signal into the past.
+
 `automation_execution_reconciliation` records how a passing desired position
 would reconcile against actual broker state. In shadow mode this can stop at
 `noop`, `needs_order`, `blocked`, or `reconciled`; paper/live adapters are later
@@ -72,3 +78,25 @@ they cannot create desired positions or orders directly.
 
 Broker order placement is out of scope for the schema slice. The first broker
 write path must be paper-only and explicitly gated by later issues.
+
+## Shadow Strategy Runner
+
+`strategy-runner` is the first automation producer. It seeds deterministic
+built-in strategy definitions when missing, then evaluates approved shadow
+permissions and writes append-only desired positions only when the target side
+or target weight changes.
+
+The initial families are:
+
+- `technical_timing@0.1.0`: pure technical timing from derived chart state.
+- `thesis_timing@0.1.0`: bullish actionable thesis plus acceptable chart
+  timing.
+
+The runner blocks before changing desired state when permission is missing,
+pending, expired, frozen, non-shadow, stale, or technically invalid. Every
+emission records the strategy version and exact config hash in the desired
+position, proof, feature snapshot, and validation observation.
+
+The runner does not import broker adapters, does not create reconciliation
+orders, and marks its proof risk/broker sections as shadow-only placeholders
+until the policy engine and simulator issues are implemented.

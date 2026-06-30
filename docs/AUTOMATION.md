@@ -13,6 +13,7 @@ strategy definition
   -> automation_proof
   -> desired_strategy_position, when proof passes
   -> automation_execution_reconciliation
+  -> readiness-gated shadow/paper/canary/expanded lifecycle
   -> digital broker simulator in shadow, paper adapter only when explicitly enabled
   -> fills attributed back to sleeves
 ```
@@ -58,11 +59,28 @@ with target side, reason codes, feature snapshot, config hash, churn flag, and
 future evaluation due date. Later validation fills outcome fields after the
 market has moved; the runner never backfills a signal into the past.
 
+`automation_strategy_promotion_approval` records explicit operator approval
+for a strategy version to move from one lifecycle stage to the next. An
+approval can expire, be revoked, or be marked used after a readiness pass
+promotes the strategy.
+
+`automation_strategy_readiness_evaluation` is the forward-only lifecycle gate.
+It scores signal quality, return/drawdown, churn, proof pass rate, incident
+rate, paper fill quality/slippage, and baseline excess return. A strategy
+cannot promote unless the latest evaluation is ready and an unexpired approval
+matches the exact from/to stage.
+
+`automation_strategy_lifecycle_event` is the append-only audit log for
+readiness evaluations, approvals, promotions, demotions, freezes, and
+retirements.
+
 `automation_execution_reconciliation` records how a passing desired position
 reconciles against broker state. In shadow mode the digital broker simulator
 can produce `noop`, `submitted`, `blocked`, `incident`, or `reconciled` rows,
 with deterministic order plans, idempotency keys, simulated fills, and sleeve
-attribution.
+attribution. In paper/live scopes the runner stops at `needs_order` unless the
+desired state is already a `noop`, leaving actual submission to a separately
+gated broker adapter.
 
 `automation_paper_order_config` is the singleton gate for the first broker
 write path. It defaults to disabled, only allows `broker='ibkr'`,
@@ -109,6 +127,12 @@ Manual freeze and the global kill switch override every strategy. A frozen
 permission or sleeve may be observed, but it must not create new desired
 exposure or executable reconciliation.
 
+Lifecycle stage is also a proof gate. `shadow` strategy definitions may only
+run shadow permissions, `paper` may run shadow or paper, `canary_live` may run
+up through canary, and `expanded_live` may run any automation environment.
+`draft`, `frozen`, and `retired` strategies cannot run. Manual demotion,
+freeze, and retirement are allowed without readiness; promotion is not.
+
 Model outputs and LLM outputs are evidence inputs only. Future Kronos-style
 forecast signals may feed a strategy feature snapshot after validation, but
 they cannot create desired positions or orders directly.
@@ -118,12 +142,13 @@ paper-only and rejects non-paper automation scopes, non-paper account modes,
 non-`DU...` accounts, disabled DB config, disabled env config, and live-looking
 IBKR API ports.
 
-## Shadow Strategy Runner
+## Strategy Runner
 
 `strategy-runner` is the first automation producer. It seeds deterministic
-built-in strategy definitions when missing, then evaluates approved shadow
-permissions and writes append-only desired positions only when the target side
-or target weight changes.
+built-in strategy definitions when missing, then evaluates approved permissions
+whose environment is allowed by the strategy lifecycle stage. It writes
+append-only desired positions only when the target side or target weight
+changes.
 
 The initial families are:
 
@@ -132,9 +157,10 @@ The initial families are:
   timing.
 
 The runner blocks before changing desired state when permission is missing,
-pending, expired, frozen, non-shadow, stale, or technically invalid. Every
-emission records the strategy version and exact config hash in the desired
-position, proof, feature snapshot, and validation observation.
+pending, expired, frozen, beyond the strategy lifecycle stage, stale, or
+technically invalid. Every emission records the strategy version and exact
+config hash in the desired position, proof, feature snapshot, and validation
+observation.
 
 The runner now evaluates the proof policy before writing desired state. The
 policy records permission, kill-switch, data freshness, regular-session, risk,
@@ -153,7 +179,17 @@ defined in the proof contract but default to `not_halted` until a first-class
 provider is wired.
 
 The runner does not import real broker adapters and does not place paper or live
-orders. After a passing desired state is written, it calls the digital broker
-simulator to append an idempotent reconciliation row, simulated broker fill,
-sleeve attribution, and sleeve state update. Real paper/live adapters remain
-explicitly gated later work.
+orders. After a passing desired state is written, shadow scope calls the
+digital broker simulator to append an idempotent reconciliation row, simulated
+broker fill, sleeve attribution, and sleeve state update. Paper/live scopes
+append `needs_order` reconciliation rows and stop; a separately enabled broker
+adapter must submit orders.
+
+## Readiness Gate
+
+`automation-readiness` scores each non-retired strategy version over a lookback
+window. It writes one readiness evaluation per pass. If a strategy passes all
+thresholds and has a matching active operator approval, the evaluator advances
+the strategy to the next lifecycle stage and marks the approval used. If a
+live-capable strategy fails on excessive incidents or proof pass rate, approved
+canary/expanded permissions are automatically frozen with an audit event.

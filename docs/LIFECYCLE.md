@@ -207,6 +207,7 @@ operator approves symbol + strategy + version
   -> strategy evaluates automation_proof for its sleeve
   -> passing/warning proof may emit desired_strategy_position
   -> automation_strategy_signal_observation anchors forward-only validation
+  -> automation_strategy_readiness_evaluation gates lifecycle promotion
   -> automation_proof freezes permission/market/session/risk/capital/broker gates
   -> automation_execution_reconciliation compares desired state with broker state
   -> digital broker simulator updates shadow sleeves/fills
@@ -242,6 +243,12 @@ before desired exposure changes.
 The digital broker simulator is the rehearsal path for paper/live execution. It
 uses the same desired-position, proof, reconciliation, incident, position-fill,
 and sleeve-attribution tables without requiring broker credentials.
+
+Strategy lifecycle promotion is readiness-gated. The evaluator scores
+forward-only signal outcomes, drawdown, churn, proof pass rate, incidents,
+paper fill quality, and baseline excess return. Promotion requires a passing
+evaluation plus an unexpired operator approval for the exact from/to stage.
+Manual demotion, freeze, and retirement are allowed without readiness.
 
 Kronos-style forecasts, LLM reads, and other model outputs are evidence inputs
 only. They may appear in a strategy feature snapshot after validation, but they

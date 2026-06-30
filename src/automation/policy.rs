@@ -40,6 +40,8 @@ pub struct CapitalPolicyState {
     pub max_allocation_pct: Option<f64>,
     pub target_notional_usd: Option<f64>,
     pub max_notional_usd: Option<f64>,
+    pub allocator_blocked_reasons: Vec<String>,
+    pub allocator_snapshot: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -157,6 +159,7 @@ pub fn evaluate_proof_policy(input: &ProofPolicyInput) -> ProofPolicyDecision {
             blocked_reasons.push("allocation_exceeds_notional_cap".to_string());
         }
     }
+    blocked_reasons.extend(input.capital.allocator_blocked_reasons.iter().cloned());
     match input.sleeve.status.as_str() {
         "frozen" => blocked_reasons.push("sleeve_frozen".to_string()),
         "closed" => blocked_reasons.push("sleeve_closed".to_string()),
@@ -226,6 +229,8 @@ pub fn evaluate_proof_policy(input: &ProofPolicyInput) -> ProofPolicyDecision {
             "max_allocation_pct": input.capital.max_allocation_pct,
             "target_notional_usd": input.capital.target_notional_usd,
             "max_notional_usd": input.capital.max_notional_usd,
+            "allocator_blocked_reasons": input.capital.allocator_blocked_reasons,
+            "allocator": input.capital.allocator_snapshot,
         }),
         broker_reconciliation: json!({
             "status": input.broker.status,
@@ -346,6 +351,8 @@ mod tests {
                 max_allocation_pct: Some(0.10),
                 target_notional_usd: Some(5_000.0),
                 max_notional_usd: Some(20_000.0),
+                allocator_blocked_reasons: vec![],
+                allocator_snapshot: json!({"allowed": true}),
             },
             sleeve: SleevePolicyState {
                 status: "active".to_string(),
@@ -397,6 +404,14 @@ mod tests {
         let mut input = base_input();
         input.capital.target_weight_pct = Some(0.20);
         assert_blocked(input, "allocation_exceeds_permission_cap");
+    }
+
+    #[test]
+    fn allocator_blockers_block_proof() {
+        let mut input = base_input();
+        input.capital.allocator_blocked_reasons =
+            vec!["symbol_allocation_cap_exceeded".to_string()];
+        assert_blocked(input, "symbol_allocation_cap_exceeded");
     }
 
     #[test]

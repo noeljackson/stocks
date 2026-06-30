@@ -37,6 +37,15 @@ manual sleeve. Each automated strategy permission gets its own strategy sleeve
 so attribution, allocation, and manual freeze behavior stay clear even when the
 broker reports only one net position.
 
+`automation_allocation_policy` is the operator-set cap frame for automated
+sleeves. It constrains per-strategy, per-symbol, and total automated portfolio
+allocation before a desired-position change can become executable.
+
+`automation_sleeve_fill_attribution` is the future fill attribution table for
+simulated, paper, and live fills. It links fills back to the owning sleeve with
+quantity, notional, and realized P/L deltas so net broker positions do not erase
+strategy ownership.
+
 `automation_proof` freezes the deterministic gate result for a strategy
 evaluation: permission, data freshness, session state, risk, capital
 allocation, and broker reconciliation inputs. Blocked preflight evaluations are
@@ -69,6 +78,11 @@ and must produce concrete blocked reasons.
 The existing risk overlay remains an independent hard gate. Automation proof
 may include risk output, but it does not replace the risk module.
 
+The capital allocator is also a hard gate. It treats each strategy sleeve's
+allocated notional as reserved exposure, replaces that sleeve's own allocation
+when resizing, and counts other sleeves on the same symbol against symbol-level
+caps. Reductions may proceed from an already over-cap state; increases may not.
+
 Manual freeze and the global kill switch override every strategy. A frozen
 permission or sleeve may be observed, but it must not create new desired
 exposure or executable reconciliation.
@@ -100,10 +114,11 @@ position, proof, feature snapshot, and validation observation.
 
 The runner now evaluates the proof policy before writing desired state. The
 policy records permission, kill-switch, data freshness, regular-session, risk,
-capital-cap, sleeve, and broker aggregate snapshots. If proof blocks, the
-runner writes only an `automation_proof` row with blocked reasons. If proof
-passes or warns, the runner may write a desired position and attaches the exact
-proof snapshots to that emission.
+capital-cap, allocator, sleeve, and broker aggregate snapshots. If proof
+blocks, the runner writes only an `automation_proof` row with blocked reasons.
+If proof passes or warns, the runner may write a desired position, attaches the
+exact proof snapshots to that emission, and updates that strategy sleeve's
+allocated notional from the proof target.
 
 The runner does not import broker adapters and does not create reconciliation
 orders. Broker reconciliation remains read-only aggregate state until the later

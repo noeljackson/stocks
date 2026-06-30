@@ -4,6 +4,7 @@
 //! broker orders, mutate broker state, or bypass later proof/reconciliation
 //! gates.
 
+mod allocator;
 mod policy;
 
 use anyhow::{Context, Result};
@@ -20,6 +21,9 @@ use crate::platform::{
 };
 use crate::risk;
 
+pub use allocator::{
+    AllocationDecision, AllocationLimits, AllocationRequest, SleeveAllocation, evaluate_allocation,
+};
 pub use policy::{
     AutomationControlState, BrokerPolicyState, CapitalPolicyState, DataFreshnessPolicyState,
     ProofPolicyDecision, ProofPolicyInput, RiskPolicyState, SessionPolicyState, SleevePolicyState,
@@ -175,6 +179,7 @@ pub struct DesiredPositionWrite {
     pub environment_scope: String,
     pub target_side: TargetSide,
     pub target_weight_pct: Option<f64>,
+    pub target_notional_usd: Option<f64>,
     pub rationale: String,
     pub reason_codes: Vec<String>,
     pub feature_snapshot: Value,
@@ -445,6 +450,10 @@ fn desired_write(
     let target_side = decision
         .target_side
         .context("emit decision missing target side")?;
+    let target_notional_usd = proof
+        .capital_allocation
+        .get("target_notional_usd")
+        .and_then(Value::as_f64);
     Ok(DesiredPositionWrite {
         permission_id: candidate.permission.permission_id,
         symbol: candidate.permission.symbol.clone(),
@@ -459,6 +468,7 @@ fn desired_write(
         environment_scope: candidate.permission.environment_scope.clone(),
         target_side,
         target_weight_pct: decision.target_weight_pct,
+        target_notional_usd,
         rationale: decision.rationale.clone(),
         reason_codes: decision.reason_codes.clone(),
         feature_snapshot: decision.feature_snapshot.clone(),
@@ -561,11 +571,28 @@ async fn risk_and_capital_policy_state(
 
     let target_weight_pct = decision.target_weight_pct;
     let target_notional_usd = target_weight_pct.map(|weight| weight * portfolio.total_value);
+    let request_sleeve_id = store
+        .open_strategy_sleeve_id(candidate.permission.permission_id)
+        .await?;
+    let allocation_limits = store.automation_allocation_limits().await?;
+    let sleeve_allocations = store.automation_sleeve_allocations().await?;
+    let allocation_decision = evaluate_allocation(
+        &AllocationRequest {
+            sleeve_id: request_sleeve_id,
+            symbol: candidate.permission.symbol.clone(),
+            target_notional_usd: target_notional_usd.unwrap_or(0.0),
+            portfolio_value_usd: portfolio.total_value,
+        },
+        &sleeve_allocations,
+        &allocation_limits,
+    );
     let capital = CapitalPolicyState {
         target_weight_pct,
         max_allocation_pct: candidate.permission.max_allocation_pct,
         target_notional_usd,
         max_notional_usd: candidate.permission.max_notional_usd,
+        allocator_blocked_reasons: allocation_decision.blocked_reasons.clone(),
+        allocator_snapshot: allocation_decision.snapshot.clone(),
     };
 
     let risk_config = match store.active_config("risk").await {

@@ -66,6 +66,12 @@
       ?? (proof.risk_result?.veto ? "veto" : proof.risk_result?.warnings?.length ? "warning" : "pass");
   }
 
+  function allocatorStatus(row: AutomationPermission): string {
+    const reasons = row.latest_proof?.capital_allocation?.allocator_blocked_reasons ?? [];
+    if (!row.latest_proof) return "missing";
+    return reasons.length > 0 ? "blocked" : "ok";
+  }
+
   $effect(() => {
     const key = symbol ?? "";
     if (key === lastKey) return;
@@ -184,6 +190,8 @@
                   <dt>status</dt><dd>{titleize(row.sleeve?.status ?? "missing")}</dd>
                   <dt>side</dt><dd>{titleize(row.sleeve?.current_side ?? "flat")}</dd>
                   <dt>notional</dt><dd>{money(row.sleeve?.current_notional_usd)}</dd>
+                  <dt>allocated</dt><dd>{money(row.sleeve?.allocated_notional_usd)}</dd>
+                  <dt>uPnL</dt><dd>{money(row.sleeve?.unrealized_pnl)}</dd>
                 </dl>
               </section>
 
@@ -213,6 +221,7 @@
                   <dt>data</dt><dd>{titleize(row.latest_proof?.data_freshness?.status ?? "missing")}</dd>
                   <dt>session</dt><dd>{titleize(row.latest_proof?.session_state?.label ?? "missing")}</dd>
                   <dt>risk</dt><dd>{titleize(proofRisk(row))}</dd>
+                  <dt>allocator</dt><dd>{titleize(allocatorStatus(row))}</dd>
                   <dt>target</dt><dd>{pct(row.latest_proof?.capital_allocation?.target_weight_pct)}</dd>
                 </dl>
               </section>

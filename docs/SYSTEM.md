@@ -96,7 +96,9 @@ same PR.
 The permissioned automation foundation lives in
 [`docs/AUTOMATION.md`](AUTOMATION.md). Automation is a v2 extension where the
 operator approves ticker+strategy permissions and strategies emit desired
-positions. It does not make broker order placement available by itself.
+positions. It does not make broker order placement available by itself. The
+same document is the runbook for freezes, kill-switch use, failed
+reconciliation, and broker disconnects.
 
 The scheduler and feedback-loop map lives in
 [`docs/BRAIN_LOOPS.md`](BRAIN_LOOPS.md). When changing service intervals,

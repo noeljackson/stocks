@@ -79,6 +79,12 @@ decision
 trade_ticket
   proposed expression with side, instrument, intended size, and risk result
 
+automation_strategy_permission
+  operator-approved symbol + strategy + version scope; never an order
+
+desired_strategy_position
+  strategy-owned desired exposure, gated before any broker adapter can act
+
 position_fill
   actual execution record; manual first, broker sync later
 
@@ -101,6 +107,7 @@ no trade decision without risk context
 no position_open thesis without an actual fill
 no outcome without preserving what was known at decision time
 no bullish/bearish thesis treated as an entry signal without technical/risk state
+no model, strategy, or broker adapter bypassing deterministic proof/risk gates
 ```
 
 ## Brain Hierarchy
@@ -885,6 +892,30 @@ decision accepted
 
 Until broker sync exists, manual position entry must be explicit and visible as
 manual state.
+
+## Automation Loop
+
+Automation is a later extension of the same decision model, not a separate
+trading brain. The operator approves `symbol + strategy + version`; approved
+strategies emit desired exposure for their own sleeves; deterministic proof,
+risk, market-readiness, allocation, lifecycle-readiness, manual-freeze, and
+kill-switch gates decide whether that desired state can proceed.
+
+```text
+operator approval
+  -> strategy desired position
+  -> proof / risk / readiness gates
+  -> reconciliation against broker or simulator state
+  -> broker adapter only after all gates pass
+  -> fills attributed back to sleeves
+```
+
+Rollout is staged: shadow, paper, canary live, expanded live. Promotion is
+score-gated and requires explicit operator approval. Kronos-style forecasts,
+LLM reads, and other model signals may become feature inputs only after
+validation; they must not create desired positions, proofs, reconciliations, or
+orders directly. The operational contract and runbook live in
+[`docs/AUTOMATION.md`](AUTOMATION.md).
 
 ## Reflection Loop
 

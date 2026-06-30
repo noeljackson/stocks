@@ -193,3 +193,108 @@ thresholds and has a matching active operator approval, the evaluator advances
 the strategy to the next lifecycle stage and marks the approval used. If a
 live-capable strategy fails on excessive incidents or proof pass rate, approved
 canary/expanded permissions are automatically frozen with an audit event.
+
+## Operational Runbook
+
+The first move for any automation anomaly is to stop new desired-state changes,
+then inspect the latest proof, reconciliation, and incident rows. Do not clear
+a freeze or kill switch because the UI looks quiet; clear it only after the
+underlying table state and broker state agree.
+
+Manual permission freeze:
+
+```text
+When:
+  one symbol/strategy looks wrong, stale, over-sized, or under review
+
+Action:
+  set automation_trade_permission.manual_freeze = true
+  set freeze_reason with a concrete cause
+  record automation_permission_event.event_kind = 'freeze_set'
+
+Verify:
+  /api/automation/status shows derived_status = frozen
+  subsequent automation_proof rows include permission_frozen
+  no new desired_strategy_position rows appear for that permission
+```
+
+Global kill switch:
+
+```text
+When:
+  provider data is suspect, market data is broadly stale, risk config is wrong,
+  broker state cannot be trusted, or multiple strategies behave unexpectedly
+
+Action:
+  set automation_control_state.kill_switch_enabled = true
+  set kill_switch_reason
+
+Verify:
+  /api/automation/status shows kill_switch.enabled = true
+  subsequent automation_proof rows include automation_kill_switch
+  broker adapters are stopped or left disabled
+```
+
+Readiness failure or live freeze:
+
+```text
+When:
+  automation-readiness records blocked live-capable readiness, excessive
+  incidents, weak proof pass rate, missing approval, or expired approval
+
+Action:
+  leave affected live-capable permissions frozen
+  inspect automation_strategy_readiness_evaluation.blockers
+  add a fresh promotion approval only after the metrics recover
+
+Verify:
+  readiness.status and blockers are visible in the automation cockpit
+  promotion approval matches the exact from_stage -> to_stage
+  approval is unexpired before the next readiness pass
+```
+
+Failed reconciliation:
+
+```text
+When:
+  automation_execution_reconciliation.status is blocked or incident
+
+Action:
+  inspect blocked_reasons, target_snapshot, broker_snapshot, and delta_snapshot
+  compare sleeve state with broker or simulator position state
+  freeze the permission if the mismatch affects exposure or order safety
+
+Verify:
+  duplicate idempotency keys are not producing duplicate fills
+  sleeve current_side/current_quantity match attributed fills
+  failed rows remain append-only; write a new desired state only after proof
+  passes again
+```
+
+Broker disconnect or stale broker snapshot:
+
+```text
+When:
+  IBKR sync is stale, paper adapter reports disconnect, or broker position
+  snapshot age exceeds automation_paper_order_config limits
+
+Action:
+  keep automation_paper_order_config.enabled = false until sync recovers
+  run read-only sync first with make sync-ibkr
+  run one guarded paper pass with make ibkr-paper-orders only after sync is fresh
+  freeze affected permissions if broker net exposure cannot be reconciled
+
+Verify:
+  automation_incident records the disconnect or stale snapshot
+  position.broker_last_sync_at is fresh for affected symbols
+  paper order adapter remains paper-only with a DU account and env gate enabled
+```
+
+Routine checks:
+
+```text
+make run-strategy-runner-once      # desired-state/proof pass
+make run-automation-readiness      # lifecycle readiness pass
+make sync-ibkr                     # read-only broker position sync
+make ibkr-paper-orders             # disabled-by-default paper order pass
+```

@@ -86,12 +86,13 @@
   import ThesisDetails from "./lib/ThesisDetails.svelte";
   import ChartPanel from "./lib/ChartPanel.svelte";
   import PriceAlertsPanel from "./lib/PriceAlertsPanel.svelte";
+  import AutomationPanel from "./lib/AutomationPanel.svelte";
   import { PaneGroup, Pane, PaneResizer } from "paneforge";
 
   // ---------- workspace state ----------
   type RightTab = "overview" | "analyst" | "technical" | "context" | "evidence" | "theses" | "alerts" | "decisions";
   const RIGHT_TABS: RightTab[] = ["overview", "analyst", "technical", "context", "evidence", "theses", "alerts", "decisions"];
-  type BottomMode = "brain" | "attention" | "events" | "discovery" | "decisions" | "calibration" | "diagnostics";
+  type BottomMode = "brain" | "attention" | "events" | "discovery" | "automation" | "decisions" | "calibration" | "diagnostics";
   type AppPage = "workspace" | "journal";
   type WorkflowAction = WorkflowActionKind;
   type SymbolWorkflow = {
@@ -3005,7 +3006,7 @@
         >
           <footer class="bottom">
     <nav class="bottom-tabs">
-      {#each ["brain", "attention", "events", "discovery", "decisions", "calibration", "diagnostics"] as BottomMode[] as m}
+      {#each ["brain", "attention", "events", "discovery", "automation", "decisions", "calibration", "diagnostics"] as BottomMode[] as m}
         <button
           class:active={bottomMode === m}
           onclick={() => { bottomMode = m; if (!bottomOpen) bottomPane?.expand(); }}
@@ -3493,6 +3494,8 @@
               {/each}
             </ul>
           {/if}
+        {:else if bottomMode === "automation"}
+          <AutomationPanel symbol={selectedSymbol} />
         {:else if bottomMode === "decisions"}
           {@render decisionForm()}
         {:else if bottomMode === "calibration"}

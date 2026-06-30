@@ -48,6 +48,7 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
             post(disable_price_alert_rule),
         )
         .route("/api/price-alert-events", get(list_price_alert_events))
+        .route("/api/automation/status", get(get_automation_status))
         .route("/api/regime", get(get_regime))
         .route("/api/tickers", get(list_tickers).post(add_ticker))
         .route("/api/theses", get(list_theses))
@@ -1924,6 +1925,25 @@ async fn list_price_alert_events(
         Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
         Err(e) => {
             warn!(error = %e, "list_price_alert_events failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AutomationStatusQuery {
+    #[serde(default)]
+    symbol: Option<String>,
+}
+
+async fn get_automation_status(
+    State(gw): State<Arc<Gateway>>,
+    Query(q): Query<AutomationStatusQuery>,
+) -> impl IntoResponse {
+    match gw.store.automation_status(q.symbol.as_deref()).await {
+        Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+        Err(e) => {
+            warn!(error = %e, "get_automation_status failed");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }

@@ -4137,6 +4137,238 @@ impl Store {
         rows.into_iter().map(decode_price_alert_rule).collect()
     }
 
+    pub async fn automation_status(&self, symbol: Option<&str>) -> Result<serde_json::Value> {
+        let rows = sqlx::query(
+            r#"SELECT p.status AS permission_status,
+                      p.manual_freeze,
+                      (p.expires_at IS NOT NULL AND p.expires_at <= now()) AS is_expired,
+                      p.environment_scope,
+                      COALESCE(incident.open_incident_count, 0)::int8 AS open_incident_count,
+                      proof.result AS latest_proof_result,
+                      jsonb_build_object(
+                        'permission_id', p.permission_id,
+                        'symbol', p.symbol,
+                        'strategy_id', p.strategy_id,
+                        'strategy_version', p.strategy_version,
+                        'strategy_display_name', s.display_name,
+                        'strategy_family', s.family,
+                        'strategy_status', s.status,
+                        'permission_status', p.status,
+                        'derived_status', CASE
+                          WHEN p.expires_at IS NOT NULL AND p.expires_at <= now() THEN 'expired'
+                          WHEN p.manual_freeze THEN 'frozen'
+                          ELSE p.status
+                        END,
+                        'instrument_scope', p.instrument_scope,
+                        'environment_scope', p.environment_scope,
+                        'manual_freeze', p.manual_freeze,
+                        'freeze_reason', p.freeze_reason,
+                        'approved_by', p.approved_by,
+                        'approved_at', p.approved_at,
+                        'expires_at', p.expires_at,
+                        'max_allocation_pct', p.max_allocation_pct::float8,
+                        'max_notional_usd', p.max_notional_usd::float8,
+                        'max_quantity', p.max_quantity::float8,
+                        'created_at', p.created_at,
+                        'updated_at', p.updated_at,
+                        'sleeve', sleeve.row,
+                        'desired_position', desired.row,
+                        'latest_proof', proof.row,
+                        'reconciliation', reconciliation.row,
+                        'broker_position', broker.row,
+                        'incidents', COALESCE(incident.rows, '[]'::jsonb)
+                      ) AS permission
+                 FROM automation_trade_permission p
+                 JOIN automation_strategy_definition s
+                   ON s.strategy_id = p.strategy_id
+                  AND s.strategy_version = p.strategy_version
+            LEFT JOIN LATERAL (
+                    SELECT sl.sleeve_id,
+                           jsonb_build_object(
+                             'sleeve_id', sl.sleeve_id,
+                             'sleeve_kind', sl.sleeve_kind,
+                             'status', sl.status,
+                             'current_side', sl.current_side,
+                             'current_quantity', sl.current_quantity::float8,
+                             'current_notional_usd', sl.current_notional_usd::float8,
+                             'allocated_notional_usd', sl.allocated_notional_usd::float8,
+                             'realized_pnl', sl.realized_pnl::float8,
+                             'opened_at', sl.opened_at,
+                             'closed_at', sl.closed_at,
+                             'updated_at', sl.updated_at
+                           ) AS row
+                      FROM automation_strategy_sleeve sl
+                     WHERE sl.permission_id = p.permission_id
+                  ORDER BY (sl.closed_at IS NULL) DESC, sl.updated_at DESC
+                     LIMIT 1
+                 ) sleeve ON TRUE
+            LEFT JOIN LATERAL (
+                    SELECT d.desired_position_id,
+                           jsonb_build_object(
+                             'desired_position_id', d.desired_position_id,
+                             'target_side', d.target_side,
+                             'target_quantity', d.target_quantity::float8,
+                             'target_notional_usd', d.target_notional_usd::float8,
+                             'target_weight_pct', d.target_weight_pct::float8,
+                             'rationale', d.rationale,
+                             'reason_codes', d.reason_codes,
+                             'feature_snapshot', d.feature_snapshot,
+                             'signal_ref', d.signal_ref,
+                             'emitted_at', d.emitted_at
+                           ) AS row
+                      FROM desired_strategy_position d
+                     WHERE d.permission_id = p.permission_id
+                  ORDER BY d.emitted_at DESC
+                     LIMIT 1
+                 ) desired ON TRUE
+            LEFT JOIN LATERAL (
+                    SELECT ap.result,
+                           jsonb_build_object(
+                             'proof_id', ap.proof_id,
+                             'result', ap.result,
+                             'blocked_reasons', ap.blocked_reasons,
+                             'risk_result', ap.risk_result,
+                             'data_freshness', ap.data_freshness,
+                             'session_state', ap.session_state,
+                             'capital_allocation', ap.capital_allocation,
+                             'broker_reconciliation', ap.broker_reconciliation,
+                             'evaluated_at', ap.evaluated_at
+                           ) AS row
+                      FROM automation_proof ap
+                     WHERE ap.permission_id = p.permission_id
+                  ORDER BY ap.evaluated_at DESC
+                     LIMIT 1
+                 ) proof ON TRUE
+            LEFT JOIN LATERAL (
+                    SELECT jsonb_build_object(
+                             'reconciliation_id', ar.reconciliation_id,
+                             'status', ar.status,
+                             'idempotency_key', ar.idempotency_key,
+                             'target_snapshot', ar.target_snapshot,
+                             'broker_snapshot', ar.broker_snapshot,
+                             'delta_snapshot', ar.delta_snapshot,
+                             'order_plan', ar.order_plan,
+                             'blocked_reasons', ar.blocked_reasons,
+                             'created_at', ar.created_at,
+                             'updated_at', ar.updated_at
+                           ) AS row
+                      FROM automation_execution_reconciliation ar
+                     WHERE (sleeve.sleeve_id IS NOT NULL AND ar.sleeve_id = sleeve.sleeve_id)
+                        OR (desired.desired_position_id IS NOT NULL AND ar.desired_position_id = desired.desired_position_id)
+                  ORDER BY ar.updated_at DESC
+                     LIMIT 1
+                 ) reconciliation ON TRUE
+            LEFT JOIN LATERAL (
+                    SELECT jsonb_build_object(
+                             'open_positions', COUNT(*)::int,
+                             'broker_positions', COUNT(*) FILTER (WHERE pos.source = 'broker')::int,
+                             'net_quantity', COALESCE(SUM(CASE WHEN COALESCE(pos.side, 'long') = 'short' THEN -pos.qty ELSE pos.qty END), 0)::float8,
+                             'delta_notional', COALESCE(SUM(pos.delta_notional), 0)::float8,
+                             'premium_at_risk', COALESCE(SUM(pos.premium_at_risk), 0)::float8,
+                             'latest_sync_at', MAX(pos.broker_last_sync_at)
+                           ) AS row
+                      FROM position pos
+                     WHERE pos.symbol = p.symbol
+                       AND pos.closed_at IS NULL
+                 ) broker ON TRUE
+            LEFT JOIN LATERAL (
+                    SELECT COUNT(*) FILTER (WHERE i.status <> 'resolved') AS open_incident_count,
+                           COALESCE(jsonb_agg(jsonb_build_object(
+                             'incident_id', i.incident_id,
+                             'severity', i.severity,
+                             'status', i.status,
+                             'kind', i.kind,
+                             'title', i.title,
+                             'detail', i.detail,
+                             'created_at', i.created_at,
+                             'acknowledged_at', i.acknowledged_at,
+                             'resolved_at', i.resolved_at
+                           ) ORDER BY i.created_at DESC), '[]'::jsonb) AS rows
+                      FROM (
+                            SELECT *
+                              FROM automation_incident i
+                             WHERE i.status <> 'resolved'
+                               AND (i.permission_id = p.permission_id
+                                    OR (i.permission_id IS NULL AND i.symbol = p.symbol))
+                          ORDER BY i.created_at DESC
+                             LIMIT 5
+                           ) i
+                 ) incident ON TRUE
+                WHERE ($1::text IS NULL OR p.symbol = upper($1))
+             ORDER BY p.updated_at DESC, p.symbol, p.strategy_id"#,
+        )
+        .bind(symbol.map(str::trim).filter(|s| !s.is_empty()))
+        .fetch_all(&self.pool)
+        .await
+        .context("automation_status")?;
+
+        let mut permissions = Vec::with_capacity(rows.len());
+        let mut approved = 0_i64;
+        let mut pending = 0_i64;
+        let mut frozen = 0_i64;
+        let mut expired = 0_i64;
+        let mut paper_only = 0_i64;
+        let mut live_capable = 0_i64;
+        let mut incidents_open = 0_i64;
+        let mut blocked_strategies = 0_i64;
+
+        for row in rows {
+            let permission_status: String = row.try_get("permission_status")?;
+            let manual_freeze: bool = row.try_get("manual_freeze")?;
+            let is_expired: bool = row.try_get("is_expired")?;
+            let environment_scope: String = row.try_get("environment_scope")?;
+            let open_incident_count: i64 = row.try_get("open_incident_count")?;
+            let latest_proof_result: Option<String> = row.try_get("latest_proof_result")?;
+
+            if permission_status == "approved" {
+                approved += 1;
+            }
+            if permission_status == "pending" {
+                pending += 1;
+            }
+            if manual_freeze {
+                frozen += 1;
+            }
+            if is_expired || permission_status == "expired" {
+                expired += 1;
+            }
+            if environment_scope == "paper" {
+                paper_only += 1;
+            }
+            if matches!(environment_scope.as_str(), "canary_live" | "expanded_live") {
+                live_capable += 1;
+            }
+            incidents_open += open_incident_count;
+            if latest_proof_result.as_deref() == Some("blocked") {
+                blocked_strategies += 1;
+            }
+
+            permissions.push(row.try_get::<serde_json::Value, _>("permission")?);
+        }
+
+        Ok(serde_json::json!({
+            "as_of": Utc::now(),
+            "kill_switch": {
+                "enabled": false,
+                "read_only": true,
+                "source": "not_configured",
+                "reason": "Automation mutation endpoints are not wired yet."
+            },
+            "summary": {
+                "permissions_total": permissions.len() as i64,
+                "approved": approved,
+                "pending": pending,
+                "frozen": frozen,
+                "expired": expired,
+                "paper_only": paper_only,
+                "live_capable": live_capable,
+                "incidents_open": incidents_open,
+                "blocked_strategies": blocked_strategies
+            },
+            "permissions": permissions
+        }))
+    }
+
     pub async fn create_price_alert_rule(
         &self,
         input: PriceAlertRuleInput,

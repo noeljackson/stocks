@@ -7,7 +7,10 @@
     BrainJournalMemoEvidence,
     BrainJournalMemoSymbol,
     BrainJournalMemoTheme,
+    BrainJournalTechnicalRead,
   } from "./api";
+
+  type SymbolPanel = "overview" | "technical";
 
   type Props = {
     journal?: BrainJournal | null;
@@ -18,7 +21,7 @@
     onDateChange?: (date: string) => void;
     onPageChange?: (page: number) => void;
     onOpenEntry?: (entry: BrainJournalEntry) => void;
-    onOpenSymbol?: (symbol: string) => void;
+    onOpenSymbol?: (symbol: string, panel?: SymbolPanel) => void;
     onOpenReviewPacket?: (id: number, symbol?: string) => void | Promise<void>;
     onStartResearch?: (symbol: string) => void | Promise<void>;
     researchBusySymbol?: string | null;
@@ -35,7 +38,7 @@
     onDateChange = (_date: string) => {},
     onPageChange = (_page: number) => {},
     onOpenEntry = (_entry: BrainJournalEntry) => {},
-    onOpenSymbol = (_symbol: string) => {},
+    onOpenSymbol = (_symbol: string, _panel: SymbolPanel = "overview") => {},
     onOpenReviewPacket = (_id: number, _symbol?: string) => {},
     onStartResearch = (_symbol: string) => {},
     researchBusySymbol = null as string | null,
@@ -161,6 +164,21 @@
     return [pctText || label(item.technical_state), blockers].filter(Boolean).join(" · ");
   }
 
+  function technicalReadLabel(read?: BrainJournalTechnicalRead | null): string {
+    return read?.label || label(read?.stance);
+  }
+
+  function technicalReadReason(read?: BrainJournalTechnicalRead | null): string {
+    if (!read) return "trend unknown · momentum unknown · relative strength unknown · volume unknown · volatility unknown";
+    return [
+      `trend ${read.trend}`,
+      `momentum ${read.momentum}`,
+      `relative strength ${read.relative_strength}`,
+      `volume ${read.volume}`,
+      `volatility ${read.volatility}`,
+    ].join(" · ");
+  }
+
   function decisionStatus(item: BrainJournalDecisionItem): string {
     if (item.tier) return `Universe T${item.tier}`;
     return "Universe";
@@ -277,10 +295,19 @@
                     <span>{item.why_now}</span>
                     <small>{decisionMeta(item)}</small>
                     <small>{decisionMetric(item)}</small>
+                    {#if item.technical_read}
+                      <div class={`technical-read read-${item.technical_read.stance}`}>
+                        <span>{technicalReadLabel(item.technical_read)}</span>
+                        <small>{technicalReadReason(item.technical_read)}</small>
+                      </div>
+                    {/if}
                     <em>{item.why_not}</em>
                     <div class="trade-actions">
                       <button type="button" onclick={() => openDecisionItem(item)}>
                         {decisionAction(section.key, item)}
+                      </button>
+                      <button type="button" onclick={() => onOpenSymbol(item.symbol, "technical")}>
+                        Technical read
                       </button>
                       {#if section.key === "research"}
                         <button
@@ -343,7 +370,7 @@
                     <span>{item.score}</span>
                   </span>
                   <span>{directionLabel(item.thesis_direction)} · {label(item.thesis_state)} · {label(item.entry_stance)}</span>
-                  <small>{pct(item.technical_pct_vs_200d) || label(item.technical_state)} · {label(item.freshness_status)}</small>
+                  <small>{technicalReadLabel(item.technical_read)} · {pct(item.technical_pct_vs_200d) || label(item.technical_state)} · {label(item.freshness_status)}</small>
                 </button>
               {/each}
             </div>
@@ -366,7 +393,7 @@
                     <span>{item.score}</span>
                   </span>
                   <span>{directionLabel(item.thesis_direction)} thesis, but {label(item.entry_stance)}</span>
-                  <small>{pct(item.technical_pct_vs_200d) || label(item.technical_state)} · not an entry read</small>
+                  <small>{technicalReadLabel(item.technical_read)} · {pct(item.technical_pct_vs_200d) || label(item.technical_state)} · not an entry read</small>
                 </button>
               {/each}
             </div>
@@ -760,6 +787,33 @@
     font-size: .68rem;
     line-height: 1.2;
   }
+  .technical-read {
+    display: grid;
+    gap: .1rem;
+    border: 1px solid #263142;
+    border-left: 3px solid #89b4fa;
+    background: #0b111b;
+    border-radius: 4px;
+    padding: .34rem .42rem;
+  }
+  .technical-read.read-starter_ok,
+  .technical-read.read-constructive {
+    border-left-color: #a6e3a1;
+  }
+  .technical-read.read-wait_reversal,
+  .technical-read.read-wait_breakout {
+    border-left-color: #f9e2af;
+  }
+  .technical-read.read-avoid_chase,
+  .technical-read.read-avoid_breakdown {
+    border-left-color: #f38ba8;
+  }
+  .technical-read span {
+    color: #cdd6f4;
+    font-size: .74rem;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
   .memo-symbol.constructive {
     border-left-color: #a6e3a1;
   }
@@ -777,6 +831,7 @@
   .memo-line span,
   .memo-line small,
   .trade-item small,
+  .technical-read small,
   .memo-symbol small {
     overflow-wrap: anywhere;
   }
@@ -789,6 +844,7 @@
   }
   .memo-symbol small,
   .trade-item small,
+  .technical-read small,
   .memo-line small {
     color: #7f849c;
     font-size: .7rem;

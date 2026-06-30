@@ -100,6 +100,19 @@ struct PromotionApprovalRow {
     approval: PromotionApproval,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct JournalTechnicalRead {
+    stance: String,
+    label: String,
+    reason: String,
+    trend: String,
+    momentum: String,
+    relative_strength: String,
+    volume: String,
+    volatility: String,
+    source: String,
+}
+
 #[derive(Debug, Clone, Default)]
 struct SymbolWorkflowFacts {
     symbol: String,
@@ -369,6 +382,103 @@ fn journal_waits_for_setup(technical_state: Option<&str>, entry_stance: Option<&
         || matches!(entry_stance.unwrap_or_default(), "avoid_chase")
 }
 
+fn technical_component(cross: &serde_json::Value, key: &str, fallback: Option<&str>) -> String {
+    cross
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .or(fallback)
+        .unwrap_or("unknown")
+        .replace('_', " ")
+}
+
+fn technical_cross_value(cross: &serde_json::Value, key: &str) -> Option<String> {
+    cross
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn journal_technical_stance(
+    technical_state: Option<&str>,
+    setup_kind: Option<&str>,
+    entry_stance: Option<&str>,
+    buy_timing: Option<&str>,
+    trend_state: Option<&str>,
+) -> (&'static str, &'static str) {
+    let values = [
+        buy_timing,
+        setup_kind,
+        technical_state,
+        entry_stance,
+        trend_state,
+    ];
+    let has = |needles: &[&str]| {
+        values
+            .iter()
+            .flatten()
+            .any(|value| needles.iter().any(|needle| value == needle))
+    };
+
+    if has(&["pullback_reversal", "reversal_confirming", "starter_ok"]) {
+        ("starter_ok", "starter OK")
+    } else if has(&["pullback_watch", "wait_reversal"]) {
+        ("wait_reversal", "wait reversal")
+    } else if has(&["extended_chase", "avoid_chase", "extended", "extended_run"]) {
+        ("avoid_chase", "avoid chase")
+    } else if has(&["avoid_breakdown", "breakdown", "deteriorating", "avoid"]) {
+        ("avoid_breakdown", "avoid breakdown")
+    } else if has(&["constructive", "constructive_trend", "uptrend"]) {
+        ("constructive", "constructive")
+    } else if has(&["base_building", "wait_breakout"]) {
+        ("wait_reversal", "wait reversal")
+    } else {
+        ("wait_data", "wait data")
+    }
+}
+
+fn journal_technical_read(
+    technical_state: Option<&str>,
+    setup_kind: Option<&str>,
+    entry_stance: Option<&str>,
+    cross: &serde_json::Value,
+) -> JournalTechnicalRead {
+    let buy_timing = technical_cross_value(cross, "buy_timing");
+    let trend_state = technical_cross_value(cross, "trend_state");
+    let (stance, label) = journal_technical_stance(
+        technical_state,
+        setup_kind,
+        entry_stance,
+        buy_timing.as_deref(),
+        trend_state.as_deref(),
+    );
+    let trend = technical_component(cross, "trend_state", technical_state);
+    let momentum = technical_component(cross, "momentum_state", entry_stance);
+    let relative_strength = technical_component(cross, "relative_strength_state", None);
+    let volume = technical_component(cross, "volume_state", None);
+    let volatility = technical_component(cross, "volatility_state", None);
+    let source = if cross.get("buy_timing").is_some() || cross.get("trend_state").is_some() {
+        "cross_technical"
+    } else {
+        "technical_summary"
+    };
+
+    JournalTechnicalRead {
+        stance: stance.to_string(),
+        label: label.to_string(),
+        reason: format!(
+            "trend {trend}; momentum {momentum}; relative strength {relative_strength}; volume {volume}; volatility {volatility}"
+        ),
+        trend,
+        momentum,
+        relative_strength,
+        volume,
+        volatility,
+        source: source.to_string(),
+    }
+}
+
 fn journal_candidate_score(
     state: Option<&str>,
     direction: Option<&str>,
@@ -424,6 +534,12 @@ fn journal_trade_desk_item(ticker: &TickerRow, score: i32, stance: &str) -> serd
         .as_deref()
         .unwrap_or("unknown technicals");
     let entry = ticker.entry_stance.as_deref().unwrap_or("wait_data");
+    let technical_read = journal_technical_read(
+        ticker.technical_state.as_deref(),
+        ticker.technical_setup_kind.as_deref(),
+        ticker.entry_stance.as_deref(),
+        &ticker.technical_cross,
+    );
     let blockers = journal_symbol_blockers(ticker);
     let why_now = match stance {
         "consider" => format!(
@@ -470,7 +586,10 @@ fn journal_trade_desk_item(ticker: &TickerRow, score: i32, stance: &str) -> serd
         "thesis_state": ticker.thesis_state.clone(),
         "thesis_direction": ticker.thesis_direction.clone(),
         "technical_state": ticker.technical_state.clone(),
+        "technical_setup_kind": ticker.technical_setup_kind.clone(),
         "entry_stance": ticker.entry_stance.clone(),
+        "technical_read": technical_read,
+        "technical_panel_path": format!("/symbol/{}?p=technical", ticker.symbol),
         "technical_pct_vs_200d": ticker.technical_pct_vs_200d,
         "freshness_status": ticker.freshness_status.clone(),
         "open_attention": ticker.open_attention,
@@ -2906,6 +3025,12 @@ impl Store {
                 ticker.tier,
                 ticker.domain_fit,
             );
+            let technical_read = journal_technical_read(
+                technical,
+                ticker.technical_setup_kind.as_deref(),
+                entry,
+                &ticker.technical_cross,
+            );
             let item = serde_json::json!({
                 "symbol": ticker.symbol.clone(),
                 "score": score,
@@ -2913,7 +3038,10 @@ impl Store {
                 "thesis_state": ticker.thesis_state.clone(),
                 "thesis_direction": ticker.thesis_direction.clone(),
                 "technical_state": ticker.technical_state.clone(),
+                "technical_setup_kind": ticker.technical_setup_kind.clone(),
                 "entry_stance": ticker.entry_stance.clone(),
+                "technical_read": technical_read,
+                "technical_panel_path": format!("/symbol/{}?p=technical", ticker.symbol),
                 "technical_pct_vs_200d": ticker.technical_pct_vs_200d,
                 "freshness_status": ticker.freshness_status.clone(),
                 "open_attention": ticker.open_attention,
@@ -6621,8 +6749,14 @@ impl Store {
                       latest.thesis_id                  AS latest_thesis_id,
                       latest.state                      AS thesis_state,
                       latest.direction                   AS thesis_direction,
-                      tech.technical_state              AS technical_state,
-                      tech.entry_stance                 AS entry_stance,
+                      COALESCE(tech_obs.technical_state, tech.technical_state)
+                                                        AS technical_state,
+                      COALESCE(tech_obs.setup_kind, tech.setup_kind)
+                                                        AS technical_setup_kind,
+                      COALESCE(tech_obs.entry_stance, tech.entry_stance)
+                                                        AS entry_stance,
+                      COALESCE(tech_obs.input_snapshot->'cross', '{}'::jsonb)
+                                                        AS technical_cross,
                       tech.pct_vs_200d                  AS technical_pct_vs_200d,
                       freshness.status                  AS freshness_status,
                       COALESCE(attention.open_count, 0) AS open_attention,
@@ -6660,7 +6794,7 @@ impl Store {
                     SELECT ts, close, high, row_number() OVER (ORDER BY ts DESC) AS rn
                       FROM bars
                 ), latest_bar AS (
-                    SELECT close
+                    SELECT ts, close
                       FROM ranked
                      WHERE rn = 1
                 ), stats AS (
@@ -6680,10 +6814,22 @@ impl Store {
                              WHEN ((latest_bar.close - stats.sma200) / NULLIF(stats.sma200, 0) * 100.0) >= 0.0 THEN 'constructive'
                              ELSE 'unknown'
                            END AS technical_state,
+                           CASE
+                             WHEN stats.bars_200 < 200 OR stats.sma200 IS NULL THEN 'unknown'
+                             WHEN ((latest_bar.close - stats.sma200) / NULLIF(stats.sma200, 0) * 100.0) > 20.0
+                               OR ((latest_bar.close - stats.high252) / NULLIF(stats.high252, 0) * 100.0) >= -2.0 THEN 'extended_run'
+                             WHEN ((latest_bar.close - stats.sma200) / NULLIF(stats.sma200, 0) * 100.0) < -5.0 THEN 'breakdown'
+                             WHEN stats.sma50 IS NOT NULL
+                               AND abs((latest_bar.close - stats.sma50) / NULLIF(stats.sma50, 0) * 100.0) <= 5.0 THEN 'base_building'
+                             WHEN ((latest_bar.close - stats.sma200) / NULLIF(stats.sma200, 0) * 100.0) >= 0.0 THEN 'constructive_trend'
+                             ELSE 'unknown'
+                           END AS setup_kind,
+                           latest_bar.ts AS as_of,
                            ((latest_bar.close - stats.sma200) / NULLIF(stats.sma200, 0) * 100.0)::float8 AS pct_vs_200d
                       FROM latest_bar CROSS JOIN stats
                 )
                 SELECT technical_state,
+                       setup_kind,
                        CASE technical_state
                          WHEN 'extended' THEN 'avoid_chase'
                          WHEN 'deteriorating' THEN 'avoid'
@@ -6691,9 +6837,22 @@ impl Store {
                          WHEN 'constructive' THEN 'constructive'
                          ELSE 'wait_data'
                        END AS entry_stance,
+                       as_of,
                        pct_vs_200d
                   FROM classified
             ) tech ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT o.technical_state,
+                       o.setup_kind,
+                       o.entry_stance,
+                       o.input_snapshot
+                  FROM technical_timing_observation o
+                 WHERE o.symbol = t.symbol
+                   AND tech.as_of IS NOT NULL
+                   AND o.observed_at = tech.as_of
+              ORDER BY o.created_at DESC
+                 LIMIT 1
+            ) tech_obs ON TRUE
             LEFT JOIN LATERAL (
                 SELECT tc.created_at AS context_at
                   FROM ticker_context tc
@@ -6851,7 +7010,11 @@ impl Store {
                     thesis_state: row.try_get("thesis_state").ok(),
                     thesis_direction: row.try_get("thesis_direction").ok(),
                     technical_state: row.try_get("technical_state").ok(),
+                    technical_setup_kind: row.try_get("technical_setup_kind").ok(),
                     entry_stance: row.try_get("entry_stance").ok(),
+                    technical_cross: row
+                        .try_get("technical_cross")
+                        .unwrap_or_else(|_| serde_json::json!({})),
                     technical_pct_vs_200d: row.try_get("technical_pct_vs_200d").ok(),
                     freshness_status: row
                         .try_get("freshness_status")
@@ -8692,7 +8855,16 @@ mod tests {
             thesis_state: Some("actionable".to_string()),
             thesis_direction: Some("up".to_string()),
             technical_state: Some("constructive".to_string()),
+            technical_setup_kind: Some("constructive_trend".to_string()),
             entry_stance: Some("constructive".to_string()),
+            technical_cross: serde_json::json!({
+                "trend_state": "uptrend",
+                "momentum_state": "positive",
+                "relative_strength_state": "outperforming",
+                "volume_state": "normal",
+                "volatility_state": "normal",
+                "buy_timing": "constructive"
+            }),
             technical_pct_vs_200d: Some(3.2),
             freshness_status: "fresh".to_string(),
             open_attention: 1,
@@ -8709,5 +8881,77 @@ mod tests {
 
         assert_eq!(item["review_packet_attention_id"], serde_json::json!(9102));
         assert_eq!(item["open_attention"], serde_json::json!(1));
+        assert_eq!(
+            item["technical_read"]["stance"],
+            serde_json::json!("constructive")
+        );
+        assert_eq!(
+            item["technical_panel_path"],
+            serde_json::json!("/symbol/CRDO?p=technical")
+        );
+    }
+
+    #[test]
+    fn journal_technical_read_maps_pullback_reversal_to_starter_ok() {
+        let read = journal_technical_read(
+            Some("reversal_confirming"),
+            Some("pullback_reversal"),
+            Some("starter_ok"),
+            &serde_json::json!({
+                "trend_state": "pullback_in_uptrend",
+                "momentum_state": "turning_up_from_oversold",
+                "relative_strength_state": "outperforming",
+                "volume_state": "accumulation",
+                "volatility_state": "compression",
+                "buy_timing": "pullback_reversal"
+            }),
+        );
+
+        assert_eq!(read.stance, "starter_ok");
+        assert!(read.reason.contains("trend pullback in uptrend"));
+        assert!(read.reason.contains("momentum turning up from oversold"));
+        assert!(read.reason.contains("relative strength outperforming"));
+        assert!(read.reason.contains("volume accumulation"));
+        assert!(read.reason.contains("volatility compression"));
+    }
+
+    #[test]
+    fn journal_technical_read_maps_extended_chase_to_avoid_chase() {
+        let read = journal_technical_read(
+            Some("extended"),
+            Some("extended_run"),
+            Some("avoid_chase"),
+            &serde_json::json!({
+                "trend_state": "extended_chase",
+                "momentum_state": "extended",
+                "relative_strength_state": "outperforming",
+                "volume_state": "normal",
+                "volatility_state": "wide",
+                "buy_timing": "avoid_chase"
+            }),
+        );
+
+        assert_eq!(read.stance, "avoid_chase");
+        assert!(read.reason.contains("trend extended chase"));
+    }
+
+    #[test]
+    fn journal_technical_read_maps_breakdown_to_avoid_breakdown() {
+        let read = journal_technical_read(
+            Some("deteriorating"),
+            Some("breakdown"),
+            Some("avoid"),
+            &serde_json::json!({
+                "trend_state": "breakdown",
+                "momentum_state": "weak",
+                "relative_strength_state": "underperforming",
+                "volume_state": "distribution",
+                "volatility_state": "expansion",
+                "buy_timing": "avoid_breakdown"
+            }),
+        );
+
+        assert_eq!(read.stance, "avoid_breakdown");
+        assert!(read.reason.contains("relative strength underperforming"));
     }
 }

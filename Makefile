@@ -13,6 +13,9 @@ PSQL_URL ?= postgres://stocks:stocks_dev_only@localhost:5432/stocks?sslmode=disa
 PLAYWRIGHT_WORKDIR ?= $(CURDIR)/web/.cache/playwright-work
 BUN_INSTALL_CACHE_DIR ?= $(CURDIR)/web/.cache/bun-install
 STOCKS_RUNTIME_DIR ?= $(CURDIR)/.runtime
+UX_REVIEW_BASE_URL ?= http://localhost:5173
+UX_REVIEW_SYMBOLS ?= OKTA,NVDA,CRDO
+UX_REVIEW_OUT ?= $(STOCKS_RUNTIME_DIR)/ux-review
 
 # Secrets injector: when `infisical` is on PATH, wrap commands so the binaries
 # get vars from your Infisical project (env defaults to `dev`; override with
@@ -163,7 +166,7 @@ clippy: ## cargo clippy on all targets, deny warnings
 	cargo clippy --all-targets -- -D warnings
 
 # ---- Frontend (supply-chain hardened) ----
-.PHONY: web-install web-audit web-scan web-build web-dev web-e2e
+.PHONY: web-install web-audit web-scan web-build web-dev web-e2e ux-review
 web-install: ## Install pinned deps with NO lifecycle scripts (from lockfile)
 	BUN_INSTALL_CACHE_DIR="$(BUN_INSTALL_CACHE_DIR)" ./scripts/web-preflight.sh
 
@@ -183,6 +186,11 @@ web-e2e: ## Playwright UI workflow tests (mocked API, no DB mutation)
 	@mkdir -p "$(PLAYWRIGHT_WORKDIR)"
 	cd web && TMPDIR="$(PLAYWRIGHT_WORKDIR)" ./node_modules/.bin/playwright install chromium-headless-shell
 	cd web && TMPDIR="$(PLAYWRIGHT_WORKDIR)" bun run test:e2e
+
+ux-review: ## Capture Chromium screenshots/report scaffold for human operator UX review
+	@mkdir -p "$(PLAYWRIGHT_WORKDIR)" "$(UX_REVIEW_OUT)"
+	cd web && TMPDIR="$(PLAYWRIGHT_WORKDIR)" ./node_modules/.bin/playwright install chromium-headless-shell
+	TMPDIR="$(PLAYWRIGHT_WORKDIR)" UX_REVIEW_BASE_URL="$(UX_REVIEW_BASE_URL)" UX_REVIEW_SYMBOLS="$(UX_REVIEW_SYMBOLS)" UX_REVIEW_OUT="$(UX_REVIEW_OUT)" bun scripts/ux-review.mjs
 
 # ---- run (local dev; build once with `make build`, then ./target/release/<bin>) ----
 # $(RUN) injects infisical when installed (see top of file). Override with

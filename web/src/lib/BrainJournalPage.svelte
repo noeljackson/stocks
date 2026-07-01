@@ -26,6 +26,8 @@
     onStartResearch?: (symbol: string) => void | Promise<void>;
     researchBusySymbol?: string | null;
     researchStatus?: string | null;
+    researchError?: string | null;
+    onRetry?: () => void | Promise<void>;
     onBack?: () => void;
   };
 
@@ -43,6 +45,8 @@
     onStartResearch = (_symbol: string) => {},
     researchBusySymbol = null as string | null,
     researchStatus = null as string | null,
+    researchError = null as string | null,
+    onRetry = () => {},
     onBack = () => {},
   }: Props = $props();
 
@@ -253,6 +257,7 @@
     <span><strong>{totalPages}</strong> page{totalPages === 1 ? "" : "s"}</span>
     {#if journal?.as_of}<span class="muted">refreshed {relativeTime(journal.as_of)}</span>{/if}
     {#if researchStatus}<span class="research-status">{researchStatus}</span>{/if}
+    {#if researchError}<span class="research-error">Start research failed: {researchError}</span>{/if}
   </section>
 
   {#if journal?.synthesis}
@@ -481,7 +486,10 @@
   {#if loading}
     <p class="muted">Loading journal…</p>
   {:else if error}
-    <p class="error-text">{error}</p>
+    <div class="journal-error">
+      <p class="error-text">{error}</p>
+      <button type="button" onclick={onRetry}>Retry journal</button>
+    </div>
   {:else if groups.length}
     <div class="journal-section-title">
       <strong>Receipts</strong>
@@ -614,6 +622,28 @@
   }
   .research-status {
     color: #a6e3a1;
+  }
+  .research-error {
+    color: #f38ba8;
+  }
+  .journal-error {
+    border: 1px solid rgba(243,139,168,.35);
+    border-radius: 8px;
+    background: rgba(243,139,168,.08);
+    padding: .75rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .75rem;
+    flex-wrap: wrap;
+  }
+  .journal-error button {
+    border: 1px solid #45475a;
+    background: #111827;
+    color: #cdd6f4;
+    border-radius: 6px;
+    padding: .42rem .7rem;
+    cursor: pointer;
   }
   .journal-memo {
     display: grid;

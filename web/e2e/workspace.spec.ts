@@ -2,9 +2,12 @@ import { expect, type Page, type Route, test } from "@playwright/test";
 
 type Calls = {
   candleUrls: URL[];
+  brainJournalUrls: URL[];
+  automationStatusUrls: URL[];
   automationTimelineUrls: URL[];
   automationApprovalBody: unknown | null;
   attentionTransitionBodies: unknown[];
+  attentionDismissBodies: unknown[];
   confirmBody: unknown | null;
   promoteBody: unknown | null;
   decisionBody: unknown | null;
@@ -119,6 +122,23 @@ async function json(route: Route, body: unknown, status = 200) {
   });
 }
 
+const browserErrors = new WeakMap<Page, string[]>();
+
+test.beforeEach(async ({ page }) => {
+  const errors: string[] = [];
+  browserErrors.set(page, errors);
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.text().startsWith("Failed to load resource: the server responded with a status of")) return;
+    if (message.type() === "error") errors.push(`console.error: ${message.text()}`);
+  });
+});
+
+test.afterEach(async ({ page }) => {
+  const errors = browserErrors.get(page) ?? [];
+  expect(errors).toEqual([]);
+});
+
 async function mockApi(
   page: Page,
   options: {
@@ -127,13 +147,19 @@ async function mockApi(
     startResearchStatus?: number;
     startResearchBody?: unknown;
     missingContextSymbol?: string;
+    brainJournalStatus?: number;
+    brainJournalBody?: unknown;
+    paginatedJournal?: boolean;
   } = {},
 ): Promise<Calls> {
   const calls: Calls = {
     candleUrls: [],
+    brainJournalUrls: [],
+    automationStatusUrls: [],
     automationTimelineUrls: [],
     automationApprovalBody: null,
     attentionTransitionBodies: [],
+    attentionDismissBodies: [],
     confirmBody: null,
     promoteBody: null,
     decisionBody: null,
@@ -1156,6 +1182,7 @@ async function mockApi(
       return;
     }
     if (path === "/api/automation/status") {
+      calls.automationStatusUrls.push(url);
       const symbol = url.searchParams.get("symbol");
       await json(route, symbol
         ? {
@@ -1426,9 +1453,17 @@ async function mockApi(
       return;
     }
     if (path === "/api/brain-journal") {
+      calls.brainJournalUrls.push(url);
+      if (options.brainJournalStatus && options.brainJournalStatus >= 400) {
+        await json(route, options.brainJournalBody ?? { error: "brain journal unavailable" }, options.brainJournalStatus);
+        return;
+      }
+      const journalDate = url.searchParams.get("date") ?? "2026-06-01";
+      const journalPage = Number(url.searchParams.get("page") ?? "1");
+      const paginated = options.paginatedJournal === true;
       await json(route, {
         as_of: "2026-06-01T12:00:00Z",
-        date: "2026-06-01",
+        date: journalDate,
         synthesis: null,
         overview: {
           as_of: "2026-06-01T12:00:00Z",
@@ -1647,17 +1682,17 @@ async function mockApi(
           },
         },
         pagination: {
-          page: Number(url.searchParams.get("page") ?? "1"),
+          page: journalPage,
           per_page: Number(url.searchParams.get("per_page") ?? "50"),
           total: 5,
-          total_pages: 1,
-          has_previous: false,
-          has_next: false,
+          total_pages: paginated ? 2 : 1,
+          has_previous: paginated && journalPage > 1,
+          has_next: paginated && journalPage < 2,
         },
         entries: [
           {
             id: 1,
-            date: "2026-06-01",
+            date: journalDate,
             category: "changed",
             source_kind: "thesis_version",
             source_id: "201",
@@ -1674,7 +1709,7 @@ async function mockApi(
           },
           {
             id: 2,
-            date: "2026-06-01",
+            date: journalDate,
             category: "research",
             source_kind: "attention",
             source_id: "7001",
@@ -1691,7 +1726,7 @@ async function mockApi(
           },
           {
             id: 3,
-            date: "2026-06-01",
+            date: journalDate,
             category: "blocked",
             source_kind: "source_task",
             source_id: "9101",
@@ -1708,7 +1743,7 @@ async function mockApi(
           },
           {
             id: 4,
-            date: "2026-06-01",
+            date: journalDate,
             category: "crowded_or_extended",
             source_kind: "brain_thesis",
             source_id: "macro:loved_mania",
@@ -1725,7 +1760,7 @@ async function mockApi(
           },
           {
             id: 5,
-            date: "2026-06-01",
+            date: journalDate,
             category: "ignored_or_hated",
             source_kind: "brain_thesis",
             source_id: "macro:hated_avoided",
@@ -1905,6 +1940,26 @@ async function mockApi(
         market: { price_state: { close: 420.91 }, attention_reason: "Breakout with daily SMA support" },
         market_as_of: "2026-06-01T00:00:00Z",
         created_at: "2026-06-01T00:00:00Z",
+      });
+      return;
+    }
+    if (path === "/api/technical-state") {
+      const symbol = (url.searchParams.get("symbol") ?? "OKTA").toUpperCase();
+      await json(route, {
+        symbol,
+        as_of: "2026-06-01T12:00:00Z",
+        state: symbol === "OKTA" ? "extended" : "constructive",
+        setup: {
+          kind: symbol === "OKTA" ? "extended_run" : "constructive_trend",
+          entry_stance: symbol === "OKTA" ? "avoid_chase" : "constructive",
+          summary: symbol === "OKTA" ? "Extended above rising moving averages." : "Constructive trend with normal volatility.",
+        },
+        summary: symbol === "OKTA" ? "Extended setup; wait for a cleaner pullback." : "Constructive setup with trend support.",
+        daily: null,
+        cross: null,
+        intervals: [],
+        last_crosses: [],
+        analog_events: [],
       });
       return;
     }
@@ -2384,6 +2439,16 @@ async function mockApi(
       await route.fulfill({ status: 204 });
       return;
     }
+    if (/^\/api\/attention\/\d+\/dismiss$/.test(path) && request.method() === "POST") {
+      try {
+        calls.attentionDismissBodies.push(request.postDataJSON());
+      } catch {
+        calls.attentionDismissBodies.push({});
+      }
+      attentionOpen = false;
+      await route.fulfill({ status: 204 });
+      return;
+    }
     if (path === "/api/decisions/8b4c3f5b-8288-49ff-9282-b4398abe85ba/replay") {
       await json(route, {
         decision_id: "8b4c3f5b-8288-49ff-9282-b4398abe85ba",
@@ -2560,7 +2625,7 @@ async function mockApi(
       return;
     }
 
-    await json(route, { error: `unmocked ${path}` }, 500);
+    throw new Error(`unmocked API call: ${request.method()} ${path}`);
   });
 
   return calls;
@@ -3128,6 +3193,8 @@ test("thesis review packet disagreement records a rejected skip decision", async
     owner: "operator",
     reason: "operator_disagreed_with_thesis",
   });
+  await expect(page.getByTestId("review-packet")).toHaveCount(0);
+  await expect(page.getByText("Thesis rejected for automation.")).toBeVisible();
 });
 
 test("thesis review packet snoozes until tomorrow", async ({ page }) => {
@@ -3143,6 +3210,8 @@ test("thesis review packet snoozes until tomorrow", async ({ page }) => {
     owner: "operator",
     reason: "operator_snoozed_thesis_approval",
   });
+  await expect(page.getByTestId("review-packet")).toHaveCount(0);
+  await expect(page.getByText("Review snoozed until tomorrow.")).toBeVisible();
   const body = calls.attentionTransitionBodies.at(-1) as Record<string, unknown>;
   expect(typeof body.resurface_at).toBe("string");
   expect(new Date(body.resurface_at as string).getTime()).toBeGreaterThan(Date.now());
@@ -3314,6 +3383,62 @@ test("journal page shows daily history and routes symbol entries", async ({ page
   await tradeDeskAgain.locator(".trade-section.wait").getByRole("button", { name: "Technical read" }).click();
   await expect(page).toHaveURL(/\/symbol\/OKTA\?p=technical/);
   await expect(page.getByRole("button", { name: "technical" })).toHaveClass(/active/);
+});
+
+test("journal date and pager controls update route and reload the requested slice", async ({ page }) => {
+  const calls = await mockApi(page, { paginatedJournal: true });
+  await page.goto("/journal/2026-06-01");
+
+  const journal = page.getByTestId("brain-journal-page");
+  await journal.getByRole("button", { name: "Previous day" }).click();
+  await expect(page).toHaveURL(/\/journal\/2026-05-31$/);
+  await expect.poll(() => calls.brainJournalUrls.at(-1)?.searchParams.get("date")).toBe("2026-05-31");
+
+  await journal.getByRole("button", { name: "Next day" }).click();
+  await expect(page).toHaveURL(/\/journal\/2026-06-01$/);
+  await expect.poll(() => calls.brainJournalUrls.at(-1)?.searchParams.get("date")).toBe("2026-06-01");
+
+  await journal.getByRole("button", { name: "Next page" }).click();
+  await expect(page).toHaveURL(/\/journal\/2026-06-01\?page=2$/);
+  await expect.poll(() => calls.brainJournalUrls.at(-1)?.searchParams.get("page")).toBe("2");
+
+  await journal.getByRole("button", { name: "Previous page" }).click();
+  await expect(page).toHaveURL(/\/journal\/2026-06-01$/);
+  await expect.poll(() => calls.brainJournalUrls.at(-1)?.searchParams.get("page")).toBe("1");
+
+  await journal.getByRole("button", { name: "Workspace" }).click();
+  await expect(page).not.toHaveURL(/\/journal/);
+});
+
+test("journal load failures are visible and retryable", async ({ page }) => {
+  const calls = await mockApi(page, {
+    brainJournalStatus: 503,
+    brainJournalBody: { error: "journal source unavailable" },
+  });
+  await page.goto("/journal/2026-06-01");
+
+  const journal = page.getByTestId("brain-journal-page");
+  await expect(journal).toContainText("brain-journal 503");
+  const callsBeforeRetry = calls.brainJournalUrls.length;
+  await journal.getByRole("button", { name: "Retry journal" }).click();
+  await expect.poll(() => calls.brainJournalUrls.length).toBeGreaterThan(callsBeforeRetry);
+});
+
+test("journal start research failures render inline near the daily trade desk", async ({ page }) => {
+  await mockApi(page, {
+    startResearchStatus: 409,
+    startResearchBody: {
+      error: "symbol_not_active",
+      message: "Add the symbol to Universe before starting research.",
+    },
+  });
+  await page.goto("/journal/2026-06-01");
+
+  const journal = page.getByTestId("brain-journal-page");
+  const tradeDesk = journal.getByTestId("daily-trade-desk");
+  await tradeDesk.locator(".trade-section.research").getByRole("button", { name: "Start research" }).click();
+
+  await expect(journal).toContainText("Start research failed: start-research 409: Add the symbol to Universe before starting research.");
 });
 
 test("journal daily trade desk opens the matching review packet", async ({ page }) => {
@@ -3522,6 +3647,8 @@ test("autonomous trading cockpit shows approval candidates and confirms bot trad
   await page.goto("/automation");
 
   const board = page.getByTestId("automation-approval-board");
+  const statusCallsBeforeApproval = calls.automationStatusUrls.length;
+  const timelineCallsBeforeApproval = calls.automationTimelineUrls.length;
   await expect(board).toContainText("Needs Approval");
   await expect(board).toContainText("Approve OKTA for bot-managed trading?");
   await board.getByRole("button", { name: "Approve bot trading" }).click();
@@ -3538,7 +3665,15 @@ test("autonomous trading cockpit shows approval candidates and confirms bot trad
     environment_scope: "shadow",
     max_allocation_pct: 0.05,
   });
+  await expect.poll(() => calls.automationStatusUrls.length).toBeGreaterThan(statusCallsBeforeApproval);
+  await expect.poll(() => calls.automationTimelineUrls.length).toBeGreaterThan(timelineCallsBeforeApproval);
+  await expect(page.getByTestId("automation-approval-confirm")).toHaveCount(0);
   await expect(board).toContainText("No thesis-backed bot approvals are waiting");
+  const cockpit = page.getByTestId("autonomous-cockpit");
+  await expect(cockpit).toContainText("OKTA approved for shadow bot trading.");
+  await expect(cockpit).toContainText("Thesis Timing");
+  expect(calls.automationTimelineUrls.at(-1)?.searchParams.get("symbol")).toBe("OKTA");
+  expect(calls.automationTimelineUrls.at(-1)?.searchParams.get("strategy_id")).toBe("thesis_timing");
 });
 
 test("autonomous trading cockpit deep links to a symbol", async ({ page }) => {
@@ -3552,7 +3687,20 @@ test("autonomous trading cockpit deep links to a symbol", async ({ page }) => {
   expect(calls.automationTimelineUrls.at(-1)?.searchParams.get("symbol")).toBe("OKTA");
 
   await cockpit.getByRole("button", { name: "Workspace" }).click();
-  await expect(page).toHaveURL(/\/symbol\/OKTA/);
+  await expect(page).toHaveURL(/\/symbol\/OKTA\?p=overview$/);
+});
+
+test("autonomous trading cockpit clears a symbol filter back to the full queue", async ({ page }) => {
+  const calls = await mockApi(page);
+  await page.goto("/automation/OKTA");
+
+  const cockpit = page.getByTestId("autonomous-cockpit");
+  await expect(cockpit).toContainText("OKTA permissioned strategy control plane");
+  await cockpit.getByRole("button", { name: "All automation" }).click();
+
+  await expect(page).toHaveURL(/\/automation$/);
+  await expect(cockpit).toContainText("Permissioned strategy control plane");
+  expect(calls.automationStatusUrls.at(-1)?.searchParams.get("symbol")).toBeNull();
 });
 
 test("discovery tab shows candidate ranking reasons", async ({ page }) => {
@@ -3628,6 +3776,43 @@ test("attention thesis review opens selected symbol thesis panel", async ({ page
   await expect(placement).toContainText("Active Universe");
   await expect(placement).toContainText("Universe T2");
   await expect(placement).toContainText("Core");
+});
+
+test("attention grouped dismiss waits for mutation and clears the visible queue", async ({ page }) => {
+  const calls = await mockApi(page, {
+    attentionItems: [{
+      id: 7601,
+      kind: "thesis_review",
+      symbol: "OKTA",
+      thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+      candidate_id: null,
+      severity: "review",
+      status: "open",
+      fsm_state: "ready_for_review",
+      owner: "operator",
+      title: "OKTA thesis changed",
+      reason: "Fresh evidence changed the standing thesis.",
+      source: "thesis_engine",
+      source_ref: {},
+      created_at: "2026-06-01T00:00:00Z",
+      resolved_at: null,
+      resolution_kind: null,
+      next_retry_at: null,
+      resurface_at: null,
+      state_reason: "thesis_changed",
+    }],
+  });
+  await page.goto("/");
+
+  await page.locator(".bottom-tabs").getByRole("button", { name: /attention/ }).click();
+  await page.locator(".att-filters").getByRole("button", { name: "trade approvals" }).click();
+  const card = page.locator(".att-card").filter({ hasText: "OKTA" });
+  await expect(card).toBeVisible();
+  await card.getByRole("button", { name: "Dismiss" }).click();
+
+  await expect.poll(() => calls.attentionDismissBodies.length).toBe(1);
+  await expect(card).toHaveCount(0);
+  await expect(page.locator(".att-toolbar")).toContainText("0 pending");
 });
 
 test("watchlist add form posts symbol and refreshes members", async ({ page }) => {

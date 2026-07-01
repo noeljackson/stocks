@@ -17,6 +17,7 @@
     fetchCalibration,
     fetchAttention,
     fetchAttentionReviewPacket,
+    fetchAutomationStatus,
     dismissAttention,
     fetchDecisions,
     fetchDiscoveryPool,
@@ -43,6 +44,8 @@
     subscribe,
     transitionAttention,
     type Alert,
+    type AutomationApprovalCandidate,
+    type AutomationStatus,
     type AttentionItem,
     type AttentionReviewPacket,
     type BrainJournal,
@@ -167,7 +170,7 @@
   let watchlistMembers = $state<Record<string, WatchlistMember[]>>({});
   let pool = $state<PoolMember[]>([]);
   let attention = $state<AttentionItem[]>([]);
-  let attentionFilter = $state<string>("all");
+  let attentionFilter = $state<string>("trade_approvals");
   let reviewPacket = $state<AttentionReviewPacket | null>(null);
   let reviewPacketLoading = $state(false);
   let reviewPacketError = $state<string | null>(null);
@@ -268,6 +271,8 @@
           strategyId: action.strategy_id || "thesis_timing",
           strategyVersion: action.strategy_version || "0.1.0",
           environmentScope: action.environment_scope || "shadow",
+          maxAllocationPct: payload.maxAllocationPct ?? 0.05,
+          maxNotionalUsd: payload.maxNotionalUsd ?? undefined,
           sourceRef: {
             attention_id: item.id,
             attention_kind: item.kind,
@@ -275,8 +280,14 @@
             action_id: action.id,
           },
         });
+        await transitionAttention(item.id, {
+          to_state: "resolved",
+          owner: "operator",
+          reason: "approved_bot_trading",
+          source_ref: { source: "review_packet", thesis_id: item.thesis_id ?? null },
+        }).catch(() => {});
         await refreshAttention();
-        promotionStatus = `${item.symbol} approved for shadow automation.`;
+        promotionStatus = `${item.symbol} approved for shadow bot trading.`;
         openAutomationPage(item.symbol);
       } catch (e) {
         error = e instanceof Error ? e.message : String(e);
@@ -1059,6 +1070,21 @@
     return labels[owner] ?? `${owner} owns next step`;
   }
 
+  function attentionFilterLabel(filter: string): string {
+    if (filter === "trade_approvals") return "trade approvals";
+    if (filter === "price_alert") return "price alerts";
+    if (filter === "all") return "all";
+    return filter.replace(/_/g, " ");
+  }
+
+  function attentionGroupMatchesFilter(group: AttGroup): boolean {
+    if (attentionFilter === "all") return true;
+    if (attentionFilter === "trade_approvals") {
+      return group.kind === "thesis_review" || group.kind === "thesis_actionable";
+    }
+    return group.kind === attentionFilter;
+  }
+
   function attentionSections(groups: AttGroup[]): AttSection[] {
     const map = new Map<string, AttSection>();
     for (const group of groups) {
@@ -1103,6 +1129,12 @@
   let symbolDeclines = $state<ThesisDecline[] | null | undefined>(undefined);
   let symbolDecisions = $state<DecisionRow[] | null | undefined>(undefined);
   let symbolPositions = $state<PositionRow[] | null | undefined>(undefined);
+  let symbolAutomation = $state<AutomationStatus | null | undefined>(undefined);
+  let automationApprovalCandidate = $state<AutomationApprovalCandidate | null>(null);
+  let automationApprovalOpen = $state(false);
+  let automationApprovalBusy = $state(false);
+  let automationApprovalMaxAllocationPct = $state("5");
+  let automationApprovalMaxNotionalUsd = $state("");
   let openSymbolTheses = $derived.by<ThesisDetail[]>(() =>
     [...(symbolTheses ?? [])]
       .filter((t) => !["closed", "disqualified"].includes(t.state))
@@ -1112,9 +1144,50 @@
   let openSymbolPositions = $derived<PositionRow[]>(
     (symbolPositions ?? []).filter((p) => !p.closed_at),
   );
+  let selectedAutomationPermission = $derived(
+    (symbolAutomation?.permissions ?? []).find((row) =>
+      row.symbol === selectedSymbol
+      && row.strategy_id === "thesis_timing"
+      && row.strategy_version === "0.1.0"
+      && row.environment_scope === "shadow"
+      && ["pending", "approved"].includes(row.permission_status)
+    ) ?? null,
+  );
+  let selectedAutomationCandidate = $derived<AutomationApprovalCandidate | null>(
+    (symbolAutomation?.approval_candidates ?? []).find((candidate) => candidate.symbol === selectedSymbol) ?? null,
+  );
   let selectedSymbolAttention = $derived<AttentionItem[]>(
     attention.filter((item) => item.symbol === selectedSymbol),
   );
+  let selectedApprovalCandidate = $derived.by<AutomationApprovalCandidate | null>(() => {
+    if (selectedAutomationPermission) return null;
+    if (selectedAutomationCandidate) return selectedAutomationCandidate;
+    if (!selectedSymbol || !currentSymbolThesis) return null;
+    const thesisAttention = selectedSymbolAttention.find((item) =>
+      ["thesis_review", "thesis_actionable"].includes(item.kind)
+      && (!item.thesis_id || item.thesis_id === currentSymbolThesis.thesis_id)
+    );
+    const stateEligible = ["building_conviction", "armed", "actionable"].includes(currentSymbolThesis.state);
+    if (!thesisAttention && !stateEligible) return null;
+    return {
+      attention_id: thesisAttention?.id ?? null,
+      attention_kind: thesisAttention?.kind ?? "thesis",
+      symbol: selectedSymbol,
+      title: thesisAttention?.title ?? `${selectedSymbol} thesis`,
+      reason: thesisAttention?.reason ?? currentSymbolThesis.edge_rationale,
+      created_at: thesisAttention?.created_at ?? currentSymbolThesis.updated_at,
+      thesis_id: currentSymbolThesis.thesis_id,
+      thesis_state: currentSymbolThesis.state,
+      thesis_direction: forecastDirectionFrom(currentSymbolThesis.forecast),
+      thesis_edge: currentSymbolThesis.edge_rationale,
+      strategy_id: "thesis_timing",
+      strategy_version: "0.1.0",
+      strategy_display_name: "Thesis Timing",
+      environment_scope: "shadow",
+      default_max_allocation_pct: 0.05,
+      headline: `Approve ${selectedSymbol} for bot-managed trading?`,
+    };
+  });
   let selectedCandidateReviews = $derived<AttentionItem[]>(
     selectedSymbolAttention.filter((item) => item.kind === "candidate_review"),
   );
@@ -1344,6 +1417,76 @@
     return Number.isFinite(n) ? n : undefined;
   }
 
+  function pctFromInput(value: string, fallback = 0.05): number {
+    const parsed = parseOptionalNumber(value);
+    if (parsed === undefined || parsed <= 0) return fallback;
+    return parsed > 1 ? parsed / 100 : parsed;
+  }
+
+  function approvalCapText(candidate: AutomationApprovalCandidate | null): string {
+    const cap = candidate?.default_max_allocation_pct ?? 0.05;
+    return `${(cap * 100).toFixed(cap * 100 % 1 === 0 ? 0 : 1)}%`;
+  }
+
+  function openAutomationApproval(candidate: AutomationApprovalCandidate | null = selectedApprovalCandidate) {
+    if (!candidate) {
+      rightTab = "theses";
+      return;
+    }
+    automationApprovalCandidate = candidate;
+    automationApprovalMaxAllocationPct = String(Math.round((candidate.default_max_allocation_pct ?? 0.05) * 100));
+    automationApprovalMaxNotionalUsd = "";
+    automationApprovalOpen = true;
+  }
+
+  async function submitAutomationApproval(candidate: AutomationApprovalCandidate | null = automationApprovalCandidate) {
+    if (!candidate?.symbol) return;
+    automationApprovalBusy = true;
+    promotionStatus = null;
+    try {
+      const maxAllocationPct = pctFromInput(
+        automationApprovalMaxAllocationPct,
+        candidate.default_max_allocation_pct ?? 0.05,
+      );
+      const maxNotionalUsd = parseOptionalNumber(automationApprovalMaxNotionalUsd);
+      await approveAutomationPermission({
+        symbol: candidate.symbol,
+        strategyId: candidate.strategy_id || "thesis_timing",
+        strategyVersion: candidate.strategy_version || "0.1.0",
+        environmentScope: candidate.environment_scope || "shadow",
+        maxAllocationPct,
+        maxNotionalUsd,
+        sourceRef: {
+          source: "workspace_approval",
+          attention_id: candidate.attention_id ?? undefined,
+          attention_kind: candidate.attention_kind,
+          thesis_id: candidate.thesis_id ?? undefined,
+        },
+      });
+      if (candidate.attention_id) {
+        await transitionAttention(candidate.attention_id, {
+          to_state: "resolved",
+          owner: "operator",
+          reason: "approved_bot_trading",
+          source_ref: { source: "workspace_approval", thesis_id: candidate.thesis_id ?? null },
+        }).catch(() => {});
+      }
+      await Promise.all([
+        refreshAttention(),
+        selectedSymbol === candidate.symbol ? reloadSelectedSymbolDetails() : Promise.resolve(),
+        fetchTickers().then((t) => (tickers = t)).catch(() => {}),
+      ]);
+      promotionStatus = `${candidate.symbol} approved for shadow bot trading.`;
+      automationApprovalOpen = false;
+      automationApprovalCandidate = null;
+      openAutomationPage(candidate.symbol);
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      automationApprovalBusy = false;
+    }
+  }
+
   function resetFillForm() {
     decPositionId = "";
     decQty = "";
@@ -1564,7 +1707,7 @@
   }
 
   function workflowFromApi(workflow: ApiSymbolWorkflow): SymbolWorkflow {
-    return {
+    const base = {
       state: workflow.state_label,
       tone: workflow.tone,
       reason: workflow.reason,
@@ -1581,6 +1724,29 @@
       automation: apiWorkflowStep(workflow, "automation", "not approved"),
       decision: apiWorkflowStep(workflow, "decision", "no decision"),
     };
+    if (selectedAutomationPermission) {
+      return {
+        ...base,
+        state: "Bot approved",
+        tone: selectedAutomationPermission.manual_freeze ? "blocked" : "tracking",
+        reason: `${selectedAutomationPermission.strategy_display_name} is approved for ${selectedAutomationPermission.environment_scope} bot-managed entries and exits.`,
+        primary: "Open bot monitor",
+        action: "automation",
+        automation: selectedAutomationPermission.derived_status.replace(/_/g, " "),
+      };
+    }
+    if (selectedApprovalCandidate && base.action !== "tracking") {
+      return {
+        ...base,
+        state: "Ready for bot approval",
+        tone: "actionable",
+        reason: selectedApprovalCandidate.reason ?? selectedApprovalCandidate.thesis_edge ?? "A thesis-backed setup is waiting for operator approval before the bot can manage entries and exits.",
+        primary: "Approve bot trading",
+        action: "automation_approve",
+        automation: `ready · cap ${approvalCapText(selectedApprovalCandidate)}`,
+      };
+    }
+    return base;
   }
 
   function workflowLoading(): boolean {
@@ -1595,6 +1761,7 @@
       symbolDeclines,
       symbolDecisions,
       symbolPositions,
+      symbolAutomation,
     ].some((value) => value === undefined);
   }
 
@@ -1666,6 +1833,36 @@
         evidence: evidenceText,
         thesis: thesisText,
         automation: "not approved",
+        decision: decisionText,
+      };
+    }
+    if (selectedAutomationPermission) {
+      return {
+        state: "Bot approved",
+        tone: selectedAutomationPermission.manual_freeze ? "blocked" : "tracking",
+        reason: `${selectedAutomationPermission.strategy_display_name} is approved for ${selectedAutomationPermission.environment_scope} bot-managed entries and exits.`,
+        primary: "Open bot monitor",
+        action: "automation",
+        status: statusText,
+        attention: attentionText,
+        evidence: evidenceText,
+        thesis: thesisText,
+        automation: selectedAutomationPermission.derived_status.replace(/_/g, " "),
+        decision: decisionText,
+      };
+    }
+    if (selectedApprovalCandidate && openSymbolPositions.length === 0 && !pendingManualFillDecision()) {
+      return {
+        state: "Ready for bot approval",
+        tone: "actionable",
+        reason: selectedApprovalCandidate.reason ?? selectedApprovalCandidate.thesis_edge ?? "A thesis-backed setup is waiting for operator approval before the bot can manage entries and exits.",
+        primary: "Approve bot trading",
+        action: "automation_approve",
+        status: statusText,
+        attention: attentionText,
+        evidence: evidenceText,
+        thesis: thesisText,
+        automation: `ready · cap ${approvalCapText(selectedApprovalCandidate)}`,
         decision: decisionText,
       };
     }
@@ -1804,6 +2001,10 @@
     }
     if (action === "automation") {
       openAutomationPage(selectedSymbol);
+      return;
+    }
+    if (action === "automation_approve") {
+      openAutomationApproval();
       return;
     }
     if (action === "decision") {
@@ -2152,12 +2353,15 @@
     symbolDeclines = undefined;
     symbolDecisions = undefined;
     symbolPositions = undefined;
+    symbolAutomation = undefined;
+    automationApprovalCandidate = null;
+    automationApprovalOpen = false;
     replay = null;
     replayStatus = null;
   }
 
   async function loadSelectedSymbolDetails(symbol: string) {
-    const [ctx, evidence, evidenceItems, research, technical, brain, workflow, theses, declines, decisions, positions] = await Promise.all([
+    const [ctx, evidence, evidenceItems, research, technical, brain, workflow, theses, declines, decisions, positions, automation] = await Promise.all([
       fetchTickerContext(symbol).catch(() => null),
       fetchEvidenceRequirements(symbol).catch(() => []),
       fetchEvidenceItems(symbol).catch(() => []),
@@ -2169,6 +2373,7 @@
       fetchThesisDeclines(symbol).catch(() => []),
       fetchDecisions(symbol).catch(() => []),
       fetchPositions(symbol).catch(() => []),
+      fetchAutomationStatus({ symbol }).catch(() => null),
     ]);
     if (selectedSymbol !== symbol) return;
     symbolContext = ctx;
@@ -2182,6 +2387,7 @@
     symbolDeclines = declines;
     symbolDecisions = decisions;
     symbolPositions = positions;
+    symbolAutomation = automation;
   }
 
   async function reloadSelectedSymbolDetails() {
@@ -2935,6 +3141,38 @@
       <p class="workflow-status">{researchKickoffStatus}</p>
     {/if}
 
+    {#if automationApprovalOpen && automationApprovalCandidate}
+      <section class="automation-confirm-panel" data-testid="automation-approval-confirm">
+        <div class="automation-confirm-copy">
+          <span class="workflow-kicker">confirm bot approval</span>
+          <strong>{automationApprovalCandidate.headline ?? `Approve ${automationApprovalCandidate.symbol} for bot trading?`}</strong>
+          <p>{automationApprovalCandidate.reason ?? automationApprovalCandidate.thesis_edge}</p>
+        </div>
+        <dl>
+          <dt>strategy</dt><dd>{automationApprovalCandidate.strategy_display_name}</dd>
+          <dt>mode</dt><dd>{automationApprovalCandidate.environment_scope}</dd>
+          <dt>ttl</dt><dd>90 days</dd>
+          <dt>thesis</dt><dd>{automationApprovalCandidate.thesis_state?.replace(/_/g, " ") ?? "open"} · {thesisDirectionLabel(automationApprovalCandidate.thesis_direction)}</dd>
+        </dl>
+        <label>
+          Max allocation
+          <input bind:value={automationApprovalMaxAllocationPct} inputmode="decimal" />
+          <span>%</span>
+        </label>
+        <label>
+          Max notional
+          <input bind:value={automationApprovalMaxNotionalUsd} inputmode="decimal" placeholder="optional" />
+        </label>
+        <div class="automation-confirm-actions">
+          <span class="muted">Shadow only. No live broker order is placed by this approval.</span>
+          <button type="button" class="confirm" disabled={automationApprovalBusy} onclick={() => submitAutomationApproval()}>
+            {automationApprovalBusy ? "Approving..." : "Approve bot trading"}
+          </button>
+          <button type="button" class="text-action" disabled={automationApprovalBusy} onclick={() => (automationApprovalOpen = false)}>Cancel</button>
+        </div>
+      </section>
+    {/if}
+
     <div class="workflow-rail" aria-label="Selected symbol workflow">
       <button type="button" class="workflow-step" onclick={() => runWorkflowAction("overview")}>
         <span>Status</span>
@@ -3314,9 +3552,9 @@
           <div class="att-toolbar">
             <span class="muted">{groupedAttention.length} pending</span>
             <span class="att-filters">
-              {#each ["all", "candidate_review", "thesis_review", "thesis_actionable", "risk_review"] as f}
+              {#each ["trade_approvals", "candidate_review", "price_alert", "risk_review", "all"] as f}
                 <button class:active={attentionFilter === f} onclick={() => (attentionFilter = f)}>
-                  {f === "all" ? "all" : f.replace(/_/g, " ")}
+                  {attentionFilterLabel(f)}
                 </button>
               {/each}
             </span>
@@ -3325,7 +3563,7 @@
           {#if groupedAttention.length === 0}
             <p class="muted">No open attention. The system is quiet.</p>
           {:else}
-            {@const groups = groupedAttention.filter((g) => attentionFilter === "all" || g.kind === attentionFilter)}
+            {@const groups = groupedAttention.filter(attentionGroupMatchesFilter)}
             {#if groups.length === 0}
               <p class="muted">No attention matches this filter.</p>
             {:else}
@@ -4118,6 +4356,37 @@
           </nav>
           <div class="tab-body">
             {#if rightTab === "overview"}
+              <section class="side-action-card action-{selectedWorkflow.action}" data-testid="side-primary-action">
+                <div class="brain-hdr">
+                  <span class="brain-title">Next action</span>
+                  <span class="badge tiny tone-{selectedWorkflow.tone}">{selectedWorkflow.state}</span>
+                </div>
+                <h4>{selectedWorkflow.primary}</h4>
+                <p>{selectedWorkflow.primaryDetail ?? selectedWorkflow.reason}</p>
+                {#if selectedApprovalCandidate}
+                  <dl class="meta-list inline">
+                    <dt>strategy</dt><dd>{selectedApprovalCandidate.strategy_display_name}</dd>
+                    <dt>mode</dt><dd>{selectedApprovalCandidate.environment_scope}</dd>
+                    <dt>cap</dt><dd>{approvalCapText(selectedApprovalCandidate)}</dd>
+                    <dt>thesis</dt><dd>{selectedApprovalCandidate.thesis_state?.replace(/_/g, " ") ?? "open"}</dd>
+                  </dl>
+                  <p class="muted">Approval lets the bot manage this strategy sleeve after proof/risk gates pass. It does not place a live broker order.</p>
+                {/if}
+                <div class="promotion-actions">
+                  <button
+                    class="confirm"
+                    disabled={automationApprovalBusy || researchKickoffBusy}
+                    onclick={runSelectedWorkflowPrimary}
+                  >
+                    {automationApprovalBusy ? "Approving..." : selectedWorkflow.primary}
+                  </button>
+                  {#if selectedSymbol}
+                    <button type="button" class="text-action" onclick={() => (rightTab = selectedApprovalCandidate ? "theses" : "evidence")}>
+                      {selectedApprovalCandidate ? "inspect thesis" : "inspect details"}
+                    </button>
+                  {/if}
+                </div>
+              </section>
               {#if selectedCandidateReview}
                 {@const availableData = candidateAvailableData(selectedCandidateReview)}
                 <section class="side-review-card" data-testid="side-candidate-review">
@@ -4579,7 +4848,13 @@
                     </p>
                   {/if}
                   {#if currentSymbolThesis}
-                    <ThesisDetails thesis={currentSymbolThesis} onRecordDecision={openThesisDecision} />
+                    <ThesisDetails
+                      thesis={currentSymbolThesis}
+                      onRecordDecision={openThesisDecision}
+                      automationApprovalAvailable={Boolean(selectedApprovalCandidate)}
+                      automationApprovalLabel="Approve bot trading"
+                      onApproveAutomation={() => openAutomationApproval()}
+                    />
                   {:else}
                     <p class="muted">No open thesis for <strong>{selectedSymbol}</strong>.</p>
                   {/if}
@@ -5068,6 +5343,102 @@
     color: #a6e3a1;
     font-size: .76rem;
   }
+  .automation-confirm-panel {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: minmax(280px, 1fr) auto minmax(120px, 150px) minmax(120px, 150px);
+    gap: .55rem;
+    align-items: center;
+    min-width: 0;
+    border: 1px solid rgba(166, 227, 161, .36);
+    border-left: 3px solid rgb(166, 227, 161);
+    border-radius: 4px;
+    background: #09110d;
+    padding: .55rem .65rem;
+  }
+  .automation-confirm-copy {
+    min-width: 0;
+  }
+  .automation-confirm-copy strong,
+  .automation-confirm-copy p {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .automation-confirm-copy p {
+    margin: .12rem 0 0;
+    color: #a6adc8;
+    font-size: .78rem;
+  }
+  .automation-confirm-panel dl {
+    display: grid;
+    grid-template-columns: auto auto;
+    gap: .12rem .5rem;
+    margin: 0;
+    font-size: .75rem;
+  }
+  .automation-confirm-panel dt {
+    color: #7f8aa3;
+  }
+  .automation-confirm-panel dd {
+    margin: 0;
+    color: #cdd6f4;
+    white-space: nowrap;
+  }
+  .automation-confirm-panel label {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: .15rem .25rem;
+    align-items: center;
+    color: #9aa3b8;
+    font-size: .7rem;
+    text-transform: uppercase;
+  }
+  .automation-confirm-panel label input {
+    grid-column: 1;
+    min-width: 0;
+    background: #0a0d14;
+    color: #cdd6f4;
+    border: 1px solid #2a3548;
+    border-radius: 4px;
+    padding: .25rem .4rem;
+    font: inherit;
+    font-size: .82rem;
+    text-transform: none;
+  }
+  .automation-confirm-panel label span {
+    grid-column: 2;
+    align-self: end;
+    color: #7f8aa3;
+    font-size: .78rem;
+    text-transform: none;
+  }
+  .automation-confirm-actions {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    flex-wrap: wrap;
+  }
+  .automation-confirm-actions .confirm {
+    margin-left: auto;
+    background: rgba(166, 227, 161, .14);
+    color: #cdd6f4;
+    border: 1px solid rgba(166, 227, 161, .45);
+    border-radius: 4px;
+    padding: .3rem .7rem;
+    font: inherit;
+    cursor: pointer;
+  }
+  .automation-confirm-actions .confirm:hover {
+    background: rgba(166, 227, 161, .22);
+  }
+  .automation-confirm-actions .confirm:disabled {
+    cursor: wait;
+    opacity: .7;
+  }
   .workflow-rail {
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -5332,6 +5703,39 @@
     gap: .45rem;
     font-size: .8rem;
   }
+  .side-action-card {
+    border: 1px solid #2a3548;
+    border-left: 3px solid #45567a;
+    border-radius: 4px;
+    background: #0c1019;
+    padding: .65rem .7rem;
+    margin-bottom: .7rem;
+    display: flex;
+    flex-direction: column;
+    gap: .45rem;
+    font-size: .8rem;
+  }
+  .side-action-card.action-automation_approve {
+    border-left-color: rgb(166, 227, 161);
+    background: #09110d;
+  }
+  .side-action-card.action-promote,
+  .side-action-card.action-research {
+    border-left-color: rgb(180, 190, 254);
+  }
+  .side-action-card.action-automation {
+    border-left-color: rgb(137, 180, 250);
+  }
+  .side-action-card h4 {
+    margin: 0;
+    color: #cdd6f4;
+    font-size: .95rem;
+  }
+  .side-action-card p {
+    margin: 0;
+    color: #bac2de;
+    line-height: 1.35;
+  }
   .side-review-card h4 {
     margin: 0;
     color: #cdd6f4;
@@ -5346,11 +5750,19 @@
     .workflow-strip {
       grid-template-columns: minmax(0, 1fr);
     }
+    .automation-confirm-panel {
+      grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+    }
+    .automation-confirm-copy,
+    .automation-confirm-actions {
+      grid-column: 1 / -1;
+    }
     .promotion-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
   }
   @media (max-width: 760px) {
+    .automation-confirm-panel,
     .promotion-grid,
     .workflow-rail,
     .workflow-attention {

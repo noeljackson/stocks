@@ -1,7 +1,9 @@
 <script lang="ts">
   import {
+    approveAutomationPermission,
     fetchAutomationStatus,
     fetchAutomationTimeline,
+    type AutomationApprovalCandidate,
     type AutomationPermission,
     type AutomationStatus,
     type AutomationTimeline,
@@ -29,6 +31,11 @@
   let error = $state<string | null>(null);
   let timelineError = $state<string | null>(null);
   let selectedPermissionId = $state<string | null>(null);
+  let selectedApprovalCandidate = $state<AutomationApprovalCandidate | null>(null);
+  let approvalBusy = $state(false);
+  let approvalStatus = $state<string | null>(null);
+  let approvalMaxAllocationPct = $state("5");
+  let approvalMaxNotionalUsd = $state("");
   let lastStatusKey = "__init__";
   let lastTimelineKey = "__init__";
 
@@ -38,6 +45,7 @@
   });
 
   const visiblePermissions = $derived.by<AutomationPermission[]>(() => status?.permissions ?? []);
+  const approvalCandidates = $derived.by<AutomationApprovalCandidate[]>(() => status?.approval_candidates ?? []);
 
   const summary = $derived.by(() => {
     const permissions = visiblePermissions.length;
@@ -71,6 +79,56 @@
       selectedPermissionId = null;
     } finally {
       loading = false;
+    }
+  }
+
+  function openApprovalCandidate(candidate: AutomationApprovalCandidate) {
+    selectedApprovalCandidate = candidate;
+    approvalMaxAllocationPct = String(Math.round((candidate.default_max_allocation_pct ?? 0.05) * 100));
+    approvalMaxNotionalUsd = "";
+    approvalStatus = null;
+  }
+
+  function parseOptionalNumber(value: string): number | undefined {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : undefined;
+  }
+
+  async function submitApprovalCandidate(candidate = selectedApprovalCandidate) {
+    if (!candidate) return;
+    approvalBusy = true;
+    approvalStatus = null;
+    error = null;
+    try {
+      const allocationInput = parseOptionalNumber(approvalMaxAllocationPct);
+      const maxAllocationPct = allocationInput && allocationInput > 0
+        ? allocationInput > 1 ? allocationInput / 100 : allocationInput
+        : candidate.default_max_allocation_pct ?? 0.05;
+      const approved = await approveAutomationPermission({
+        symbol: candidate.symbol,
+        strategyId: candidate.strategy_id || "thesis_timing",
+        strategyVersion: candidate.strategy_version || "0.1.0",
+        environmentScope: candidate.environment_scope || "shadow",
+        maxAllocationPct,
+        maxNotionalUsd: parseOptionalNumber(approvalMaxNotionalUsd),
+        sourceRef: {
+          source: "automation_page_approval",
+          attention_id: candidate.attention_id ?? undefined,
+          attention_kind: candidate.attention_kind,
+          thesis_id: candidate.thesis_id ?? undefined,
+        },
+      });
+      approvalStatus = `${candidate.symbol} approved for shadow bot trading.`;
+      selectedApprovalCandidate = null;
+      await refreshStatus();
+      selectedPermissionId = approved.permission_id;
+      await refreshTimeline(true);
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      approvalBusy = false;
     }
   }
 
@@ -343,6 +401,81 @@
       <div><span>kill switch</span><strong>{status.kill_switch.enabled ? "on" : "off"}</strong></div>
       <div><span>adapter</span><strong>{status.paper_order_adapter?.enabled ? "paper on" : "paper off"}</strong></div>
     </section>
+
+    <section class="approval-board" data-testid="automation-approval-board">
+      <div class="section-head compact">
+        <div>
+          <h2>Needs Approval</h2>
+          <p>Thesis-backed tickers waiting for permission before the bot can manage entries and exits.</p>
+        </div>
+        <span>{approvalCandidates.length}</span>
+      </div>
+      {#if approvalStatus}
+        <p class="success-text">{approvalStatus}</p>
+      {/if}
+      {#if approvalCandidates.length === 0}
+        <p class="muted approval-empty">No thesis-backed bot approvals are waiting{symbol ? ` for ${symbol}` : ""}.</p>
+      {:else}
+        <div class="approval-cards">
+          {#each approvalCandidates as candidate (`${candidate.symbol}-${candidate.strategy_id}-${candidate.thesis_id ?? candidate.attention_id}`)}
+            <article class="approval-card">
+              <div>
+                <span class="eyebrow">{candidate.symbol}</span>
+                <h3>{candidate.headline ?? `Approve ${candidate.symbol} for bot trading?`}</h3>
+                <p>{candidate.reason ?? candidate.thesis_edge}</p>
+              </div>
+              <dl>
+                <dt>strategy</dt><dd>{candidate.strategy_display_name}</dd>
+                <dt>mode</dt><dd>{candidate.environment_scope}</dd>
+                <dt>cap</dt><dd>{((candidate.default_max_allocation_pct ?? 0.05) * 100).toFixed(0)}%</dd>
+                <dt>thesis</dt><dd>{titleize(candidate.thesis_state ?? "open")}</dd>
+              </dl>
+              <div class="approval-actions">
+                <button type="button" onclick={() => openApprovalCandidate(candidate)}>
+                  Approve bot trading
+                </button>
+                <button type="button" class="secondary" onclick={() => onOpenWorkspace(candidate.symbol)}>
+                  Open symbol
+                </button>
+              </div>
+            </article>
+          {/each}
+        </div>
+      {/if}
+    </section>
+
+    {#if selectedApprovalCandidate}
+      <section class="approval-confirm" data-testid="automation-approval-confirm">
+        <div>
+          <span class="eyebrow">Confirm Approval</span>
+          <h2>{selectedApprovalCandidate.headline ?? `Approve ${selectedApprovalCandidate.symbol} for bot trading?`}</h2>
+          <p>Shadow mode only. No live broker order is placed by this approval.</p>
+        </div>
+        <dl class="approval-confirm-meta">
+          <dt>symbol</dt><dd>{selectedApprovalCandidate.symbol}</dd>
+          <dt>strategy</dt><dd>{selectedApprovalCandidate.strategy_display_name}</dd>
+          <dt>mode</dt><dd>{selectedApprovalCandidate.environment_scope}</dd>
+          <dt>ttl</dt><dd>90 days</dd>
+        </dl>
+        <label>
+          Max allocation
+          <span>
+            <input bind:value={approvalMaxAllocationPct} inputmode="decimal" />
+            %
+          </span>
+        </label>
+        <label>
+          Max notional
+          <input bind:value={approvalMaxNotionalUsd} inputmode="decimal" placeholder="optional" />
+        </label>
+        <div class="approval-confirm-actions">
+          <button type="button" disabled={approvalBusy} onclick={() => submitApprovalCandidate()}>
+            {approvalBusy ? "Approving" : "Approve bot trading"}
+          </button>
+          <button type="button" class="secondary" disabled={approvalBusy} onclick={() => (selectedApprovalCandidate = null)}>Cancel</button>
+        </div>
+      </section>
+    {/if}
 
     <div class="page-grid">
       <section class="decision-board" aria-label="Strategy decisions">
@@ -798,6 +931,137 @@
     font-size: .95rem;
   }
 
+  .approval-board,
+  .approval-confirm {
+    border: 1px solid #1f2733;
+    border-radius: 4px;
+    background: #0c1019;
+    padding: .75rem;
+    display: grid;
+    gap: .65rem;
+  }
+
+  .section-head.compact {
+    align-items: baseline;
+  }
+
+  .approval-empty {
+    border: 1px dashed #263144;
+    border-radius: 4px;
+    padding: .65rem;
+    background: #0a0d14;
+  }
+
+  .approval-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: .55rem;
+  }
+
+  .approval-card {
+    display: grid;
+    gap: .55rem;
+    border: 1px solid rgba(166, 227, 161, .26);
+    border-left: 3px solid rgb(166, 227, 161);
+    border-radius: 4px;
+    background: #09110d;
+    padding: .65rem;
+  }
+
+  .approval-card h3 {
+    margin-top: .12rem;
+    font-size: .88rem;
+    text-transform: none;
+  }
+
+  .approval-card p {
+    margin-top: .2rem;
+    line-height: 1.35;
+  }
+
+  .approval-card dl,
+  .approval-confirm-meta,
+  .approval-confirm label {
+    display: grid;
+    gap: .16rem .5rem;
+  }
+
+  .approval-card dl,
+  .approval-confirm-meta {
+    grid-template-columns: auto 1fr;
+    margin: 0;
+    font-size: .76rem;
+  }
+
+  .approval-card dt,
+  .approval-confirm-meta dt {
+    color: #7f8aa3;
+  }
+
+  .approval-card dd,
+  .approval-confirm-meta dd {
+    margin: 0;
+  }
+
+  .approval-actions,
+  .approval-confirm-actions {
+    display: flex;
+    gap: .45rem;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .approval-actions button:first-child,
+  .approval-confirm-actions button:first-child {
+    background: rgba(166, 227, 161, .14);
+    border-color: rgba(166, 227, 161, .45);
+  }
+
+  button.secondary {
+    background: transparent;
+  }
+
+  .approval-confirm {
+    grid-template-columns: minmax(280px, 1fr) minmax(160px, 220px) minmax(130px, 160px) minmax(130px, 180px) auto;
+    align-items: end;
+    border-color: rgba(166, 227, 161, .34);
+    background: #09110d;
+  }
+
+  .approval-confirm h2 {
+    margin-top: .1rem;
+  }
+
+  .approval-confirm label {
+    color: #9aa3b8;
+    font-size: .72rem;
+    text-transform: uppercase;
+  }
+
+  .approval-confirm label span {
+    display: flex;
+    align-items: center;
+    gap: .25rem;
+    text-transform: none;
+  }
+
+  .approval-confirm input {
+    min-width: 0;
+    width: 100%;
+    background: #0a0d14;
+    color: #cdd6f4;
+    border: 1px solid #2a3548;
+    border-radius: 4px;
+    padding: .28rem .45rem;
+    font: inherit;
+    text-transform: none;
+  }
+
+  .success-text {
+    color: #a6e3a1;
+    font-size: .8rem;
+  }
+
   .page-grid {
     display: grid;
     grid-template-columns: minmax(420px, .95fr) minmax(420px, 1.05fr);
@@ -1126,6 +1390,15 @@
       grid-template-columns: 1fr;
     }
 
+    .approval-confirm {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .approval-confirm > div:first-child,
+    .approval-confirm-actions {
+      grid-column: 1 / -1;
+    }
+
     .permission-row {
       grid-template-columns: 1fr;
     }
@@ -1141,6 +1414,14 @@
     }
 
     .metric-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .approval-confirm {
+      grid-template-columns: 1fr;
+    }
+
+    .automation-confirm-panel {
       grid-template-columns: 1fr;
     }
 

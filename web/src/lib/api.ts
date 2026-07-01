@@ -176,8 +176,29 @@ export interface AutomationStatus {
     readiness_ready?: number;
     readiness_blocked?: number;
     readiness_missing?: number;
+    approval_candidates?: number;
   };
   permissions: AutomationPermission[];
+  approval_candidates?: AutomationApprovalCandidate[];
+}
+
+export interface AutomationApprovalCandidate {
+  attention_id?: number | null;
+  attention_kind: string;
+  symbol: string;
+  title: string;
+  reason?: string | null;
+  created_at: string;
+  thesis_id?: string | null;
+  thesis_state?: string | null;
+  thesis_direction?: string | null;
+  thesis_edge?: string | null;
+  strategy_id: string;
+  strategy_version: string;
+  strategy_display_name: string;
+  environment_scope: string;
+  default_max_allocation_pct?: number | null;
+  headline?: string | null;
 }
 
 export interface AutomationPermission {
@@ -571,6 +592,7 @@ export type WorkflowActionKind =
   | "evidence"
   | "thesis"
   | "automation"
+  | "automation_approve"
   | "decision"
   | "tracking"
   | "overview";
@@ -1721,6 +1743,8 @@ export interface ReviewPacketAction {
 
 export interface ReviewPacketActionPayload {
   watchlistIds?: string[];
+  maxAllocationPct?: number | null;
+  maxNotionalUsd?: number | null;
 }
 
 export interface ReviewPacketDecision {

@@ -4,11 +4,17 @@
   type Props = {
     thesis: ThesisDetail;
     onRecordDecision?: (thesis: ThesisDetail) => void;
+    automationApprovalAvailable?: boolean;
+    automationApprovalLabel?: string;
+    onApproveAutomation?: (thesis: ThesisDetail) => void;
   };
 
   let {
     thesis,
     onRecordDecision = (_thesis: ThesisDetail) => {},
+    automationApprovalAvailable = false,
+    automationApprovalLabel = "Approve bot trading",
+    onApproveAutomation = (_thesis: ThesisDetail) => {},
   }: Props = $props();
 
   function stateColor(s: string): string {
@@ -179,6 +185,17 @@
     <span class="meta muted">updated {shortTs(thesis.updated_at)}</span>
     {#if thesis.last_evaluated_at}
       <span class="meta muted">evaluated {shortTs(thesis.last_evaluated_at)}</span>
+    {/if}
+    {#if automationApprovalAvailable}
+      <button
+        type="button"
+        class="automation-action"
+        data-testid="thesis-approve-automation"
+        title="Approve shadow bot-managed entries and exits for this thesis"
+        onclick={() => onApproveAutomation(thesis)}
+      >
+        {automationApprovalLabel}
+      </button>
     {/if}
     <button
       type="button"
@@ -408,16 +425,28 @@
     padding: 1rem; margin: 0.5rem 0;
   }
   .hdr { display: flex; gap: 0.6rem; align-items: baseline; flex-wrap: wrap; margin-bottom: 0.75rem; }
+  .automation-action,
   .decision-action {
     margin-left: auto;
-    background: #1b2230;
     color: #cdd6f4;
-    border: 1px solid #45567a;
     border-radius: 4px;
     padding: 0.22rem 0.65rem;
     font: inherit;
     font-size: 0.75rem;
     cursor: pointer;
+  }
+  .automation-action {
+    background: rgba(166, 227, 161, .14);
+    border: 1px solid rgba(166, 227, 161, .46);
+  }
+  .decision-action {
+    margin-left: 0;
+    background: #1b2230;
+    border: 1px solid #45567a;
+  }
+  .automation-action:hover {
+    border-color: #a6e3a1;
+    color: #a6e3a1;
   }
   .decision-action:hover {
     border-color: #89b4fa;

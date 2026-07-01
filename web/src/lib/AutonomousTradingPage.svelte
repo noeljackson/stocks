@@ -14,11 +14,13 @@
     symbol = null,
     onOpenWorkspace = (_symbol: string) => {},
     onFilterSymbol = (_symbol: string | null) => {},
+    onApprovalComplete = (_symbol: string) => {},
     onBack = () => {},
   } = $props<{
     symbol?: string | null;
     onOpenWorkspace?: (symbol: string) => void;
     onFilterSymbol?: (symbol: string | null) => void;
+    onApprovalComplete?: (symbol: string) => void | Promise<void>;
     onBack?: () => void;
   }>();
 
@@ -125,6 +127,7 @@
       await refreshStatus();
       selectedPermissionId = approved.permission_id;
       await refreshTimeline(true);
+      await onApprovalComplete(candidate.symbol);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -372,7 +375,7 @@
     </div>
     <div class="head-actions">
       {#if symbol}
-        <button type="button" class="chip-button" onclick={() => onFilterSymbol(null)}>Clear {symbol}</button>
+        <button type="button" class="chip-button" onclick={() => onFilterSymbol(null)}>All automation</button>
       {/if}
       {#if selectedRow}
         <button type="button" onclick={() => onOpenWorkspace(selectedRow.symbol)}>Workspace</button>

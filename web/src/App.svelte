@@ -172,6 +172,7 @@
   let pool = $state<PoolMember[]>([]);
   let attention = $state<AttentionItem[]>([]);
   let attentionFilter = $state<string>("trade_approvals");
+  let attentionActionBusyKey = $state<string | null>(null);
   let reviewPacket = $state<AttentionReviewPacket | null>(null);
   let reviewPacketLoading = $state(false);
   let reviewPacketError = $state<string | null>(null);
@@ -438,6 +439,19 @@
       error = String(e);
     }
   }
+  async function dismissAttentionGroup(key: string, items: AttentionItem[], reason?: string) {
+    if (attentionActionBusyKey) return;
+    attentionActionBusyKey = key;
+    error = null;
+    try {
+      await Promise.all(items.map((item) => dismissAttention(item.id, reason)));
+      await refreshAttention();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      attentionActionBusyKey = null;
+    }
+  }
   async function deferOne(id: number) {
     try {
       await transitionAttention(id, {
@@ -449,6 +463,24 @@
       await refreshAttention();
     } catch (e) {
       error = String(e);
+    }
+  }
+  async function deferAttentionGroup(key: string, items: AttentionItem[]) {
+    if (attentionActionBusyKey) return;
+    attentionActionBusyKey = key;
+    error = null;
+    try {
+      await Promise.all(items.map((item) => transitionAttention(item.id, {
+        to_state: "operator_deferred",
+        owner: "operator",
+        reason: "defer",
+        source_ref: { source: "operator" },
+      })));
+      await refreshAttention();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      attentionActionBusyKey = null;
     }
   }
 
@@ -3211,6 +3243,8 @@
       onStartResearch={(symbol) => startResearchForSymbol(symbol, { refreshJournal: true })}
       researchBusySymbol={researchKickoffSymbol}
       researchStatus={researchKickoffStatus}
+      researchError={researchKickoffError}
+      onRetry={() => loadBrainJournal(journalDate, journalPage)}
       onBack={() => openWorkspace()}
     />
   {:else if routePage === "automation"}
@@ -3218,7 +3252,15 @@
       symbol={automationSymbol}
       onFilterSymbol={(nextSymbol) => openAutomationPage(nextSymbol)}
       onOpenWorkspace={(nextSymbol) => {
+        rightTab = "overview";
         void selectSymbol(nextSymbol);
+      }}
+      onApprovalComplete={async (nextSymbol) => {
+        await Promise.all([
+          refreshAttention(),
+          selectedSymbol === nextSymbol ? reloadSelectedSymbolDetails() : Promise.resolve(),
+          fetchTickers().then((t) => (tickers = t)).catch(() => {}),
+        ]);
       }}
       onBack={() => openWorkspace()}
     />
@@ -3249,6 +3291,9 @@
     </div>
     {#if researchKickoffStatus}
       <p class="workflow-status">{researchKickoffStatus}</p>
+    {/if}
+    {#if promotionStatus}
+      <p class="workflow-status">{promotionStatus}</p>
     {/if}
     {#if researchKickoffError}
       <p class="workflow-error">{researchKickoffError}</p>
@@ -3821,8 +3866,8 @@
                           bottomMode = "decisions";
                         }
                       }}>Enter ▾</button>
-                      <button class="reject" onclick={() => g.items.forEach((it) => deferOne(it.id))}>Defer 7d</button>
-                      <button class="reject" onclick={() => g.items.forEach((it) => dismissOne(it.id, "skip"))}>Skip</button>
+                      <button class="reject" disabled={Boolean(attentionActionBusyKey)} onclick={() => deferAttentionGroup(g.key, g.items)}>Defer 7d</button>
+                      <button class="reject" disabled={Boolean(attentionActionBusyKey)} onclick={() => dismissAttentionGroup(g.key, g.items, "skip")}>Skip</button>
                     {:else if g.kind === "thesis_review"}
                       <button class="confirm" onclick={() => {
                         if (g.symbol) {
@@ -3830,12 +3875,12 @@
                           rightTab = "theses";
                         }
                       }}>Review</button>
-                      <button class="reject" onclick={() => g.items.forEach((it) => deferOne(it.id))}>Defer 7d</button>
-                      <button class="reject" onclick={() => g.items.forEach((it) => dismissOne(it.id))}>Dismiss</button>
+                      <button class="reject" disabled={Boolean(attentionActionBusyKey)} onclick={() => deferAttentionGroup(g.key, g.items)}>Defer 7d</button>
+                      <button class="reject" disabled={Boolean(attentionActionBusyKey)} onclick={() => dismissAttentionGroup(g.key, g.items)}>Dismiss</button>
                     {:else if g.kind === "risk_review"}
-                      <button class="confirm" onclick={() => g.items.forEach((it) => dismissOne(it.id, "ack"))}>Acknowledge</button>
+                      <button class="confirm" disabled={Boolean(attentionActionBusyKey)} onclick={() => dismissAttentionGroup(g.key, g.items, "ack")}>Acknowledge</button>
                     {:else}
-                      <button class="reject" onclick={() => g.items.forEach((it) => dismissOne(it.id))}>Dismiss</button>
+                      <button class="reject" disabled={Boolean(attentionActionBusyKey)} onclick={() => dismissAttentionGroup(g.key, g.items)}>Dismiss</button>
                     {/if}
                   </div>
 

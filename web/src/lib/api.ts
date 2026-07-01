@@ -584,6 +584,21 @@ export async function promoteTicker(symbol: string, watchlistIds: string[] = [],
   if (!r.ok && r.status !== 204) throw new Error(`promote ticker ${r.status}`);
 }
 
+async function errorWithBody(prefix: string, response: Response): Promise<Error> {
+  const raw = await response.text().catch(() => "");
+  let detail = raw.trim();
+  if (detail.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(detail) as Record<string, unknown>;
+      const message = parsed.message ?? parsed.error;
+      if (typeof message === "string" && message.trim()) detail = message.trim();
+    } catch {
+      /* keep raw body */
+    }
+  }
+  return new Error(`${prefix} ${response.status}${detail ? `: ${detail}` : ""}`);
+}
+
 export type WorkflowActionKind =
   | "attention"
   | "promotion"
@@ -593,6 +608,9 @@ export type WorkflowActionKind =
   | "thesis"
   | "automation"
   | "automation_approve"
+  | "automation_disagree"
+  | "attention_snooze"
+  | "retry_thesis"
   | "decision"
   | "tracking"
   | "overview";
@@ -754,6 +772,16 @@ export async function fetchThesisDeclines(symbol: string): Promise<ThesisDecline
   const r = await fetch(`/api/thesis-declines?symbol=${encodeURIComponent(symbol)}`);
   if (!r.ok) throw new Error(`thesis declines ${r.status}`);
   return ((await r.json()) as ThesisDecline[] | null) ?? [];
+}
+
+export async function retryThesisDecline(id: number): Promise<StartResearchResponse> {
+  const r = await fetch(`/api/thesis-declines/${id}/retry`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  if (!r.ok) throw await errorWithBody("retry thesis", r);
+  return (await r.json()) as StartResearchResponse;
 }
 
 export interface EvidenceRequirement {
@@ -1241,7 +1269,7 @@ export async function startSymbolResearch(symbol: string): Promise<StartResearch
   const r = await fetch(`/api/symbols/${encodeURIComponent(symbol)}/start-research`, {
     method: "POST",
   });
-  if (!r.ok) throw new Error(`start-research ${r.status}`);
+  if (!r.ok) throw await errorWithBody("start-research", r);
   return (await r.json()) as StartResearchResponse;
 }
 
@@ -1745,6 +1773,7 @@ export interface ReviewPacketActionPayload {
   watchlistIds?: string[];
   maxAllocationPct?: number | null;
   maxNotionalUsd?: number | null;
+  disagreementReason?: string;
 }
 
 export interface ReviewPacketDecision {

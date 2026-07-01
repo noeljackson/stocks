@@ -974,9 +974,11 @@ fn classify_symbol_workflow(facts: &SymbolWorkflowFacts) -> SymbolWorkflowDecisi
                 .decline_reason
                 .clone()
                 .unwrap_or_else(|| "The system declined to invent an edge.".to_string()),
-            primary_kind: "thesis",
-            primary_label: "Review decline",
-            primary_detail: "Open thesis attempts and review why cognition declined.".to_string(),
+            primary_kind: "retry_thesis",
+            primary_label: "Retry thesis",
+            primary_detail:
+                "Resolve the active decline and queue fresh research, context, and thesis work."
+                    .to_string(),
             review_packet_attention_id: facts.review_packet_attention_id,
         };
     }
@@ -2023,9 +2025,14 @@ impl Store {
              LEFT JOIN LATERAL (
                     SELECT count(*) AS decline_count,
                            (array_agg(ai.reason ORDER BY ai.created_at DESC))[1] AS decline_reason
-                      FROM attention_item ai
+                     FROM attention_item ai
                      WHERE ai.symbol = s.symbol
                        AND ai.kind = 'thesis_incomplete'
+                       AND ai.status = 'open'
+                       AND (
+                         ai.fsm_state <> 'operator_deferred'
+                         OR (ai.resurface_at IS NOT NULL AND ai.resurface_at <= now())
+                       )
                 ) declines ON TRUE
              LEFT JOIN LATERAL (
                     SELECT count(*) AS decision_count,
@@ -9340,7 +9347,8 @@ mod tests {
         let decision = classify_symbol_workflow(&declined);
 
         assert_eq!(decision.state, "declined");
-        assert_eq!(decision.primary_kind, "thesis");
+        assert_eq!(decision.primary_kind, "retry_thesis");
+        assert_eq!(decision.primary_label, "Retry thesis");
         assert_eq!(decision.reason, "No differentiated evidence.");
 
         let ready = workflow_facts();

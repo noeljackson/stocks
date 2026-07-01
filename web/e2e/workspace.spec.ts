@@ -4,9 +4,11 @@ type Calls = {
   candleUrls: URL[];
   automationTimelineUrls: URL[];
   automationApprovalBody: unknown | null;
+  attentionTransitionBodies: unknown[];
   confirmBody: unknown | null;
   promoteBody: unknown | null;
   decisionBody: unknown | null;
+  retryThesisBody: unknown | null;
   addedSymbols: string[];
   refreshContextSymbols: string[];
   researchSymbols: string[];
@@ -54,6 +56,8 @@ type MockTechnicalRead = {
   volatility: string;
   source: string;
 };
+
+const CORE_WATCHLIST_ID = "11111111-1111-4111-8111-111111111111";
 
 const technicalRead = (
   stance: string,
@@ -120,21 +124,27 @@ async function mockApi(
   options: {
     attentionItems?: Record<string, unknown>[];
     streamEvents?: Record<string, unknown>[];
+    startResearchStatus?: number;
+    startResearchBody?: unknown;
+    missingContextSymbol?: string;
   } = {},
 ): Promise<Calls> {
   const calls: Calls = {
     candleUrls: [],
     automationTimelineUrls: [],
     automationApprovalBody: null,
+    attentionTransitionBodies: [],
     confirmBody: null,
     promoteBody: null,
     decisionBody: null,
+    retryThesisBody: null,
     addedSymbols: [],
     refreshContextSymbols: [],
     researchSymbols: [],
     priceAlertBodies: [],
   };
   let attentionOpen = true;
+  let thesisDeclineOpen = true;
   const attentionItems = options.attentionItems ?? [{
     id: 7001,
     kind: "candidate_review",
@@ -299,6 +309,30 @@ async function mockApi(
       };
     }
     if (symbol === "MSFT") {
+      if (!thesisDeclineOpen) {
+        return {
+          symbol,
+          state: "context_ready",
+          state_label: "Context ready",
+          tone: "ready",
+          reason: "Fresh research and thesis work were queued after the declined attempt.",
+          primary_action: {
+            kind: "overview",
+            label: "Check cognition",
+            detail: "Review the latest context, evidence, and cognition status.",
+          },
+          steps: [
+            workflowStep("status", "Status", "Universe T1", "overview", "ready"),
+            workflowStep("attention", "Attention", "no attention", "attention"),
+            workflowStep("evidence", "Evidence", "1 open evidence", "evidence", "monitoring"),
+            workflowStep("thesis", "Thesis", "retry queued", "thesis", "ready"),
+            workflowStep("decision", "Decision", "no decision", "tracking"),
+          ],
+          attention: [],
+          review_packet_attention_id: null,
+          updated_at: "2026-06-01T00:05:00Z",
+        };
+      }
       return {
         symbol,
         state: "declined",
@@ -306,9 +340,9 @@ async function mockApi(
         tone: "declined",
         reason: "No source-backed edge yet.",
         primary_action: {
-          kind: "thesis",
-          label: "Review decline",
-          detail: "Open thesis attempts and review why cognition declined.",
+          kind: "retry_thesis",
+          label: "Retry thesis",
+          detail: "Resolve the active decline and queue fresh research, context, and thesis work.",
         },
         steps: [
           workflowStep("status", "Status", "Universe T1", "overview", "declined"),
@@ -395,12 +429,12 @@ async function mockApi(
     const isActionable = item.kind === "thesis_actionable";
     const isThesisReview = item.kind === "thesis_review";
     const isPriceAlert = item.kind === "price_alert";
-    const recordDecision = { id: "record_decision", label: "Record decision", kind: "decision", detail: "Open the thesis decision form." };
-    const skipDecision = { id: "skip", label: "Skip / defer thesis", kind: "decision_skip", detail: "Record why this thesis is not being acted on now." };
     const inspectChart = { id: "inspect_chart", label: "Inspect chart", kind: "open_symbol", detail: "Review chart, thesis, and alert context before deciding." };
     const deferAction = { id: "defer", label: "Defer", kind: "attention_defer", detail: "Resurface later." };
     const dismissAction = { id: "dismiss", label: "Dismiss", kind: "attention_dismiss", detail: "Mark as not actionable." };
     const dismissNoise = { id: "dismiss", label: "Dismiss as noise", kind: "attention_dismiss", detail: "Mark this triggered alert as not actionable." };
+    const disagreeAction = { id: "disagree", label: "Disagree", kind: "automation_disagree", detail: "Reject the thesis for automation and record the reason." };
+    const snoozeAction = { id: "snooze", label: "Snooze", kind: "attention_snooze", detail: "Resurface tomorrow without recording a trade decision." };
     const automationApprove = {
       id: "approve_thesis_timing",
       label: "Approve bot trading",
@@ -419,10 +453,8 @@ async function mockApi(
       : { id: "open_symbol", label: "Open symbol", kind: "open_symbol", detail: "Inspect context and evidence." };
     const secondaryActions = isCandidate
       ? [deferAction, dismissAction]
-      : isThesisReview
-        ? [recordDecision, skipDecision, deferAction, dismissAction]
-        : isActionable
-          ? [recordDecision, deferAction, skipDecision, dismissAction]
+      : isThesisReview || isActionable
+        ? [disagreeAction, snoozeAction]
         : isPriceAlert
           ? [deferAction, dismissNoise]
           : [deferAction, dismissAction];
@@ -475,7 +507,7 @@ async function mockApi(
         {
           key: "recommendation",
           title: "Recommendation",
-          body: isCandidate ? "Start research or reject the nomination." : (isPriceAlert ? "Record whether the alert changes the trade plan or dismiss it as noise." : "Review the thesis and record the operator decision."),
+          body: isCandidate ? "Start research or reject the nomination." : (isPriceAlert ? "Record whether the alert changes the trade plan or dismiss it as noise." : "Agree to promote the thesis to bot trading, disagree, or snooze it."),
         },
         {
           key: "recorded_artifacts",
@@ -490,7 +522,7 @@ async function mockApi(
     };
   };
   const watchlistMembers: MockWatchlistMember[] = [{
-    watchlist_id: "wl-core",
+    watchlist_id: CORE_WATCHLIST_ID,
     symbol: "OKTA",
     added_at: "2026-01-01T00:00:00Z",
     added_by: "seed",
@@ -1384,7 +1416,7 @@ async function mockApi(
             { symbol: "NVDA", role: "leader", rationale: "Accelerator platform leader.", conviction: 70, thesis_state: null, thesis_direction: null, open_theses: 0 },
             { symbol: "OKTA", role: "candidate", rationale: "Mock linked row.", conviction: 50, thesis_state: "forming", thesis_direction: "up", open_theses: 1 },
           ],
-          watchlists: [{ id: "wl-core", name: "Core", color: "#89b4fa", is_system: false }],
+          watchlists: [{ id: CORE_WATCHLIST_ID, name: "Core", color: "#89b4fa", is_system: false }],
           nominations: [{ candidate_id: 44, symbol: "NVDA", signal_name: "volume_anomaly", signal_value: 2.4, reasoning: "2.4x volume", proposed_at: "2026-06-01T00:00:00Z" }],
           latest_changes: [],
         }],
@@ -1713,18 +1745,18 @@ async function mockApi(
       return;
     }
     if (path === "/api/watchlists" && request.method() === "GET") {
-      await json(route, [{ id: "wl-core", name: "Core", description: null, color: "#89b4fa", is_system: false, created_at: "2026-01-01T00:00:00Z", member_count: watchlistMembers.length }]);
+      await json(route, [{ id: CORE_WATCHLIST_ID, name: "Core", description: null, color: "#89b4fa", is_system: false, created_at: "2026-01-01T00:00:00Z", member_count: watchlistMembers.length }]);
       return;
     }
-    if (path === "/api/watchlists/wl-core/members" && request.method() === "GET") {
+    if (path === `/api/watchlists/${CORE_WATCHLIST_ID}/members` && request.method() === "GET") {
       await json(route, watchlistMembers);
       return;
     }
-    if (path === "/api/watchlists/wl-core/members" && request.method() === "POST") {
+    if (path === `/api/watchlists/${CORE_WATCHLIST_ID}/members` && request.method() === "POST") {
       const body = await request.postDataJSON();
       calls.addedSymbols.push(body.symbol);
       watchlistMembers.push({
-        watchlist_id: "wl-core",
+        watchlist_id: CORE_WATCHLIST_ID,
         symbol: body.symbol,
         added_at: "2026-06-01T00:00:00Z",
         added_by: body.added_by ?? "user",
@@ -1755,7 +1787,7 @@ async function mockApi(
         signal_value: 2.4,
         reasoning: "2.4x volume vs 20-day average while price is above 200-day SMA",
         proposed_at: "2026-06-01T00:00:00Z",
-        proposed_lists: [{ watchlist_id: "wl-core", watchlist_name: "Core", confidence: "high", rationale: "AI infrastructure fit" }],
+        proposed_lists: [{ watchlist_id: CORE_WATCHLIST_ID, watchlist_name: "Core", confidence: "high", rationale: "AI infrastructure fit" }],
         suggested_new_list: null,
         rank_score: 82,
         rank_bucket: "highest",
@@ -1859,7 +1891,7 @@ async function mockApi(
     }
     if (path === "/api/ticker-context") {
       const symbol = url.searchParams.get("symbol");
-      if (symbol === "SNDK") {
+      if (symbol === "SNDK" || symbol === options.missingContextSymbol) {
         await route.fulfill({ status: 204 });
         return;
       }
@@ -2182,14 +2214,30 @@ async function mockApi(
         symbol: "MSFT",
         candidate_id: null,
         severity: "info",
-        status: "dismissed",
+        status: thesisDeclineOpen ? "open" : "resolved",
         title: "MSFT: system declined to draft a thesis",
         reason: "Context contains no non-consensus edge yet; wait for estimate revisions or a new catalyst.",
         source_ref: { reason: "no_edge" },
         created_at: "2026-06-01T00:00:00Z",
-        resolved_at: null,
-        resolution_kind: null,
+        resolved_at: thesisDeclineOpen ? null : "2026-06-01T00:05:00Z",
+        resolution_kind: thesisDeclineOpen ? null : "decline_retry_requested",
       }] : []);
+      return;
+    }
+    if (/^\/api\/thesis-declines\/\d+\/retry$/.test(path) && request.method() === "POST") {
+      try {
+        calls.retryThesisBody = request.postDataJSON();
+      } catch {
+        calls.retryThesisBody = {};
+      }
+      thesisDeclineOpen = false;
+      await json(route, {
+        symbol: "MSFT",
+        decline_id: Number(path.split("/")[3]),
+        queued: 3,
+        blocked: 0,
+        cognition_event_published: true,
+      }, 202);
       return;
     }
     if (path === "/api/evidence-requirements") {
@@ -2330,6 +2378,12 @@ async function mockApi(
       });
       return;
     }
+    if (/^\/api\/attention\/\d+\/transition$/.test(path) && request.method() === "POST") {
+      calls.attentionTransitionBodies.push(await request.postDataJSON());
+      attentionOpen = false;
+      await route.fulfill({ status: 204 });
+      return;
+    }
     if (path === "/api/decisions/8b4c3f5b-8288-49ff-9282-b4398abe85ba/replay") {
       await json(route, {
         decision_id: "8b4c3f5b-8288-49ff-9282-b4398abe85ba",
@@ -2419,6 +2473,17 @@ async function mockApi(
     if (/^\/api\/symbols\/[^/]+\/start-research$/.test(path) && request.method() === "POST") {
       const symbol = decodeURIComponent(path.split("/")[3]);
       calls.researchSymbols.push(symbol);
+      if (options.startResearchStatus && options.startResearchStatus >= 400) {
+        await route.fulfill({
+          status: options.startResearchStatus,
+          contentType: "application/json",
+          body: JSON.stringify(options.startResearchBody ?? {
+            error: "symbol_not_active",
+            message: "Add the symbol to Universe before starting research.",
+          }),
+        });
+        return;
+      }
       await json(route, {
         symbol,
         requirement: { key: "product_research", state: "missing" },
@@ -2769,12 +2834,12 @@ test("placement card directly promotes pool-only symbols", async ({ page }) => {
   await expect.poll(() => calls.promoteBody).toEqual({
     symbol: "SNDK",
     tier: 2,
-    watchlist_ids: ["wl-core"],
+    watchlist_ids: [CORE_WATCHLIST_ID],
   });
 });
 
-test("workflow rail shows selected symbol state and routes to thesis review", async ({ page }) => {
-  await mockApi(page);
+test("workflow rail retries an active declined thesis", async ({ page }) => {
+  const calls = await mockApi(page);
   await page.goto("/");
 
   const strip = page.getByTestId("workflow-strip");
@@ -2783,12 +2848,13 @@ test("workflow rail shows selected symbol state and routes to thesis review", as
   await expect(strip).toContainText("Universe T1");
   await expect(strip).toContainText("1 open evidence");
   await expect(strip).toContainText("declined attempt");
-  await expect(page.getByTestId("workflow-primary")).toHaveText("Review decline");
+  await expect(page.getByTestId("workflow-primary")).toHaveText("Retry thesis");
   await expect(page.locator('[aria-label="Selected symbol workflow"]')).toBeVisible();
 
   await page.getByTestId("workflow-primary").click();
 
-  await expect(page.locator(".tabs button.active")).toHaveText("theses");
+  await expect.poll(() => calls.retryThesisBody).toEqual({});
+  await expect(strip).toContainText("MSFT: 3 research tasks queued; thesis retry started");
 });
 
 test("theses tab shows nominated state for unpromoted symbols", async ({ page }) => {
@@ -2928,7 +2994,7 @@ test("selected promotion review posts checked watchlist destinations", async ({ 
 
   await promotion.getByRole("button", { name: "Start research" }).click();
 
-  await expect.poll(() => calls.confirmBody).toEqual({ watchlist_ids: ["wl-core"] });
+  await expect.poll(() => calls.confirmBody).toEqual({ watchlist_ids: [CORE_WATCHLIST_ID] });
 });
 
 test("workflow rail surfaces open position tracking and routes to decisions", async ({ page }) => {
@@ -2995,22 +3061,20 @@ test("thesis card approves bot trading with a visible confirmation", async ({ pa
   await expect(page).toHaveURL(/\/automation\/OKTA$/);
 });
 
-test("thesis review packet opens an inline prefilled decision form", async ({ page }) => {
+test("thesis review packet exposes only approve, disagree, and snooze", async ({ page }) => {
   await mockApi(page);
   await page.goto("/symbol/OKTA");
 
   await page.getByTestId("workflow-attention").getByRole("button", { name: /OKTA thesis changed/ }).click();
   const packet = page.getByTestId("review-packet");
   await expect(packet).toContainText("Approve OKTA for bot trading?");
-  await expect(packet).toContainText("Approve bot trading");
-
-  await packet.getByRole("button", { name: /Record decision/ }).click();
-
-  const inline = page.getByTestId("review-packet-decision-form");
-  await expect(inline).toBeVisible();
-  await expect(inline.getByLabel("Thesis ID")).toHaveValue("12ceaea3-9df3-416a-bfe5-107d3233dd59");
-  await expect(inline.getByLabel("Action")).toHaveValue("skip");
-  await expect(page.locator(".bottom-tabs button.active")).not.toHaveText("decisions");
+  await expect(packet.getByRole("button", { name: "Approve bot trading" })).toBeVisible();
+  await expect(packet.getByRole("button", { name: "Disagree" })).toBeVisible();
+  await expect(packet.getByRole("button", { name: "Snooze" })).toBeVisible();
+  await expect(packet.getByRole("button", { name: /Record decision/ })).toHaveCount(0);
+  await expect(packet.getByRole("button", { name: /Skip \/ defer thesis/ })).toHaveCount(0);
+  await expect(packet.getByRole("button", { name: "Defer" })).toHaveCount(0);
+  await expect(packet.getByRole("button", { name: "Dismiss" })).toHaveCount(0);
 });
 
 test("thesis review packet approves the symbol for automation", async ({ page }) => {
@@ -3041,33 +3105,78 @@ test("thesis review packet approves the symbol for automation", async ({ page })
   await expect(cockpit).toContainText("No Signal");
 });
 
-test("thesis review packet submits the decision inline", async ({ page }) => {
+test("thesis review packet disagreement records a rejected skip decision", async ({ page }) => {
   const calls = await mockApi(page);
   await page.goto("/symbol/OKTA");
 
   await page.getByTestId("workflow-attention").getByRole("button", { name: /OKTA thesis changed/ }).click();
   const packet = page.getByTestId("review-packet");
-  await packet.getByRole("button", { name: /Record decision/ }).click();
-
-  const inline = page.getByTestId("review-packet-decision-form");
-  await expect(inline).toBeVisible();
-  await expect(inline.getByLabel("Thesis ID")).toHaveValue("12ceaea3-9df3-416a-bfe5-107d3233dd59");
-  await expect(inline.getByLabel("Action")).toHaveValue("skip");
-  await expect(page.locator(".bottom-tabs button.active")).not.toHaveText("decisions");
-
-  await inline.getByLabel("Why").selectOption("valuation_priced");
-  await inline.getByLabel("Human conviction").selectOption("low");
-  await inline.getByLabel("Decision reason").fill("Inline review packet decision.");
-  await inline.getByRole("button", { name: "Submit" }).click();
+  await packet.getByRole("button", { name: "Disagree" }).click();
+  await expect(packet).toContainText("Why disagree?");
+  await packet.getByRole("button", { name: "Signal too weak" }).click();
 
   await expect.poll(() => calls.decisionBody).toMatchObject({
     thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
     action: "skip",
-    user_choice: "deferred",
-    disagreement_reason: "valuation_priced",
+    user_choice: "rejected",
+    disagreement_reason: "signal_too_weak",
     human_conviction: "low",
-    reason: "Inline review packet decision.",
+    reason: "Operator disagreed with thesis from review packet.",
   });
+  await expect.poll(() => calls.attentionTransitionBodies.at(-1)).toMatchObject({
+    to_state: "resolved",
+    owner: "operator",
+    reason: "operator_disagreed_with_thesis",
+  });
+});
+
+test("thesis review packet snoozes until tomorrow", async ({ page }) => {
+  const calls = await mockApi(page);
+  await page.goto("/symbol/OKTA");
+
+  await page.getByTestId("workflow-attention").getByRole("button", { name: /OKTA thesis changed/ }).click();
+  const packet = page.getByTestId("review-packet");
+  await packet.getByRole("button", { name: "Snooze" }).click();
+
+  await expect.poll(() => calls.attentionTransitionBodies.at(-1)).toMatchObject({
+    to_state: "operator_deferred",
+    owner: "operator",
+    reason: "operator_snoozed_thesis_approval",
+  });
+  const body = calls.attentionTransitionBodies.at(-1) as Record<string, unknown>;
+  expect(typeof body.resurface_at).toBe("string");
+  expect(new Date(body.resurface_at as string).getTime()).toBeGreaterThan(Date.now());
+});
+
+test("declined thesis card can retry and clears the active decline workflow", async ({ page }) => {
+  const calls = await mockApi(page);
+  await page.goto("/symbol/MSFT?p=theses");
+
+  const card = page.locator(".decline-card").filter({ hasText: "Context contains no non-consensus edge yet" });
+  await expect(card).toContainText("open");
+  await card.getByRole("button", { name: "Retry thesis" }).click();
+
+  await expect.poll(() => calls.retryThesisBody).toEqual({});
+  const strip = page.getByTestId("workflow-strip");
+  await expect(strip).toContainText("MSFT: 3 research tasks queued; thesis retry started");
+  await expect(strip).not.toContainText("Declined thesis");
+});
+
+test("context start research reports backend errors inline", async ({ page }) => {
+  await mockApi(page, {
+    missingContextSymbol: "NVDA",
+    startResearchStatus: 409,
+    startResearchBody: {
+      error: "symbol_not_active",
+      message: "Add the symbol to Universe before starting research.",
+    },
+  });
+  await page.goto("/symbol/NVDA?p=context");
+
+  const context = page.locator(".empty").filter({ hasText: "Context" });
+  await context.getByRole("button", { name: "Start research now" }).click();
+
+  await expect(context).toContainText("Start research failed: start-research 409: Add the symbol to Universe before starting research.");
 });
 
 test("price alert review packet opens chart inspection instead of a decision form", async ({ page }) => {
@@ -3472,7 +3581,7 @@ test("attention Promote posts selected watchlist memberships", async ({ page }) 
 
   await card.getByRole("button", { name: "Start research" }).click();
 
-  await expect.poll(() => calls.confirmBody).toEqual({ watchlist_ids: ["wl-core"] });
+  await expect.poll(() => calls.confirmBody).toEqual({ watchlist_ids: [CORE_WATCHLIST_ID] });
   await expect(page.getByText("No open attention. The system is quiet.")).toBeVisible();
 });
 

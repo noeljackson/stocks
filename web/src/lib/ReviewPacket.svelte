@@ -35,6 +35,7 @@
 
   let confirmOpen = $state(false);
   let automationConfirmOpen = $state(false);
+  let disagreeOpen = $state(false);
   let automationMaxAllocationPct = $state("5");
   let automationMaxNotionalUsd = $state("");
   let selectedWatchlists = $state<Record<string, boolean>>({});
@@ -46,6 +47,7 @@
       lastPacketId = nextId;
       confirmOpen = false;
       automationConfirmOpen = false;
+      disagreeOpen = false;
       automationMaxAllocationPct = "5";
       automationMaxNotionalUsd = "";
       selectedWatchlists = {};
@@ -99,7 +101,7 @@
 
   function actionTone(action: ReviewPacketAction): string {
     if (action.kind === "candidate_confirm" || action.kind === "decision" || action.kind === "automation_approve") return "primary";
-    if (action.kind === "candidate_reject" || action.kind === "attention_dismiss") return "danger";
+    if (action.kind === "candidate_reject" || action.kind === "attention_dismiss" || action.kind === "automation_disagree") return "danger";
     return "secondary";
   }
 
@@ -139,6 +141,28 @@
       return;
     }
     onAction(action, packet);
+  }
+
+  const disagreementReasons = [
+    { value: "signal_too_weak", label: "Signal too weak" },
+    { value: "valuation_priced", label: "Valuation priced" },
+    { value: "data_stale", label: "Data stale" },
+    { value: "llm_overreached", label: "LLM overreached" },
+    { value: "risk_too_high", label: "Risk too high" },
+    { value: "not_my_edge", label: "Not my edge" },
+  ];
+
+  function runSecondary(action: ReviewPacketAction, packet: AttentionReviewPacket) {
+    if (action.kind === "automation_disagree") {
+      disagreeOpen = !disagreeOpen;
+      automationConfirmOpen = false;
+      return;
+    }
+    onAction(action, packet);
+  }
+
+  function submitDisagreement(action: ReviewPacketAction, packet: AttentionReviewPacket, reason: string) {
+    onAction(action, packet, { disagreementReason: reason });
   }
 </script>
 
@@ -276,6 +300,29 @@
       </section>
     {/if}
 
+    {#if disagreeOpen}
+      {@const disagreeAction = secondaryActions(packet).find((item) => item.kind === "automation_disagree")}
+      {#if disagreeAction}
+        <section class="confirm-panel disagree-panel" data-testid="review-packet-disagree">
+          <div>
+            <span class="kicker">reject automation thesis</span>
+            <strong>Why disagree?</strong>
+            <p class="muted">Records a rejected skip decision and resolves this review item.</p>
+          </div>
+          <div class="reason-chips">
+            {#each disagreementReasons as reason (reason.value)}
+              <button
+                type="button"
+                class="secondary-action tone-danger"
+                disabled={busy || Boolean(status)}
+                onclick={() => submitDisagreement(disagreeAction, packet, reason.value)}
+              >{reason.label}</button>
+            {/each}
+          </div>
+        </section>
+      {/if}
+    {/if}
+
     {#if packet.sections.length}
       <div class="packet-grid" data-testid="review-packet-sections">
         {#each packet.sections as section, i (`${section.key}-${i}`)}
@@ -301,7 +348,7 @@
 
     <div class="packet-actions">
       {#each secondaryActions(packet) as action (`${action.id}-${action.kind}`)}
-        <button type="button" class={`tone-${actionTone(action)}`} disabled={busy || Boolean(status)} onclick={() => onAction(action, packet)}>
+        <button type="button" class={`tone-${actionTone(action)}`} disabled={busy || Boolean(status)} onclick={() => runSecondary(action, packet)}>
           {action.label}
           <small>{action.detail}</small>
         </button>
@@ -425,6 +472,21 @@
   .automation-confirm {
     border-color: rgba(166, 227, 161, .36);
     background: #09110d;
+  }
+  .disagree-panel {
+    border-color: rgba(243, 139, 168, .36);
+    background: #14090d;
+  }
+  .reason-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .4rem;
+  }
+  .reason-chips .secondary-action {
+    max-width: none;
+    min-width: 8.5rem;
+    justify-content: center;
+    text-align: center;
   }
   .automation-fields {
     display: grid;

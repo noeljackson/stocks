@@ -59,6 +59,10 @@ pub(super) fn build(gw: Arc<Gateway>) -> Router {
         .route("/api/theses", get(list_theses))
         .route("/api/thesis-declines", get(list_thesis_declines))
         .route(
+            "/api/thesis-declines/{id}/retry",
+            post(retry_thesis_decline),
+        )
+        .route(
             "/api/evidence-requirements",
             get(list_evidence_requirements),
         )
@@ -4168,16 +4172,13 @@ fn review_packet_actions(kind: &str) -> serde_json::Value {
         ],
         "thesis_actionable" => vec![
             json!({"id": "approve_thesis_timing", "label": "Approve bot trading", "kind": "automation_approve", "detail": "Approve shadow thesis-timing automation with a 5% default cap. No live broker order is placed by this approval.", "strategy_id": "thesis_timing", "strategy_version": "0.1.0", "environment_scope": "shadow"}),
-            json!({"id": "record_decision", "label": "Record manual decision", "kind": "decision", "detail": "Open the thesis decision form."}),
-            json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later without resolving."}),
-            json!({"id": "skip", "label": "Skip", "kind": "decision_skip", "detail": "Record a structured skip/defer decision."}),
+            json!({"id": "disagree", "label": "Disagree", "kind": "automation_disagree", "detail": "Reject the thesis for automation and record the reason."}),
+            json!({"id": "snooze", "label": "Snooze", "kind": "attention_snooze", "detail": "Resurface tomorrow without recording a trade decision."}),
         ],
         "thesis_review" => vec![
             json!({"id": "approve_thesis_timing", "label": "Approve bot trading", "kind": "automation_approve", "detail": "Approve shadow thesis-timing automation with a 5% default cap. No live broker order is placed by this approval.", "strategy_id": "thesis_timing", "strategy_version": "0.1.0", "environment_scope": "shadow"}),
-            json!({"id": "record_decision", "label": "Record decision", "kind": "decision", "detail": "Open the thesis decision form for this reviewed thesis."}),
-            json!({"id": "skip", "label": "Skip / defer thesis", "kind": "decision_skip", "detail": "Record why this thesis is not being acted on now."}),
-            json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later without resolving."}),
-            json!({"id": "dismiss", "label": "Dismiss", "kind": "attention_dismiss", "detail": "Mark the review item as handled."}),
+            json!({"id": "disagree", "label": "Disagree", "kind": "automation_disagree", "detail": "Reject the thesis for automation and record the reason."}),
+            json!({"id": "snooze", "label": "Snooze", "kind": "attention_snooze", "detail": "Resurface tomorrow without recording a trade decision."}),
         ],
         "risk_review" => vec![
             json!({"id": "open_decision", "label": "Review risk", "kind": "decision", "detail": "Open decision/risk context."}),
@@ -5826,54 +5827,48 @@ async fn trigger_refresh_context(
     StatusCode::ACCEPTED.into_response()
 }
 
-async fn start_symbol_research(
-    State(gw): State<Arc<Gateway>>,
-    Path(symbol): Path<String>,
-) -> impl IntoResponse {
-    let sym = symbol.to_ascii_uppercase();
-    if sym.is_empty() || sym.len() > 14 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "invalid_symbol"})),
-        )
-            .into_response();
-    }
-
+async fn queue_symbol_research(
+    gw: &Gateway,
+    sym: &str,
+    requested_by: &str,
+    reason: &str,
+    bus_source: &str,
+    trigger: &str,
+    extra_payload: serde_json::Value,
+) -> std::result::Result<serde_json::Value, (StatusCode, serde_json::Value)> {
     let active = match sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM ticker WHERE symbol = $1 AND status = 'active')",
     )
-    .bind(&sym)
+    .bind(sym)
     .fetch_one(&gw.store.pool)
     .await
     {
         Ok(active) => active,
         Err(e) => {
-            warn!(symbol = %sym, error = %e, "start research active ticker check failed");
-            return (
+            warn!(symbol = %sym, error = %e, "research active ticker check failed");
+            return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
-            )
-                .into_response();
+                json!({"error": e.to_string()}),
+            ));
         }
     };
     if !active {
-        return (
+        return Err((
             StatusCode::CONFLICT,
-            Json(json!({
+            json!({
                 "error": "symbol_not_active",
                 "symbol": sym,
                 "message": "Add the symbol to Universe before starting research.",
-            })),
-        )
-            .into_response();
+            }),
+        ));
     }
 
     let source_type = source_type_for_requirement("product_research");
     let actions = actions_for_requirement("product_research");
     let actions_vec = actions.iter().map(|a| (*a).to_string()).collect::<Vec<_>>();
     let source_ref = json!({
-        "requested_by": "ui_start_research",
-        "reason": "operator_requested_research_refresh",
+        "requested_by": requested_by,
+        "reason": reason,
         "fetch_actions": actions_vec,
         "requested_at": chrono::Utc::now(),
     });
@@ -5881,12 +5876,11 @@ async fn start_symbol_research(
     let mut tx = match gw.store.pool.begin().await {
         Ok(tx) => tx,
         Err(e) => {
-            warn!(symbol = %sym, error = %e, "start research begin tx failed");
-            return (
+            warn!(symbol = %sym, error = %e, "research begin tx failed");
+            return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
-            )
-                .into_response();
+                json!({"error": e.to_string()}),
+            ));
         }
     };
 
@@ -5912,7 +5906,7 @@ async fn start_symbol_research(
                 updated_at = now()
          RETURNING blocking_state"#,
     )
-    .bind(&sym)
+    .bind(sym)
     .bind(source_type)
     .bind(&source_ref)
     .fetch_one(&mut *tx)
@@ -5920,12 +5914,11 @@ async fn start_symbol_research(
     {
         Ok(state) => state,
         Err(e) => {
-            warn!(symbol = %sym, error = %e, "start research evidence upsert failed");
-            return (
+            warn!(symbol = %sym, error = %e, "research evidence upsert failed");
+            return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
-            )
-                .into_response();
+                json!({"error": e.to_string()}),
+            ));
         }
     };
 
@@ -5933,8 +5926,8 @@ async fn start_symbol_research(
     for action in actions {
         let provider = provider_for_action(action, source_type);
         let task_ref = json!({
-            "requested_by": "ui_start_research",
-            "reason": "operator_requested_research_refresh",
+            "requested_by": requested_by,
+            "reason": reason,
             "force_research": true,
         });
         let row = match sqlx::query(
@@ -5979,7 +5972,7 @@ async fn start_symbol_research(
         )
         .bind(source_type)
         .bind(action)
-        .bind(&sym)
+        .bind(sym)
         .bind(provider)
         .bind(&task_ref)
         .fetch_one(&mut *tx)
@@ -5987,12 +5980,11 @@ async fn start_symbol_research(
         {
             Ok(row) => row,
             Err(e) => {
-                warn!(symbol = %sym, action, error = %e, "start research source_task upsert failed");
-                return (
+                warn!(symbol = %sym, action, error = %e, "research source_task upsert failed");
+                return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": e.to_string()})),
-                )
-                    .into_response();
+                    json!({"error": e.to_string()}),
+                ));
             }
         };
         task_rows.push(json!({
@@ -6008,36 +6000,11 @@ async fn start_symbol_research(
     }
 
     if let Err(e) = tx.commit().await {
-        warn!(symbol = %sym, error = %e, "start research commit failed");
-        return (
+        warn!(symbol = %sym, error = %e, "research commit failed");
+        return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response();
-    }
-
-    let payload = json!({
-        "symbol": sym,
-        "source": "ui-start-research",
-        "trigger": "ui_start_research",
-        "reason": "operator_requested_research_refresh",
-        "force_research": true,
-        "requested_actions": actions_vec,
-    });
-    if let Err(e) = gw
-        .bus
-        .publish(
-            subjects::DISCOVERY_CONFIRMED,
-            payload.to_string().as_bytes(),
-        )
-        .await
-    {
-        warn!(symbol = %sym, error = %e, "publish start-research failed");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response();
+            json!({"error": e.to_string()}),
+        ));
     }
 
     let queued_count = task_rows
@@ -6054,21 +6021,162 @@ async fn start_symbol_research(
         })
         .count();
 
-    (
-        StatusCode::ACCEPTED,
-        Json(json!({
-            "symbol": sym,
-            "requirement": {
-                "key": "product_research",
-                "state": requirement_state,
-            },
-            "queued": queued_count,
-            "blocked": blocked_count,
-            "tasks": task_rows,
-            "cognition_event_published": true,
-        })),
+    let mut payload = json!({
+        "symbol": sym,
+        "source": bus_source,
+        "trigger": trigger,
+        "reason": reason,
+        "force_research": true,
+        "requested_actions": actions_vec,
+    });
+    if let (Some(dst), Some(extra)) = (payload.as_object_mut(), extra_payload.as_object()) {
+        for (key, value) in extra {
+            dst.insert(key.clone(), value.clone());
+        }
+    }
+    if let Err(e) = gw
+        .bus
+        .publish(
+            subjects::DISCOVERY_CONFIRMED,
+            payload.to_string().as_bytes(),
+        )
+        .await
+    {
+        warn!(symbol = %sym, error = %e, "publish research kickoff failed");
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({"error": e.to_string()}),
+        ));
+    }
+
+    Ok(json!({
+        "symbol": sym,
+        "requirement": {
+            "key": "product_research",
+            "state": requirement_state,
+        },
+        "queued": queued_count,
+        "blocked": blocked_count,
+        "tasks": task_rows,
+        "cognition_event_published": true,
+    }))
+}
+
+async fn start_symbol_research(
+    State(gw): State<Arc<Gateway>>,
+    Path(symbol): Path<String>,
+) -> impl IntoResponse {
+    let sym = symbol.to_ascii_uppercase();
+    if sym.is_empty() || sym.len() > 14 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid_symbol"})),
+        )
+            .into_response();
+    }
+
+    match queue_symbol_research(
+        &gw,
+        &sym,
+        "ui_start_research",
+        "operator_requested_research_refresh",
+        "ui-start-research",
+        "ui_start_research",
+        json!({}),
     )
-        .into_response()
+    .await
+    {
+        Ok(body) => (StatusCode::ACCEPTED, Json(body)).into_response(),
+        Err((status, body)) => (status, Json(body)).into_response(),
+    }
+}
+
+async fn retry_thesis_decline(
+    State(gw): State<Arc<Gateway>>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    let symbol = match sqlx::query_scalar::<_, Option<String>>(
+        r#"SELECT symbol
+             FROM attention_item
+            WHERE id = $1
+              AND kind = 'thesis_incomplete'
+              AND status = 'open'"#,
+    )
+    .bind(id)
+    .fetch_optional(&gw.store.pool)
+    .await
+    {
+        Ok(Some(Some(symbol))) => symbol,
+        Ok(Some(None)) | Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "active_decline_not_found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            warn!(id, error = %e, "retry thesis decline lookup failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let mut body = match queue_symbol_research(
+        &gw,
+        &symbol,
+        "ui_retry_thesis",
+        "operator_requested_thesis_retry",
+        "ui-retry-thesis",
+        "ui_retry_thesis",
+        json!({"decline_attention_id": id}),
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err((status, body)) => return (status, Json(body)).into_response(),
+    };
+
+    match gw
+        .store
+        .transition_attention(
+            id,
+            crate::attention::fsm::RESOLVED,
+            crate::attention::owner::OPERATOR,
+            "decline_retry_requested",
+            None,
+            None,
+            json!({
+                "source": "thesis_decline_retry",
+                "decline_attention_id": id,
+                "symbol": symbol,
+            }),
+        )
+        .await
+    {
+        Ok(true) => {
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert("decline_id".to_string(), json!(id));
+                obj.insert("retry_started".to_string(), json!(true));
+            }
+            (StatusCode::ACCEPTED, Json(body)).into_response()
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "active_decline_not_found"})),
+        )
+            .into_response(),
+        Err(e) => {
+            warn!(id, error = %e, "retry thesis decline transition failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn reject_candidate(
@@ -6222,12 +6330,24 @@ mod tests {
         assert_eq!(decision["primary_action"]["kind"], "automation_approve");
         assert_eq!(decision["primary_action"]["label"], "Approve bot trading");
         assert_eq!(decision["primary_action"]["strategy_id"], "thesis_timing");
-        assert!(
-            decision["secondary_actions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|item| item["kind"] == "decision")
+        let secondary: Vec<_> = decision["secondary_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                (
+                    item["label"].as_str().unwrap(),
+                    item["kind"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            secondary,
+            vec![
+                ("Approve bot trading", "automation_approve"),
+                ("Disagree", "automation_disagree"),
+                ("Snooze", "attention_snooze"),
+            ]
         );
         assert_eq!(decision["blockers"].as_array().unwrap().len(), 0);
         assert!(

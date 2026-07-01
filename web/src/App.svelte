@@ -40,6 +40,7 @@
     promoteTicker,
     rejectCandidate,
     removeFromWatchlist,
+    retryThesisDecline,
     startSymbolResearch,
     subscribe,
     transitionAttention,
@@ -180,6 +181,8 @@
   let researchKickoffBusy = $state(false);
   let researchKickoffSymbol = $state<string | null>(null);
   let researchKickoffStatus = $state<string | null>(null);
+  let researchKickoffError = $state<string | null>(null);
+  let thesisRetryBusyId = $state<number | null>(null);
 
   async function refreshAttention() {
     try {
@@ -258,6 +261,50 @@
       reviewPacket = null;
       return;
     }
+    if (action.kind === "attention_snooze") {
+      await snoozeOne(item.id);
+      reviewPacket = null;
+      promotionStatus = "Review snoozed until tomorrow.";
+      return;
+    }
+    if (action.kind === "automation_disagree") {
+      if (!item.thesis_id) {
+        error = "disagree needs a thesis id";
+        return;
+      }
+      const disagreementReason = payload.disagreementReason ?? "signal_too_weak";
+      promotionBusy = true;
+      promotionStatus = null;
+      try {
+        await postDecision({
+          thesis_id: item.thesis_id,
+          action: "skip",
+          user_choice: "rejected",
+          disagreement_reason: disagreementReason,
+          human_conviction: "low",
+          reason: "Operator disagreed with thesis from review packet.",
+          chart_range_seen: `${chartState.range} ${chartState.interval}`,
+        });
+        await transitionAttention(item.id, {
+          to_state: "resolved",
+          owner: "operator",
+          reason: "operator_disagreed_with_thesis",
+          source_ref: {
+            source: "review_packet_disagree",
+            thesis_id: item.thesis_id,
+            disagreement_reason: disagreementReason,
+          },
+        }).catch(() => {});
+        await Promise.all([refreshAttention(), reloadSelectedSymbolDetails()]);
+        reviewPacket = null;
+        promotionStatus = "Thesis rejected for automation.";
+      } catch (e) {
+        error = e instanceof Error ? e.message : String(e);
+      } finally {
+        promotionBusy = false;
+      }
+      return;
+    }
     if (action.kind === "automation_approve") {
       if (!item.symbol) {
         error = "automation approval needs a symbol";
@@ -321,6 +368,7 @@
     researchKickoffBusy = true;
     researchKickoffSymbol = symbol;
     researchKickoffStatus = null;
+    researchKickoffError = null;
     error = null;
     try {
       const res = await startSymbolResearch(symbol);
@@ -341,11 +389,41 @@
         await loadBrainJournal(journalDate, journalPage, { silent: true });
       }
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      researchKickoffError = e instanceof Error ? e.message : String(e);
     } finally {
       researchKickoffBusy = false;
       researchKickoffSymbol = null;
     }
+  }
+
+  async function retryDeclinedThesis(declineId: number) {
+    if (thesisRetryBusyId) return;
+    thesisRetryBusyId = declineId;
+    researchKickoffStatus = null;
+    researchKickoffError = null;
+    try {
+      const res = await retryThesisDecline(declineId);
+      researchKickoffStatus = `${res.symbol}: ${res.queued} research task${res.queued === 1 ? "" : "s"} queued; thesis retry started`;
+      await Promise.all([
+        refreshAttention(),
+        fetchBrainOverview().then((b) => (brainOverview = b)).catch(() => {}),
+        fetchTickers().then((t) => (tickers = t)).catch(() => {}),
+      ]);
+      await reloadSelectedSymbolDetails();
+    } catch (e) {
+      researchKickoffError = e instanceof Error ? e.message : String(e);
+    } finally {
+      thesisRetryBusyId = null;
+    }
+  }
+
+  async function retryActiveThesisDecline() {
+    const decline = activeSymbolDeclines[0];
+    if (!decline) {
+      rightTab = "theses";
+      return;
+    }
+    await retryDeclinedThesis(decline.id);
   }
 
   async function startResearchForSelected() {
@@ -367,6 +445,28 @@
         owner: "operator",
         reason: "defer",
         source_ref: { source: "operator" },
+      });
+      await refreshAttention();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  function tomorrowReviewIso(): string {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    d.setHours(9, 30, 0, 0);
+    return d.toISOString();
+  }
+
+  async function snoozeOne(id: number) {
+    try {
+      await transitionAttention(id, {
+        to_state: "operator_deferred",
+        owner: "operator",
+        reason: "operator_snoozed_thesis_approval",
+        resurface_at: tomorrowReviewIso(),
+        source_ref: { source: "operator_snooze" },
       });
       await refreshAttention();
     } catch (e) {
@@ -1141,6 +1241,9 @@
       .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)),
   );
   let currentSymbolThesis = $derived<ThesisDetail | null>(openSymbolTheses[0] ?? null);
+  let activeSymbolDeclines = $derived<ThesisDecline[]>(
+    (symbolDeclines ?? []).filter((d) => d.status === "open"),
+  );
   let openSymbolPositions = $derived<PositionRow[]>(
     (symbolPositions ?? []).filter((p) => !p.closed_at),
   );
@@ -1676,7 +1779,7 @@
       return `${currentSymbolThesis.state.replace(/_/g, " ")} · ${direction}`;
     }
     if (selectedCandidateReview) return "nominated";
-    if ((symbolDeclines ?? []).length > 0) return "declined attempt";
+    if (activeSymbolDeclines.length > 0) return "declined attempt";
     return "no thesis";
   }
 
@@ -1943,13 +2046,14 @@
         decision: decisionText,
       };
     }
-    if ((symbolDeclines ?? []).length > 0) {
+    if (activeSymbolDeclines.length > 0) {
       return {
         state: "Declined thesis",
         tone: "declined",
-        reason: symbolDeclines?.[0]?.reason ?? "The system declined to invent an edge.",
-        primary: "Review decline",
-        action: "thesis",
+        reason: activeSymbolDeclines[0]?.reason ?? "The system declined to invent an edge.",
+        primary: "Retry thesis",
+        action: "retry_thesis",
+        primaryDetail: "Resolve the active decline and queue fresh research, context, and thesis work.",
         status: statusText,
         attention: attentionText,
         evidence: evidenceText,
@@ -2005,6 +2109,10 @@
     }
     if (action === "automation_approve") {
       openAutomationApproval();
+      return;
+    }
+    if (action === "retry_thesis") {
+      void retryActiveThesisDecline();
       return;
     }
     if (action === "decision") {
@@ -3127,11 +3235,13 @@
         class="workflow-primary"
         data-testid="workflow-primary"
         title={selectedWorkflow.primaryDetail ?? selectedWorkflow.reason}
-        disabled={(researchKickoffBusy && selectedWorkflow.action === "research") || (reviewPacketLoading && selectedWorkflow.action === "attention")}
+        disabled={(researchKickoffBusy && selectedWorkflow.action === "research") || Boolean(thesisRetryBusyId) || (reviewPacketLoading && selectedWorkflow.action === "attention")}
         onclick={runSelectedWorkflowPrimary}
       >
         {researchKickoffBusy && selectedWorkflow.action === "research"
           ? "Starting..."
+          : thesisRetryBusyId && selectedWorkflow.action === "retry_thesis"
+            ? "Retrying..."
           : reviewPacketLoading && selectedWorkflow.action === "attention"
             ? "Opening..."
             : selectedWorkflow.primary}
@@ -3139,6 +3249,9 @@
     </div>
     {#if researchKickoffStatus}
       <p class="workflow-status">{researchKickoffStatus}</p>
+    {/if}
+    {#if researchKickoffError}
+      <p class="workflow-error">{researchKickoffError}</p>
     {/if}
 
     {#if automationApprovalOpen && automationApprovalCandidate}
@@ -4375,10 +4488,14 @@
                 <div class="promotion-actions">
                   <button
                     class="confirm"
-                    disabled={automationApprovalBusy || researchKickoffBusy}
+                    disabled={automationApprovalBusy || researchKickoffBusy || Boolean(thesisRetryBusyId)}
                     onclick={runSelectedWorkflowPrimary}
                   >
-                    {automationApprovalBusy ? "Approving..." : selectedWorkflow.primary}
+                    {automationApprovalBusy
+                      ? "Approving..."
+                      : thesisRetryBusyId && selectedWorkflow.action === "retry_thesis"
+                        ? "Retrying..."
+                        : selectedWorkflow.primary}
                   </button>
                   {#if selectedSymbol}
                     <button type="button" class="text-action" onclick={() => (rightTab = selectedApprovalCandidate ? "theses" : "evidence")}>
@@ -4386,6 +4503,12 @@
                     </button>
                   {/if}
                 </div>
+                {#if researchKickoffStatus}
+                  <p class="muted">{researchKickoffStatus}</p>
+                {/if}
+                {#if researchKickoffError}
+                  <p class="error-text">{researchKickoffError}</p>
+                {/if}
               </section>
               {#if selectedCandidateReview}
                 {@const availableData = candidateAvailableData(selectedCandidateReview)}
@@ -4922,9 +5045,25 @@
                             <span class="muted">{shortTs(d.created_at)}</span>
                           </div>
                           <p>{d.reason ?? "The thesis engine declined without a recorded reason."}</p>
+                          {#if d.status === "open"}
+                            <div class="att-actions">
+                              <button
+                                type="button"
+                                class="confirm"
+                                disabled={Boolean(thesisRetryBusyId)}
+                                onclick={() => retryDeclinedThesis(d.id)}
+                              >{thesisRetryBusyId === d.id ? "Retrying..." : "Retry thesis"}</button>
+                            </div>
+                          {/if}
                         </li>
                       {/each}
                     </ul>
+                    {#if researchKickoffStatus}
+                      <p class="muted">{researchKickoffStatus}</p>
+                    {/if}
+                    {#if researchKickoffError}
+                      <p class="error-text">{researchKickoffError}</p>
+                    {/if}
                   </section>
                 {/if}
                 {#if (!symbolTheses || symbolTheses.length === 0) && (!symbolDeclines || symbolDeclines.length === 0) && !selectedCandidateReview}
@@ -5341,6 +5480,12 @@
     grid-column: 1 / -1;
     margin: -.25rem 0 0 .35rem;
     color: #a6e3a1;
+    font-size: .76rem;
+  }
+  .workflow-error {
+    grid-column: 1 / -1;
+    margin: -.25rem 0 0 .35rem;
+    color: #f38ba8;
     font-size: .76rem;
   }
   .automation-confirm-panel {

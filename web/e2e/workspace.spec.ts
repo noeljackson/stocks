@@ -396,7 +396,6 @@ async function mockApi(
     const isThesisReview = item.kind === "thesis_review";
     const isPriceAlert = item.kind === "price_alert";
     const recordDecision = { id: "record_decision", label: "Record decision", kind: "decision", detail: "Open the thesis decision form." };
-    const recordAlertDecision = { id: "record_alert_decision", label: "Record alert decision", kind: "decision", detail: "Open the decision form with this triggered level as context." };
     const skipDecision = { id: "skip", label: "Skip / defer thesis", kind: "decision_skip", detail: "Record why this thesis is not being acted on now." };
     const inspectChart = { id: "inspect_chart", label: "Inspect chart", kind: "open_symbol", detail: "Review chart, thesis, and alert context before deciding." };
     const deferAction = { id: "defer", label: "Defer", kind: "attention_defer", detail: "Resurface later." };
@@ -404,9 +403,9 @@ async function mockApi(
     const dismissNoise = { id: "dismiss", label: "Dismiss as noise", kind: "attention_dismiss", detail: "Mark this triggered alert as not actionable." };
     const automationApprove = {
       id: "approve_thesis_timing",
-      label: "Approve for automation",
+      label: "Approve bot trading",
       kind: "automation_approve",
-      detail: "Create a shadow thesis-timing automation permission and open the cockpit.",
+      detail: "Approve shadow thesis-timing automation with a 5% default cap. No live broker order is placed by this approval.",
       strategy_id: "thesis_timing",
       strategy_version: "0.1.0",
       environment_scope: "shadow",
@@ -416,7 +415,7 @@ async function mockApi(
       : isActionable || isThesisReview
         ? automationApprove
       : isPriceAlert
-        ? recordAlertDecision
+        ? inspectChart
       : { id: "open_symbol", label: "Open symbol", kind: "open_symbol", detail: "Inspect context and evidence." };
     const secondaryActions = isCandidate
       ? [deferAction, dismissAction]
@@ -425,13 +424,13 @@ async function mockApi(
         : isActionable
           ? [recordDecision, deferAction, skipDecision, dismissAction]
         : isPriceAlert
-          ? [inspectChart, deferAction, dismissNoise]
+          ? [deferAction, dismissNoise]
           : [deferAction, dismissAction];
     return {
       attention: item,
       decision: {
-        intent: isCandidate ? "promote_to_universe" : ((isActionable || isThesisReview) ? "approve_for_automation" : (isPriceAlert ? "record_alert_decision" : "inspect_symbol")),
-        headline: isCandidate ? `Start research for ${symbol}?` : ((isActionable || isThesisReview) ? `Approve ${symbol} for automation?` : (isPriceAlert ? `Act on ${symbol} price alert?` : `${symbol ?? "Symbol"} review`)),
+        intent: isCandidate ? "promote_to_universe" : ((isActionable || isThesisReview) ? "approve_for_automation" : (isPriceAlert ? "inspect_price_alert" : "inspect_symbol")),
+        headline: isCandidate ? `Start research for ${symbol}?` : ((isActionable || isThesisReview) ? `Approve ${symbol} for bot trading?` : (isPriceAlert ? `Inspect ${symbol} price alert?` : `${symbol ?? "Symbol"} review`)),
         primary_action: primary,
         secondary_actions: secondaryActions,
         blockers: [],
@@ -440,7 +439,7 @@ async function mockApi(
           : (isActionable || isThesisReview)
             ? ["shadow automation permission is approved", "strategy sleeve is created or reactivated", "no broker order is placed by this approval"]
           : isPriceAlert
-            ? ["human decision, deferral, or dismissal is recorded", "price alert trigger remains available in the audit trail", "no automation permission or broker order is placed by this packet"]
+            ? ["chart and thesis context are opened for inspection", "price alert trigger remains available in the audit trail", "no automation permission or broker order is placed by this packet"]
             : [],
       },
       universe_status: {
@@ -601,7 +600,26 @@ async function mockApi(
       readiness_ready: 0,
       readiness_blocked: 1,
       readiness_missing: 0,
+      approval_candidates: 1,
     },
+    approval_candidates: [{
+      attention_id: 7601,
+      attention_kind: "thesis_review",
+      symbol: "OKTA",
+      title: "OKTA thesis changed",
+      reason: "Fresh evidence changed the standing thesis and is ready for shadow bot approval.",
+      created_at: "2026-06-01T00:00:00Z",
+      thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
+      thesis_state: "forming",
+      thesis_direction: "up",
+      thesis_edge: "Identity demand is improving before it is fully reflected in sell-side expectations.",
+      strategy_id: "thesis_timing",
+      strategy_version: "0.1.0",
+      strategy_display_name: "Thesis Timing",
+      environment_scope: "shadow",
+      default_max_allocation_pct: 0.05,
+      headline: "Approve OKTA for bot-managed trading?",
+    }],
     permissions: [{
       permission_id: "39ad2b74-75e0-4a68-9e09-6e2b2f9b7f13",
       symbol: "OKTA",
@@ -1108,7 +1126,11 @@ async function mockApi(
     if (path === "/api/automation/status") {
       const symbol = url.searchParams.get("symbol");
       await json(route, symbol
-        ? { ...automationStatus, permissions: automationStatus.permissions.filter((p) => p.symbol === symbol.toUpperCase()) }
+        ? {
+            ...automationStatus,
+            permissions: automationStatus.permissions.filter((p) => p.symbol === symbol.toUpperCase()),
+            approval_candidates: automationStatus.approval_candidates.filter((p) => p.symbol === symbol.toUpperCase()),
+          }
         : automationStatus);
       return;
     }
@@ -1123,6 +1145,10 @@ async function mockApi(
         automationStatus.summary.permissions_total += 1;
         automationStatus.summary.approved += 1;
       }
+      automationStatus.approval_candidates = automationStatus.approval_candidates.filter((candidate) =>
+        candidate.symbol !== symbol || candidate.strategy_id !== strategyId
+      );
+      automationStatus.summary.approval_candidates = automationStatus.approval_candidates.length;
       await json(route, {
         permission_id: existing?.permission_id ?? `mock-${symbol.toLowerCase()}-${strategyId}`,
         sleeve_id: existing?.sleeve?.sleeve_id ?? `mock-sleeve-${symbol.toLowerCase()}-${strategyId}`,
@@ -2947,14 +2973,36 @@ test("thesis card opens a prefilled decision form", async ({ page }) => {
   await expect(page.getByLabel("Action")).toHaveValue("skip");
 });
 
+test("thesis card approves bot trading with a visible confirmation", async ({ page }) => {
+  const calls = await mockApi(page);
+  await page.goto("/symbol/OKTA?p=theses");
+
+  await page.getByTestId("thesis-approve-automation").click();
+  const confirm = page.getByTestId("automation-approval-confirm");
+  await expect(confirm).toBeVisible();
+  await expect(confirm).toContainText("Approve OKTA for bot-managed trading?");
+  await expect(confirm).toContainText("No live broker order");
+  await expect(confirm).toContainText("90 days");
+  await confirm.getByRole("button", { name: "Approve bot trading" }).click();
+
+  await expect.poll(() => calls.automationApprovalBody).toMatchObject({
+    symbol: "OKTA",
+    strategy_id: "thesis_timing",
+    strategy_version: "0.1.0",
+    environment_scope: "shadow",
+    max_allocation_pct: 0.05,
+  });
+  await expect(page).toHaveURL(/\/automation\/OKTA$/);
+});
+
 test("thesis review packet opens an inline prefilled decision form", async ({ page }) => {
   await mockApi(page);
   await page.goto("/symbol/OKTA");
 
   await page.getByTestId("workflow-attention").getByRole("button", { name: /OKTA thesis changed/ }).click();
   const packet = page.getByTestId("review-packet");
-  await expect(packet).toContainText("Approve OKTA for automation?");
-  await expect(packet).toContainText("Approve for automation");
+  await expect(packet).toContainText("Approve OKTA for bot trading?");
+  await expect(packet).toContainText("Approve bot trading");
 
   await packet.getByRole("button", { name: /Record decision/ }).click();
 
@@ -2971,14 +3019,20 @@ test("thesis review packet approves the symbol for automation", async ({ page })
 
   await page.getByTestId("workflow-attention").getByRole("button", { name: /OKTA thesis changed/ }).click();
   const packet = page.getByTestId("review-packet");
-  await expect(packet).toContainText("Approve OKTA for automation?");
-  await packet.getByRole("button", { name: "Approve for automation" }).click();
+  await expect(packet).toContainText("Approve OKTA for bot trading?");
+  await packet.getByRole("button", { name: "Approve bot trading" }).first().click();
+  const confirm = page.getByTestId("review-packet-automation-confirm");
+  await expect(confirm).toBeVisible();
+  await expect(confirm).toContainText("No live broker order is placed");
+  await expect(confirm).toContainText("90 days");
+  await confirm.getByRole("button", { name: "Approve bot trading" }).click();
 
   await expect.poll(() => calls.automationApprovalBody).toMatchObject({
     symbol: "OKTA",
     strategy_id: "thesis_timing",
     strategy_version: "0.1.0",
     environment_scope: "shadow",
+    max_allocation_pct: 0.05,
   });
   await expect(page).toHaveURL(/\/automation\/OKTA$/);
   const cockpit = page.getByTestId("autonomous-cockpit");
@@ -3016,7 +3070,7 @@ test("thesis review packet submits the decision inline", async ({ page }) => {
   });
 });
 
-test("price alert review packet asks for an alert decision", async ({ page }) => {
+test("price alert review packet opens chart inspection instead of a decision form", async ({ page }) => {
   await mockApi(page, {
     attentionItems: [{
       id: 9301,
@@ -3050,14 +3104,14 @@ test("price alert review packet asks for an alert decision", async ({ page }) =>
 
   await page.getByTestId("workflow-attention").getByRole("button", { name: /CRDO price alert hit/ }).click();
   const packet = page.getByTestId("review-packet");
-  await expect(packet).toContainText("Act on CRDO price alert?");
-  await expect(packet).toContainText("Record alert decision");
+  await expect(packet).toContainText("Inspect CRDO price alert?");
+  await expect(packet).not.toContainText("Record alert decision");
   await expect(packet).toContainText("Inspect chart");
   await expect(packet).toContainText("Dismiss as noise");
   await expect(packet).toContainText("price alert trigger remains available in the audit trail");
 
-  await packet.getByRole("button", { name: "Record alert decision" }).click();
-  await expect(page.getByTestId("review-packet-decision-form")).toBeVisible();
+  await packet.getByRole("button", { name: "Inspect chart" }).click();
+  await expect(page.getByTestId("review-packet-decision-form")).not.toBeVisible();
 });
 
 test("brain tab shows macro and theme theses with linked symbols", async ({ page }) => {
@@ -3161,8 +3215,8 @@ test("journal daily trade desk opens the matching review packet", async ({ page 
   await tradeDesk.locator(".trade-section.consider").getByRole("button", { name: "Open review packet" }).click();
 
   await expect(page).toHaveURL(/\/symbol\/CRDO/);
-  await expect(page.getByTestId("review-packet")).toContainText("Approve CRDO for automation?");
-  await expect(page.getByTestId("review-packet")).toContainText("Approve for automation");
+  await expect(page.getByTestId("review-packet")).toContainText("Approve CRDO for bot trading?");
+  await expect(page.getByTestId("review-packet")).toContainText("Approve bot trading");
   await expect(page.getByTestId("review-packet")).toContainText("Actionable up thesis with constructive setup.");
 });
 
@@ -3248,7 +3302,7 @@ test("symbol alerts tab excludes global alerts", async ({ page }) => {
   await mockApi(page);
   await page.goto("/symbol/OKTA");
 
-  await page.getByRole("button", { name: "alerts" }).click();
+  await page.getByRole("button", { name: "alerts", exact: true }).click();
 
   await expect(page.getByText("OKTA thesis moved to forming")).toBeVisible();
   await expect(page.getByText("global portfolio drawdown warning")).not.toBeVisible();
@@ -3354,6 +3408,30 @@ test("autonomous trading cockpit shows decisions logic and timeline", async ({ p
   expect(calls.automationTimelineUrls.at(-1)?.searchParams.get("strategy_id")).toBe("technical_breakout");
 });
 
+test("autonomous trading cockpit shows approval candidates and confirms bot trading", async ({ page }) => {
+  const calls = await mockApi(page);
+  await page.goto("/automation");
+
+  const board = page.getByTestId("automation-approval-board");
+  await expect(board).toContainText("Needs Approval");
+  await expect(board).toContainText("Approve OKTA for bot-managed trading?");
+  await board.getByRole("button", { name: "Approve bot trading" }).click();
+
+  const confirm = page.getByTestId("automation-approval-confirm");
+  await expect(confirm).toContainText("Shadow mode only");
+  await expect(confirm).toContainText("90 days");
+  await confirm.getByRole("button", { name: "Approve bot trading" }).click();
+
+  await expect.poll(() => calls.automationApprovalBody).toMatchObject({
+    symbol: "OKTA",
+    strategy_id: "thesis_timing",
+    strategy_version: "0.1.0",
+    environment_scope: "shadow",
+    max_allocation_pct: 0.05,
+  });
+  await expect(board).toContainText("No thesis-backed bot approvals are waiting");
+});
+
 test("autonomous trading cockpit deep links to a symbol", async ({ page }) => {
   const calls = await mockApi(page);
   await page.goto("/automation/OKTA");
@@ -3386,6 +3464,7 @@ test("attention Promote posts selected watchlist memberships", async ({ page }) 
   const calls = await mockApi(page);
   await page.goto("/");
 
+  await page.locator(".att-filters").getByRole("button", { name: "candidate review" }).click();
   const card = page.locator(".att-card").filter({ hasText: "NVDA" }).first();
   await expect(card).toBeVisible();
   await expect(card).toContainText("2.4x volume vs 200-day SMA");
@@ -3427,7 +3506,7 @@ test("attention thesis review opens selected symbol thesis panel", async ({ page
   });
   await page.goto("/");
 
-  await page.locator(".att-filters").getByRole("button", { name: "thesis review" }).click();
+  await page.locator(".att-filters").getByRole("button", { name: "trade approvals" }).click();
   const card = page.locator(".att-card").filter({ hasText: "OKTA" });
   await expect(card).toContainText("thesis changed");
   await expect(card).toContainText("Fresh evidence changed");

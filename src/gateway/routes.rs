@@ -4122,7 +4122,7 @@ fn review_packet_kind_summary(kind: &str, severity: &str) -> (&'static str, &'st
         ),
         "thesis_actionable" => (
             "A thesis reached a trade-decision state.",
-            "The next step is a human decision with risk and sizing captured explicitly.",
+            "Approve bot-managed shadow trading only if you agree with the thesis and want the strategy to manage entries and exits.",
         ),
         "thesis_review" => (
             "A standing thesis changed materially.",
@@ -4142,7 +4142,7 @@ fn review_packet_kind_summary(kind: &str, severity: &str) -> (&'static str, &'st
         ),
         "price_alert" => (
             "A watched price level triggered.",
-            "Decide whether the alert changes the trade plan, thesis timing, or should be dismissed as noise.",
+            "Inspect the chart and thesis context; price alerts do not create automation approval by themselves.",
         ),
         "outcome_ready" => (
             "A decision or thesis is ready to score.",
@@ -4167,13 +4167,13 @@ fn review_packet_actions(kind: &str) -> serde_json::Value {
             json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later without resolving."}),
         ],
         "thesis_actionable" => vec![
-            json!({"id": "approve_thesis_timing", "label": "Approve for automation", "kind": "automation_approve", "detail": "Create a shadow thesis-timing automation permission and open the cockpit.", "strategy_id": "thesis_timing", "strategy_version": "0.1.0", "environment_scope": "shadow"}),
+            json!({"id": "approve_thesis_timing", "label": "Approve bot trading", "kind": "automation_approve", "detail": "Approve shadow thesis-timing automation with a 5% default cap. No live broker order is placed by this approval.", "strategy_id": "thesis_timing", "strategy_version": "0.1.0", "environment_scope": "shadow"}),
             json!({"id": "record_decision", "label": "Record manual decision", "kind": "decision", "detail": "Open the thesis decision form."}),
             json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later without resolving."}),
             json!({"id": "skip", "label": "Skip", "kind": "decision_skip", "detail": "Record a structured skip/defer decision."}),
         ],
         "thesis_review" => vec![
-            json!({"id": "approve_thesis_timing", "label": "Approve for automation", "kind": "automation_approve", "detail": "Create a shadow thesis-timing automation permission and open the cockpit.", "strategy_id": "thesis_timing", "strategy_version": "0.1.0", "environment_scope": "shadow"}),
+            json!({"id": "approve_thesis_timing", "label": "Approve bot trading", "kind": "automation_approve", "detail": "Approve shadow thesis-timing automation with a 5% default cap. No live broker order is placed by this approval.", "strategy_id": "thesis_timing", "strategy_version": "0.1.0", "environment_scope": "shadow"}),
             json!({"id": "record_decision", "label": "Record decision", "kind": "decision", "detail": "Open the thesis decision form for this reviewed thesis."}),
             json!({"id": "skip", "label": "Skip / defer thesis", "kind": "decision_skip", "detail": "Record why this thesis is not being acted on now."}),
             json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later without resolving."}),
@@ -4185,8 +4185,6 @@ fn review_packet_actions(kind: &str) -> serde_json::Value {
             json!({"id": "dismiss", "label": "Dismiss", "kind": "attention_dismiss", "detail": "Mark risk review as handled."}),
         ],
         "price_alert" => vec![
-            json!({"id": "record_alert_decision", "label": "Record alert decision", "kind": "decision", "detail": "Open the decision form with this triggered level as context."}),
-            json!({"id": "inspect_chart", "label": "Inspect chart", "kind": "open_symbol", "detail": "Review chart, thesis, and alert context before deciding."}),
             json!({"id": "defer", "label": "Defer", "kind": "attention_defer", "detail": "Resurface later without resolving the alert."}),
             json!({"id": "dismiss", "label": "Dismiss as noise", "kind": "attention_dismiss", "detail": "Mark this triggered alert as not actionable."}),
         ],
@@ -4220,10 +4218,10 @@ fn review_packet_decision(
         ),
         "thesis_actionable" => (
             "approve_for_automation",
-            format!("Approve {sym} for automation?"),
+            format!("Approve {sym} for bot trading?"),
             "automation_approve",
-            "Approve for automation",
-            "Create a shadow thesis-timing automation permission, then inspect proof and lifecycle state in the cockpit.",
+            "Approve bot trading",
+            "Approve shadow thesis-timing automation with a 5% default cap; no live broker order is placed by this approval.",
         ),
         "risk_review" => (
             "record_trade_decision",
@@ -4233,11 +4231,11 @@ fn review_packet_decision(
             "Open the decision form with risk context.",
         ),
         "price_alert" => (
-            "record_alert_decision",
-            format!("Act on {sym} price alert?"),
-            "decision",
-            "Record alert decision",
-            "Open the decision form with the triggered level, thesis, and chart context.",
+            "inspect_price_alert",
+            format!("Inspect {sym} price alert?"),
+            "open_symbol",
+            "Inspect chart",
+            "Review chart, thesis, and alert context before deciding whether this matters.",
         ),
         "context_stale" | "thesis_incomplete" => (
             "resolve_evidence_blocker",
@@ -4248,10 +4246,10 @@ fn review_packet_decision(
         ),
         "thesis_review" => (
             "approve_for_automation",
-            format!("Approve {sym} for automation?"),
+            format!("Approve {sym} for bot trading?"),
             "automation_approve",
-            "Approve for automation",
-            "Create a shadow thesis-timing automation permission, then inspect proof and lifecycle state in the cockpit.",
+            "Approve bot trading",
+            "Approve shadow thesis-timing automation with a 5% default cap; no live broker order is placed by this approval.",
         ),
         _ => (
             "inspect_symbol",
@@ -4304,7 +4302,7 @@ fn review_packet_decision(
                 "risk context remains attached to the thesis",
             ],
             "price_alert" => vec![
-                "human decision, deferral, or dismissal is recorded",
+                "chart and thesis context are opened for inspection",
                 "price alert trigger remains available in the audit trail",
                 "no automation permission or broker order is placed by this packet",
             ],
@@ -6220,12 +6218,9 @@ mod tests {
         let decision = review_packet_decision("thesis_review", Some("BG"), true);
 
         assert_eq!(decision["intent"], "approve_for_automation");
-        assert_eq!(decision["headline"], "Approve BG for automation?");
+        assert_eq!(decision["headline"], "Approve BG for bot trading?");
         assert_eq!(decision["primary_action"]["kind"], "automation_approve");
-        assert_eq!(
-            decision["primary_action"]["label"],
-            "Approve for automation"
-        );
+        assert_eq!(decision["primary_action"]["label"], "Approve bot trading");
         assert_eq!(decision["primary_action"]["strategy_id"], "thesis_timing");
         assert!(
             decision["secondary_actions"]
@@ -6245,20 +6240,13 @@ mod tests {
     }
 
     #[test]
-    fn review_packet_price_alert_asks_for_alert_decision() {
+    fn review_packet_price_alert_opens_chart_inspection() {
         let decision = review_packet_decision("price_alert", Some("KO"), true);
 
-        assert_eq!(decision["intent"], "record_alert_decision");
-        assert_eq!(decision["headline"], "Act on KO price alert?");
-        assert_eq!(decision["primary_action"]["kind"], "decision");
-        assert_eq!(decision["primary_action"]["label"], "Record alert decision");
-        assert!(
-            decision["secondary_actions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|item| item["label"] == "Inspect chart")
-        );
+        assert_eq!(decision["intent"], "inspect_price_alert");
+        assert_eq!(decision["headline"], "Inspect KO price alert?");
+        assert_eq!(decision["primary_action"]["kind"], "open_symbol");
+        assert_eq!(decision["primary_action"]["label"], "Inspect chart");
         assert!(
             decision["consequences"]
                 .as_array()
@@ -6266,6 +6254,15 @@ mod tests {
                 .iter()
                 .any(|item| item == "price alert trigger remains available in the audit trail")
         );
+
+        let actions = review_packet_actions("price_alert");
+        let labels: Vec<&str> = actions
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|action| action["label"].as_str())
+            .collect();
+        assert_eq!(labels, vec!["Defer", "Dismiss as noise"]);
     }
 
     #[test]

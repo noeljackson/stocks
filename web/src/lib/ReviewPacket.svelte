@@ -34,6 +34,9 @@
   }: Props = $props();
 
   let confirmOpen = $state(false);
+  let automationConfirmOpen = $state(false);
+  let automationMaxAllocationPct = $state("5");
+  let automationMaxNotionalUsd = $state("");
   let selectedWatchlists = $state<Record<string, boolean>>({});
   let lastPacketId = $state<number | null>(null);
 
@@ -42,6 +45,9 @@
     if (nextId !== lastPacketId) {
       lastPacketId = nextId;
       confirmOpen = false;
+      automationConfirmOpen = false;
+      automationMaxAllocationPct = "5";
+      automationMaxNotionalUsd = "";
       selectedWatchlists = {};
     }
   });
@@ -115,6 +121,21 @@
         return;
       }
       onAction(action, packet, { watchlistIds: selectedListIds() });
+      return;
+    }
+    if (action.kind === "automation_approve") {
+      if (!automationConfirmOpen) {
+        automationConfirmOpen = true;
+        return;
+      }
+      const allocation = Number(automationMaxAllocationPct);
+      const notional = Number(automationMaxNotionalUsd);
+      onAction(action, packet, {
+        maxAllocationPct: Number.isFinite(allocation) && allocation > 0
+          ? allocation > 1 ? allocation / 100 : allocation
+          : 0.05,
+        maxNotionalUsd: Number.isFinite(notional) && notional > 0 ? notional : null,
+      });
       return;
     }
     onAction(action, packet);
@@ -216,6 +237,41 @@
             {busy ? "Starting..." : "Start research"}
           </button>
           <button type="button" class="secondary-action" disabled={busy || Boolean(status)} onclick={() => (confirmOpen = false)}>Cancel</button>
+        </div>
+      </section>
+    {/if}
+
+    {#if action.kind === "automation_approve" && automationConfirmOpen}
+      <section class="confirm-panel automation-confirm" data-testid="review-packet-automation-confirm">
+        <div>
+          <span class="kicker">confirm bot approval</span>
+          <strong>Approve shadow bot-managed trading.</strong>
+          <p class="muted">The bot may manage entries and exits for this strategy sleeve after proof and risk gates pass. No live broker order is placed by this approval.</p>
+        </div>
+        <dl class="candidate-meta">
+          <dt>symbol</dt><dd>{packet.attention.symbol ?? "unknown"}</dd>
+          <dt>strategy</dt><dd>{action.strategy_id ?? "thesis_timing"}@{action.strategy_version ?? "0.1.0"}</dd>
+          <dt>mode</dt><dd>{action.environment_scope ?? "shadow"}</dd>
+          <dt>ttl</dt><dd>90 days</dd>
+        </dl>
+        <div class="automation-fields">
+          <label>
+            Max allocation
+            <span>
+              <input bind:value={automationMaxAllocationPct} inputmode="decimal" />
+              %
+            </span>
+          </label>
+          <label>
+            Max notional
+            <input bind:value={automationMaxNotionalUsd} inputmode="decimal" placeholder="optional" />
+          </label>
+        </div>
+        <div class="confirm-actions">
+          <button type="button" class="primary-action tone-primary" disabled={busy || Boolean(status)} onclick={() => runPrimary(packet)}>
+            {busy ? "Approving..." : "Approve bot trading"}
+          </button>
+          <button type="button" class="secondary-action" disabled={busy || Boolean(status)} onclick={() => (automationConfirmOpen = false)}>Cancel</button>
         </div>
       </section>
     {/if}
@@ -365,6 +421,40 @@
     display: block;
     color: #7f849c;
     line-height: 1.25;
+  }
+  .automation-confirm {
+    border-color: rgba(166, 227, 161, .36);
+    background: #09110d;
+  }
+  .automation-fields {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .45rem;
+  }
+  .automation-fields label {
+    display: grid;
+    gap: .16rem;
+    color: #9aa3b8;
+    font-size: .72rem;
+    text-transform: uppercase;
+  }
+  .automation-fields label span {
+    display: flex;
+    align-items: center;
+    gap: .25rem;
+    color: #7f849c;
+    text-transform: none;
+  }
+  .automation-fields input {
+    min-width: 0;
+    width: 100%;
+    background: #0a0d14;
+    color: #cdd6f4;
+    border: 1px solid #2a3548;
+    border-radius: 4px;
+    padding: .25rem .4rem;
+    font: inherit;
+    text-transform: none;
   }
   .packet-grid {
     display: grid;

@@ -6991,6 +6991,70 @@ impl Store {
             permissions.push(row.try_get::<serde_json::Value, _>("permission")?);
         }
 
+        let approval_candidate_rows = sqlx::query(
+            r#"SELECT jsonb_build_object(
+                       'attention_id', ai.id,
+                       'attention_kind', ai.kind,
+                       'symbol', upper(ai.symbol),
+                       'title', ai.title,
+                       'reason', COALESCE(ai.reason, t.edge_rationale),
+                       'created_at', ai.created_at,
+                       'thesis_id', t.thesis_id,
+                       'thesis_state', t.state,
+                       'thesis_direction', t.forecast->>'direction',
+                       'thesis_edge', t.edge_rationale,
+                       'strategy_id', 'thesis_timing',
+                       'strategy_version', '0.1.0',
+                       'strategy_display_name', 'Thesis Timing',
+                       'environment_scope', 'shadow',
+                       'default_max_allocation_pct', 0.05,
+                       'headline', format('Approve %s for bot-managed trading?', upper(ai.symbol))
+                   ) AS candidate
+              FROM attention_item ai
+         LEFT JOIN LATERAL (
+                    SELECT t.*
+                      FROM thesis t
+                     WHERE (
+                               ai.thesis_id IS NOT NULL
+                               AND t.thesis_id = ai.thesis_id
+                           )
+                        OR (
+                               ai.thesis_id IS NULL
+                               AND ai.symbol IS NOT NULL
+                               AND t.symbol = ai.symbol
+                               AND t.state NOT IN ('closed', 'disqualified')
+                           )
+                  ORDER BY CASE WHEN t.thesis_id = ai.thesis_id THEN 0 ELSE 1 END,
+                           t.updated_at DESC
+                     LIMIT 1
+                 ) t ON TRUE
+             WHERE ai.status = 'open'
+               AND ai.kind IN ('thesis_review', 'thesis_actionable')
+               AND ai.symbol IS NOT NULL
+               AND t.thesis_id IS NOT NULL
+               AND ($1::text IS NULL OR ai.symbol = upper($1))
+               AND NOT EXISTS (
+                     SELECT 1
+                       FROM automation_trade_permission p
+                      WHERE p.symbol = upper(ai.symbol)
+                        AND p.strategy_id = 'thesis_timing'
+                        AND p.strategy_version = '0.1.0'
+                        AND p.environment_scope = 'shadow'
+                        AND p.status IN ('pending', 'approved')
+                   )
+          ORDER BY CASE ai.kind WHEN 'thesis_actionable' THEN 0 ELSE 1 END,
+                   ai.created_at DESC
+             LIMIT 25"#,
+        )
+        .bind(symbol.map(str::trim).filter(|s| !s.is_empty()))
+        .fetch_all(&self.pool)
+        .await
+        .context("automation approval candidates")?;
+        let approval_candidates = approval_candidate_rows
+            .into_iter()
+            .map(|row| row.try_get::<serde_json::Value, _>("candidate"))
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(serde_json::json!({
             "as_of": Utc::now(),
             "kill_switch": {
@@ -7012,9 +7076,11 @@ impl Store {
                 "blocked_strategies": blocked_strategies,
                 "readiness_ready": readiness_ready,
                 "readiness_blocked": readiness_blocked,
-                "readiness_missing": readiness_missing
+                "readiness_missing": readiness_missing,
+                "approval_candidates": approval_candidates.len() as i64
             },
-            "permissions": permissions
+            "permissions": permissions,
+            "approval_candidates": approval_candidates
         }))
     }
 

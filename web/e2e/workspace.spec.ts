@@ -150,6 +150,7 @@ async function mockApi(
     brainJournalStatus?: number;
     brainJournalBody?: unknown;
     paginatedJournal?: boolean;
+    approvalCandidateSymbols?: string[];
   } = {},
 ): Promise<Calls> {
   const calls: Calls = {
@@ -628,6 +629,25 @@ async function mockApi(
     trigger_price: 89.5,
     rule_snapshot: priceAlertRules[1],
   }];
+  const approvalCandidateSymbols = options.approvalCandidateSymbols ?? ["OKTA"];
+  const approvalCandidateFor = (symbol: string, index: number) => ({
+    attention_id: 7601 + index,
+    attention_kind: "thesis_review",
+    symbol,
+    title: `${symbol} thesis changed`,
+    reason: "Fresh evidence changed the standing thesis and is ready for shadow bot approval.",
+    created_at: "2026-06-01T00:00:00Z",
+    thesis_id: `12ceaea3-9df3-416a-bfe5-${String(107_000_000_000 + index).padStart(12, "0")}`,
+    thesis_state: "forming",
+    thesis_direction: "up",
+    thesis_edge: "Identity demand is improving before it is fully reflected in sell-side expectations.",
+    strategy_id: "thesis_timing",
+    strategy_version: "0.1.0",
+    strategy_display_name: "Thesis Timing",
+    environment_scope: "shadow",
+    default_max_allocation_pct: 0.05,
+    headline: `Approve ${symbol} for bot-managed trading?`,
+  });
   const automationStatus = {
     as_of: "2026-06-01T12:00:00Z",
     kill_switch: {
@@ -658,26 +678,9 @@ async function mockApi(
       readiness_ready: 0,
       readiness_blocked: 1,
       readiness_missing: 0,
-      approval_candidates: 1,
+      approval_candidates: approvalCandidateSymbols.length,
     },
-    approval_candidates: [{
-      attention_id: 7601,
-      attention_kind: "thesis_review",
-      symbol: "OKTA",
-      title: "OKTA thesis changed",
-      reason: "Fresh evidence changed the standing thesis and is ready for shadow bot approval.",
-      created_at: "2026-06-01T00:00:00Z",
-      thesis_id: "12ceaea3-9df3-416a-bfe5-107d3233dd59",
-      thesis_state: "forming",
-      thesis_direction: "up",
-      thesis_edge: "Identity demand is improving before it is fully reflected in sell-side expectations.",
-      strategy_id: "thesis_timing",
-      strategy_version: "0.1.0",
-      strategy_display_name: "Thesis Timing",
-      environment_scope: "shadow",
-      default_max_allocation_pct: 0.05,
-      headline: "Approve OKTA for bot-managed trading?",
-    }],
+    approval_candidates: approvalCandidateSymbols.map(approvalCandidateFor),
     permissions: [{
       permission_id: "39ad2b74-75e0-4a68-9e09-6e2b2f9b7f13",
       symbol: "OKTA",
@@ -3674,6 +3677,26 @@ test("autonomous trading cockpit shows approval candidates and confirms bot trad
   await expect(cockpit).toContainText("Thesis Timing");
   expect(calls.automationTimelineUrls.at(-1)?.searchParams.get("symbol")).toBe("OKTA");
   expect(calls.automationTimelineUrls.at(-1)?.searchParams.get("strategy_id")).toBe("thesis_timing");
+});
+
+test("autonomous approval confirmation opens in view for crowded queues", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await mockApi(page, {
+    approvalCandidateSymbols: ["OKTA", "NVDA", "AMD", "MRVL", "ANET", "DELL", "AVGO", "CRDO", "MSFT", "AAPL", "GOOGL", "META"],
+  });
+  await page.goto("/automation");
+
+  const board = page.getByTestId("automation-approval-board");
+  await expect(board).toContainText("12");
+  await board.getByRole("button", { name: "Approve bot trading" }).first().click();
+
+  const confirm = page.getByTestId("automation-approval-confirm");
+  await expect(confirm).toBeVisible();
+  const box = await confirm.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.y).toBeGreaterThanOrEqual(0);
+  expect(box!.y).toBeLessThan(620);
+  await expect(confirm).toContainText("Approve OKTA for bot-managed trading?");
 });
 
 test("autonomous trading cockpit deep links to a symbol", async ({ page }) => {

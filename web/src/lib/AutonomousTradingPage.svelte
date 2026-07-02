@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import {
     approveAutomationPermission,
     fetchAutomationStatus,
@@ -84,11 +85,15 @@
     }
   }
 
-  function openApprovalCandidate(candidate: AutomationApprovalCandidate) {
+  async function openApprovalCandidate(candidate: AutomationApprovalCandidate) {
     selectedApprovalCandidate = candidate;
     approvalMaxAllocationPct = String(Math.round((candidate.default_max_allocation_pct ?? 0.05) * 100));
     approvalMaxNotionalUsd = "";
     approvalStatus = null;
+    await tick();
+    document
+      .querySelector<HTMLElement>('[data-testid="automation-approval-confirm"]')
+      ?.scrollIntoView({ block: "center" });
   }
 
   function parseOptionalNumber(value: string): number | undefined {
@@ -416,6 +421,38 @@
       {#if approvalStatus}
         <p class="success-text">{approvalStatus}</p>
       {/if}
+      {#if selectedApprovalCandidate}
+        <section class="approval-confirm" data-testid="automation-approval-confirm">
+          <div>
+            <span class="eyebrow">Confirm Approval</span>
+            <h2>{selectedApprovalCandidate.headline ?? `Approve ${selectedApprovalCandidate.symbol} for bot trading?`}</h2>
+            <p>Shadow mode only. No live broker order is placed by this approval.</p>
+          </div>
+          <dl class="approval-confirm-meta">
+            <dt>symbol</dt><dd>{selectedApprovalCandidate.symbol}</dd>
+            <dt>strategy</dt><dd>{selectedApprovalCandidate.strategy_display_name}</dd>
+            <dt>mode</dt><dd>{selectedApprovalCandidate.environment_scope}</dd>
+            <dt>ttl</dt><dd>90 days</dd>
+          </dl>
+          <label>
+            Max allocation
+            <span>
+              <input bind:value={approvalMaxAllocationPct} inputmode="decimal" />
+              %
+            </span>
+          </label>
+          <label>
+            Max notional
+            <input bind:value={approvalMaxNotionalUsd} inputmode="decimal" placeholder="optional" />
+          </label>
+          <div class="approval-confirm-actions">
+            <button type="button" disabled={approvalBusy} onclick={() => submitApprovalCandidate()}>
+              {approvalBusy ? "Approving" : "Approve bot trading"}
+            </button>
+            <button type="button" class="secondary" disabled={approvalBusy} onclick={() => (selectedApprovalCandidate = null)}>Cancel</button>
+          </div>
+        </section>
+      {/if}
       {#if approvalCandidates.length === 0}
         <p class="muted approval-empty">No thesis-backed bot approvals are waiting{symbol ? ` for ${symbol}` : ""}.</p>
       {:else}
@@ -446,39 +483,6 @@
         </div>
       {/if}
     </section>
-
-    {#if selectedApprovalCandidate}
-      <section class="approval-confirm" data-testid="automation-approval-confirm">
-        <div>
-          <span class="eyebrow">Confirm Approval</span>
-          <h2>{selectedApprovalCandidate.headline ?? `Approve ${selectedApprovalCandidate.symbol} for bot trading?`}</h2>
-          <p>Shadow mode only. No live broker order is placed by this approval.</p>
-        </div>
-        <dl class="approval-confirm-meta">
-          <dt>symbol</dt><dd>{selectedApprovalCandidate.symbol}</dd>
-          <dt>strategy</dt><dd>{selectedApprovalCandidate.strategy_display_name}</dd>
-          <dt>mode</dt><dd>{selectedApprovalCandidate.environment_scope}</dd>
-          <dt>ttl</dt><dd>90 days</dd>
-        </dl>
-        <label>
-          Max allocation
-          <span>
-            <input bind:value={approvalMaxAllocationPct} inputmode="decimal" />
-            %
-          </span>
-        </label>
-        <label>
-          Max notional
-          <input bind:value={approvalMaxNotionalUsd} inputmode="decimal" placeholder="optional" />
-        </label>
-        <div class="approval-confirm-actions">
-          <button type="button" disabled={approvalBusy} onclick={() => submitApprovalCandidate()}>
-            {approvalBusy ? "Approving" : "Approve bot trading"}
-          </button>
-          <button type="button" class="secondary" disabled={approvalBusy} onclick={() => (selectedApprovalCandidate = null)}>Cancel</button>
-        </div>
-      </section>
-    {/if}
 
     <div class="page-grid">
       <section class="decision-board" aria-label="Strategy decisions">
